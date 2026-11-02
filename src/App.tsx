@@ -1,0 +1,1624 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import {
+  Task,
+  Project,
+  Tag,
+  User,
+  Workspace,
+  WorkspaceRole,
+  ViewMode,
+  DateFilter,
+  Priority,
+  WorkspaceActivity,
+  Notification,
+} from './types/index.ts';
+import { StorageService } from './services/storage.ts';
+import {
+  isTaskOverdue,
+  isTaskDueToday,
+  isTaskDueSoon,
+  formatDueDatePTBR,
+  isUserMaster,
+  ROLE_CONFIG,
+  canAccessDashboard,
+  canModifyCompletedTask,
+  isTaskInDoneColumn,
+} from './utils/helpers.ts';
+import { SplashScreen } from './components/SplashScreen.tsx';
+import { Sidebar } from './components/Sidebar.tsx';
+import { Header } from './components/Header.tsx';
+import { KanbanView } from './components/KanbanView.tsx';
+import { ListView } from './components/ListView.tsx';
+import { MyTasksView } from './components/MyTasksView.tsx';
+import { TeamDashboardView } from './components/TeamDashboardView.tsx';
+import { ActivityFeedView } from './components/ActivityFeedView.tsx';
+import { TaskModal } from './components/TaskModal.tsx';
+import { ProjectModal } from './components/ProjectModal.tsx';
+import { WorkspaceModal } from './components/WorkspaceModal.tsx';
+import { CreateWorkspaceModal } from './components/CreateWorkspaceModal.tsx';
+import { NotificationPopover } from './components/NotificationPopover.tsx';
+import { PWAInstallPrompt } from './components/PWAInstallPrompt.tsx';
+import { OfflineIndicator } from './components/OfflineIndicator.tsx';
+import { MobileBottomNav } from './components/MobileBottomNav.tsx';
+import { SyncSettingsModal } from './components/SyncSettingsModal.tsx';
+import { LoginScreen } from './components/LoginScreen.tsx';
+import { WelcomeEmptyState } from './components/WelcomeEmptyState.tsx';
+import { UserProfileModal } from './components/UserProfileModal.tsx';
+import { MasterAdminModal } from './components/MasterAdminModal.tsx';
+import { AlertTriangle, X, CheckCircle2, Info } from 'lucide-react';
+
+export default function App() {
+  // Estado Persistido
+  const [users, setUsers] = useState<User[]>(() => StorageService.getUsers());
+  const [currentUser, setCurrentUser] = useState<User>(() => StorageService.getCurrentUser());
+  const [workspaces, setWorkspaces] = useState<Workspace[]>(() => StorageService.getWorkspaces());
+  const [currentWorkspace, setCurrentWorkspace] = useState<Workspace>(() =>
+    StorageService.getCurrentWorkspace()
+  );
+  const [projects, setProjects] = useState<Project[]>(() => StorageService.getProjects());
+  const [tasks, setTasks] = useState<Task[]>(() => StorageService.getTasks());
+  const [tags, setTags] = useState<Tag[]>(() => StorageService.getTags());
+  const [activities, setActivities] = useState<WorkspaceActivity[]>(() =>
+    StorageService.getActivities()
+  );
+  const [notifications, setNotifications] = useState<Notification[]>(() =>
+    StorageService.getNotifications()
+  );
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => StorageService.getTheme());
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    const saved = StorageService.getViewMode() as ViewMode;
+    return ['kanban', 'list', 'my_tasks', 'dashboard', 'activity_feed'].includes(saved)
+      ? saved
+      : 'kanban';
+  });
+
+  // Tela de Carregamento (Splash Screen) ao acessar o link do app
+  const [showSplash, setShowSplash] = useState<boolean>(true);
+
+  // Estado de Autenticação na Tela de Login
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() =>
+    StorageService.isAuthenticated()
+  );
+
+  const handleLoginSuccess = (user: User) => {
+    let currentUsersList = users;
+    if (!users.some((u) => u.id === user.id || u.email.toLowerCase() === user.email.toLowerCase())) {
+      currentUsersList = [...users, user];
+      setUsers(currentUsersList);
+      StorageService.saveUsers(currentUsersList);
+    }
+    setCurrentUser(user);
+    StorageService.setCurrentUserId(user.id);
+
+    // Garante que haja um workspace ativo com o usuário como membro
+    if (workspaces.length === 0) {
+      const newWs: Workspace = {
+        id: `ws-${Date.now()}`,
+        name: 'Meu Workspace',
+        slug: 'meu-workspace',
+        description: 'Espaço de trabalho corporativo',
+        logoColor: '#173653',
+        ownerId: user.id,
+        members: [{ userId: user.id, role: 'owner', joinedAt: new Date().toISOString() }],
+        createdAt: new Date().toISOString(),
+      };
+      setWorkspaces([newWs]);
+      setCurrentWorkspace(newWs);
+      StorageService.saveWorkspaces([newWs]);
+      StorageService.setCurrentWorkspaceId(newWs.id);
+    } else {
+      const isMember = currentWorkspace.members.some((m) => m.userId === user.id);
+      if (!isMember) {
+        const updatedMembers = [
+          ...currentWorkspace.members,
+          {
+            userId: user.id,
+            role: (isUserMaster(user) ? 'owner' : 'owner') as WorkspaceRole,
+            joinedAt: new Date().toISOString(),
+          },
+        ];
+        const updatedWs = { ...currentWorkspace, members: updatedMembers };
+        setCurrentWorkspace(updatedWs);
+        const updatedAll = workspaces.map((w) => (w.id === updatedWs.id ? updatedWs : w));
+        setWorkspaces(updatedAll);
+        StorageService.saveWorkspaces(updatedAll);
+      }
+    }
+
+    StorageService.setAuthenticated(true);
+    setIsAuthenticated(true);
+    showToast({
+      type: 'success',
+      message: `Bem-vindo(a) ao OperaTask, ${user.name}!`,
+    });
+  };
+
+  const handleLogout = () => {
+    StorageService.setAuthenticated(false);
+    setIsAuthenticated(false);
+  };
+
+  const handleLoadSampleBoard = () => {
+    const { project, tasks: sampleTasks } = StorageService.loadSampleBoard(
+      currentWorkspace.id,
+      currentUser.id
+    );
+    setProjects((prev) => [...prev, project]);
+    setTasks((prev) => [...prev, ...sampleTasks]);
+    setSelectedProjectId(project.id);
+    setViewMode('kanban');
+    showToast({
+      type: 'success',
+      message: 'Quadro demonstrativo criado com sucesso! Explore os cards e as colunas.',
+    });
+  };
+
+  // Navegação e Filtros
+  const [selectedProjectId, setSelectedProjectId] = useState<string>('all');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [priorityFilter, setPriorityFilter] = useState<Priority | 'all'>('all');
+  const [assigneeFilter, setAssigneeFilter] = useState<string | 'all'>('all');
+  const [selectedTagId, setSelectedTagId] = useState<string | 'all'>('all');
+
+  // Modais
+  const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
+  const [taskToEdit, setTaskToEdit] = useState<Task | null>(null);
+  const [defaultColumnId, setDefaultColumnId] = useState<string | undefined>(undefined);
+
+  const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
+  const [projectToEdit, setProjectToEdit] = useState<Project | null>(null);
+
+  const [isWorkspaceModalOpen, setIsWorkspaceModalOpen] = useState(false);
+  const [isCreateWorkspaceModalOpen, setIsCreateWorkspaceModalOpen] = useState(false);
+  const [isSyncSettingsOpen, setIsSyncSettingsOpen] = useState(false);
+  const [isUserProfileModalOpen, setIsUserProfileModalOpen] = useState(false);
+  const [isMasterModalOpen, setIsMasterModalOpen] = useState(false);
+
+  const handleUpdateUser = (updatedUser: User) => {
+    const updatedUsers = users.map((u) => (u.id === updatedUser.id ? updatedUser : u));
+    setUsers(updatedUsers);
+    setCurrentUser(updatedUser);
+    StorageService.saveUsers(updatedUsers);
+    StorageService.setCurrentUserId(updatedUser.id);
+  };
+
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  const [isDismissedAlert, setIsDismissedAlert] = useState(false);
+
+  // Feedback Visual (Toasts)
+  const [toast, setToast] = useState<{
+    id: string;
+    type: 'success' | 'info' | 'error';
+    message: string;
+    actionLabel?: string;
+    onAction?: () => void;
+  } | null>(null);
+
+  const showToast = (params: {
+    type: 'success' | 'info' | 'error';
+    message: string;
+    actionLabel?: string;
+    onAction?: () => void;
+  }) => {
+    const id = `toast-${Date.now()}`;
+    setToast({ ...params, id });
+    setTimeout(() => {
+      setToast((curr) => (curr?.id === id ? null : curr));
+    }, 4500);
+  };
+
+  // Efeito do Tema
+  useEffect(() => {
+    if (theme === 'dark') {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+    StorageService.saveTheme(theme);
+  }, [theme]);
+
+  // Auto-save de estado
+  useEffect(() => {
+    StorageService.saveUsers(users);
+  }, [users]);
+
+  useEffect(() => {
+    StorageService.setCurrentUserId(currentUser.id);
+  }, [currentUser]);
+
+  useEffect(() => {
+    StorageService.saveWorkspaces(workspaces);
+  }, [workspaces]);
+
+  useEffect(() => {
+    StorageService.setCurrentWorkspaceId(currentWorkspace.id);
+  }, [currentWorkspace]);
+
+  useEffect(() => {
+    StorageService.saveProjects(projects);
+  }, [projects]);
+
+  useEffect(() => {
+    StorageService.saveTasks(tasks);
+  }, [tasks]);
+
+  useEffect(() => {
+    StorageService.saveTags(tags);
+  }, [tags]);
+
+  useEffect(() => {
+    StorageService.saveActivities(activities);
+  }, [activities]);
+
+  useEffect(() => {
+    StorageService.saveNotifications(notifications);
+  }, [notifications]);
+
+  // Membros do workspace atual
+  const workspaceMembers = useMemo(() => {
+    const memberIds = currentWorkspace.members.map((m) => m.userId);
+    return users.filter((u) => memberIds.includes(u.id));
+  }, [currentWorkspace, users]);
+
+  // Papel do usuário atual no workspace ativo
+  const currentUserRole: WorkspaceRole = useMemo(() => {
+    if (isUserMaster(currentUser)) return 'owner';
+    const member = currentWorkspace.members.find((m) => m.userId === currentUser.id);
+    return member?.role || (currentWorkspace.ownerId === currentUser.id ? 'owner' : 'member');
+  }, [currentWorkspace, currentUser]);
+
+  // Projetos do workspace atual
+  const workspaceProjects = useMemo(() => {
+    return projects.filter((p) => p.workspaceId === currentWorkspace.id && !p.isArchived);
+  }, [projects, currentWorkspace]);
+
+  // Tarefas ativas do workspace atual (exclui arquivados)
+  const workspaceTasks = useMemo(() => {
+    return tasks.filter((t) => t.workspaceId === currentWorkspace.id && !t.isArchived);
+  }, [tasks, currentWorkspace]);
+
+  // Tarefas arquivadas do workspace atual
+  const archivedWorkspaceTasks = useMemo(() => {
+    return tasks.filter((t) => t.workspaceId === currentWorkspace.id && !!t.isArchived);
+  }, [tasks, currentWorkspace]);
+
+  // Projeto ativo para o quadro Kanban
+  const activeProject = useMemo(() => {
+    if (selectedProjectId !== 'all') {
+      const found = workspaceProjects.find((p) => p.id === selectedProjectId);
+      if (found) return found;
+    }
+    return workspaceProjects[0] || null;
+  }, [selectedProjectId, workspaceProjects]);
+
+  // Permissão do Dashboard da Equipe: Apenas Administrador e Dono (ocultar completamente para outros papéis)
+  const isMaster = isUserMaster(currentUser);
+  const canViewDashboard = canAccessDashboard(currentUserRole, isMaster);
+
+  // Redireciona automaticamente se estiver no Dashboard sem permissão
+  useEffect(() => {
+    if (viewMode === 'dashboard' && !canViewDashboard) {
+      setViewMode('kanban');
+      StorageService.saveViewMode('kanban');
+    }
+  }, [viewMode, canViewDashboard]);
+
+  // Alternador de visualização com verificação rigorosa de permissões
+  const handleViewModeChange = (mode: ViewMode) => {
+    if (mode === 'dashboard' && !canViewDashboard) {
+      showToast({
+        type: 'error',
+        message: 'Acesso restrito: Apenas Administradores e o Dono podem visualizar o Dashboard.',
+      });
+      return;
+    }
+    setViewMode(mode);
+    StorageService.saveViewMode(mode);
+  };
+
+  // Alternador de tema
+  const handleToggleTheme = () => {
+    setTheme((prev) => (prev === 'light' ? 'dark' : 'light'));
+  };
+
+  // Contadores por projeto
+  const taskCountsByProject = useMemo(() => {
+    const counts: Record<string, { pending: number; total: number }> = {};
+    workspaceProjects.forEach((p) => {
+      const pTasks = workspaceTasks.filter((t) => t.projectId === p.id);
+      counts[p.id] = {
+        pending: pTasks.filter((t) => !t.isCompleted).length,
+        total: pTasks.length,
+      };
+    });
+    return counts;
+  }, [workspaceProjects, workspaceTasks]);
+
+  // Minhas tarefas pendentes count
+  const myTasksCount = useMemo(() => {
+    return workspaceTasks.filter(
+      (t) => t.assigneeIds && t.assigneeIds.includes(currentUser.id) && !t.isCompleted
+    ).length;
+  }, [workspaceTasks, currentUser]);
+
+  // Tarefas filtradas para exibição em Kanban ou Lista
+  const filteredTasks = useMemo(() => {
+    return workspaceTasks.filter((task) => {
+      // Filtro de projeto (se selecionado explicitamente)
+      if (selectedProjectId !== 'all' && task.projectId !== selectedProjectId) {
+        return false;
+      }
+
+      // Se estiver no Kanban, foca no projeto ativo se não houver filtro 'all'
+      if (viewMode === 'kanban' && activeProject && task.projectId !== activeProject.id) {
+        return false;
+      }
+
+      // Filtro de responsável
+      if (assigneeFilter !== 'all') {
+        if (!task.assigneeIds || !task.assigneeIds.includes(assigneeFilter)) {
+          return false;
+        }
+      }
+
+      // Filtro de prioridade
+      if (priorityFilter !== 'all' && task.priority !== priorityFilter) {
+        return false;
+      }
+
+      // Filtro de tag
+      if (selectedTagId !== 'all') {
+        const hasTag = task.tags?.some((t) => t.id === selectedTagId);
+        if (!hasTag) return false;
+      }
+
+      // Busca de texto
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        const matchesTitle = task.title.toLowerCase().includes(q);
+        const matchesDesc = task.description?.toLowerCase().includes(q);
+        const matchesTags = task.tags?.some((t) => t.name.toLowerCase().includes(q));
+        if (!matchesTitle && !matchesDesc && !matchesTags) return false;
+      }
+
+      return true;
+    });
+  }, [
+    workspaceTasks,
+    selectedProjectId,
+    viewMode,
+    activeProject,
+    assigneeFilter,
+    priorityFilter,
+    selectedTagId,
+    searchQuery,
+  ]);
+
+  // Título e subtítulo do cabeçalho
+  const headerDetails = useMemo(() => {
+    if (viewMode === 'my_tasks') {
+      return {
+        title: 'Minhas Tarefas Atribuídas',
+        subtitle: `${myTasksCount} tarefas pendentes atribuídas a você`,
+      };
+    }
+    if (viewMode === 'dashboard') {
+      return {
+        title: 'Dashboard de Produtividade',
+        subtitle: `${workspaceMembers.length} membros na equipe · ${workspaceProjects.length} projetos`,
+      };
+    }
+    if (viewMode === 'activity_feed') {
+      return {
+        title: 'Atividades Recentes',
+        subtitle: 'Histórico cronológico e colaborativo da equipe',
+      };
+    }
+
+    if (activeProject) {
+      const pTasks = workspaceTasks.filter((t) => t.projectId === activeProject.id);
+      const pending = pTasks.filter((t) => !t.isCompleted).length;
+      const done = pTasks.filter((t) => t.isCompleted).length;
+      return {
+        title: activeProject.name,
+        subtitle: `${pending} pendentes · ${done} concluídas · ${activeProject.columns.length} colunas`,
+      };
+    }
+
+    return {
+      title: currentWorkspace.name,
+      subtitle: `${workspaceTasks.length} cards no workspace`,
+    };
+  }, [viewMode, myTasksCount, workspaceMembers, workspaceProjects, activeProject, workspaceTasks, currentWorkspace]);
+
+  // Auditoria e Atividade Helper
+  const recordActivity = (action: string, taskTitle?: string, projectId?: string, taskId?: string) => {
+    const newAct: WorkspaceActivity = {
+      id: `act-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+      workspaceId: currentWorkspace.id,
+      projectId,
+      taskId,
+      taskTitle,
+      userId: currentUser.id,
+      action,
+      timestamp: new Date().toISOString(),
+    };
+    setActivities((prev) => [newAct, ...prev.slice(0, 99)]);
+  };
+
+  // Notificações Helper
+  const sendNotification = (
+    recipientId: string,
+    type: 'assigned' | 'mention' | 'overdue' | 'status_change',
+    title: string,
+    message: string,
+    taskId?: string,
+    projectId?: string
+  ) => {
+    if (recipientId === currentUser.id) return; // Não notifica a si mesmo
+    const newNotif: Notification = {
+      id: `notif-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+      userId: recipientId,
+      actorId: currentUser.id,
+      type,
+      title,
+      message,
+      taskId,
+      projectId,
+      read: false,
+      createdAt: new Date().toISOString(),
+    };
+    setNotifications((prev) => [newNotif, ...prev]);
+  };
+
+  // Ações de Tarefa
+  const handleSaveTask = (taskData: Partial<Task> & { id?: string }) => {
+    const projId = taskData.projectId || activeProject?.id || workspaceProjects[0]?.id || 'proj-1';
+    const targetProject = projects.find((p) => p.id === projId);
+    const colId = taskData.columnId || targetProject?.columns[0]?.id || 'col-1';
+    const isCompleted = targetProject?.columns.find((c) => c.id === colId)?.isCompletedColumn || false;
+
+    if (taskData.id) {
+      // Edição de tarefa existente
+      const existingTask = tasks.find((t) => t.id === taskData.id);
+      if (existingTask) {
+        const wasDone = isTaskInDoneColumn(existingTask, targetProject?.columns);
+        if (wasDone && taskData.columnId && taskData.columnId !== existingTask.columnId) {
+          if (!canModifyCompletedTask(currentUserRole, isMaster)) {
+            showToast({
+              type: 'error',
+              message: 'Você não tem permissão para alterar cards concluídos.',
+            });
+            return;
+          }
+        }
+      }
+
+      setTasks((prev) =>
+        prev.map((t) => {
+          if (t.id !== taskData.id) return t;
+
+          // Detectar novos responsáveis para notificação
+          if (taskData.assigneeIds) {
+            taskData.assigneeIds.forEach((uid) => {
+              if (!t.assigneeIds.includes(uid)) {
+                sendNotification(
+                  uid,
+                  'assigned',
+                  'Nova tarefa atribuída a você',
+                  `${currentUser.name} atribuiu você à tarefa "${taskData.title || t.title}"`,
+                  t.id,
+                  projId
+                );
+              }
+            });
+          }
+
+          return {
+            ...t,
+            ...taskData,
+            columnId: colId,
+            isCompleted,
+            completedAt: isCompleted && !t.isCompleted ? new Date().toISOString() : t.completedAt,
+            updatedAt: new Date().toISOString(),
+          };
+        })
+      );
+      recordActivity('atualizou os detalhes da tarefa', taskData.title, projId, taskData.id);
+    } else {
+      // Criação de nova tarefa
+      const newTaskId = `task-${Date.now()}`;
+      const newTask: Task = {
+        id: newTaskId,
+        workspaceId: currentWorkspace.id,
+        projectId: projId,
+        columnId: colId,
+        title: taskData.title || 'Nova Tarefa',
+        description: taskData.description || '',
+        priority: taskData.priority || 'medium',
+        assigneeIds: taskData.assigneeIds || [currentUser.id],
+        dueDate: taskData.dueDate || `${new Date().toISOString().split('T')[0]}T18:00`,
+        tags: taskData.tags || [],
+        checklist: taskData.checklist || [],
+        comments: [],
+        activities: [
+          {
+            id: `act-init-${Date.now()}`,
+            userId: currentUser.id,
+            action: `criou a tarefa no projeto ${targetProject?.name || 'Geral'}`,
+            timestamp: new Date().toISOString(),
+          },
+        ],
+        attachments: taskData.attachments || [],
+        isCompleted,
+        order: workspaceTasks.filter((t) => t.columnId === colId).length,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      setTasks((prev) => [newTask, ...prev]);
+      recordActivity('criou a nova tarefa', newTask.title, projId, newTaskId);
+
+      // Notificar membros atribuídos
+      if (newTask.assigneeIds) {
+        const dueInfo = newTask.dueDate ? formatDueDatePTBR(newTask.dueDate) : null;
+        const dueText = dueInfo ? ` (Vence: ${dueInfo.fullText})` : '';
+        newTask.assigneeIds.forEach((uid) => {
+          sendNotification(
+            uid,
+            'assigned',
+            'Nova tarefa atribuída a você',
+            `${currentUser.name} atribuiu você à tarefa "${newTask.title}"${dueText}`,
+            newTaskId,
+            projId
+          );
+        });
+      }
+    }
+  };
+
+  const handleUpdateTaskColumn = (taskId: string, targetColumnId: string) => {
+    const targetTask = tasks.find((t) => t.id === taskId);
+    if (!targetTask || targetTask.columnId === targetColumnId) return;
+
+    const project = projects.find((p) => p.id === targetTask.projectId);
+    const wasCompleted = isTaskInDoneColumn(targetTask, project?.columns);
+
+    if (wasCompleted && !canModifyCompletedTask(currentUserRole, isMaster)) {
+      showToast({
+        type: 'error',
+        message: 'Você não tem permissão para alterar cards concluídos.',
+      });
+      return;
+    }
+
+    setTasks((prev) =>
+      prev.map((t) => {
+        if (t.id !== taskId) return t;
+        const targetCol = project?.columns.find((c) => c.id === targetColumnId);
+        const isCompleted = targetCol?.isCompletedColumn || false;
+
+        const updatedActivities = [
+          {
+            id: `act-${Date.now()}`,
+            userId: currentUser.id,
+            action: `moveu para "${targetCol?.title || 'outra coluna'}"`,
+            timestamp: new Date().toISOString(),
+          },
+          ...(t.activities || []),
+        ];
+
+        recordActivity(`moveu a tarefa para "${targetCol?.title}"`, t.title, t.projectId, t.id);
+
+        return {
+          ...t,
+          columnId: targetColumnId,
+          isCompleted,
+          completedAt: isCompleted && !t.isCompleted ? new Date().toISOString() : t.completedAt,
+          activities: updatedActivities,
+          updatedAt: new Date().toISOString(),
+        };
+      })
+    );
+  };
+
+  const handleReorderTasks = (
+    updates: { id: string; columnId: string; order: number }[],
+    meta?: { taskId: string; targetColumnId: string; prevColumnId: string }
+  ) => {
+    if (meta && meta.targetColumnId !== meta.prevColumnId) {
+      const task = tasks.find((t) => t.id === meta.taskId);
+      const project = projects.find((p) => p.id === task?.projectId);
+      const prevCol = project?.columns.find((c) => c.id === meta.prevColumnId);
+      const wasInDoneCol =
+        task?.isCompleted ||
+        prevCol?.isCompletedColumn ||
+        prevCol?.title.toLowerCase().includes('conclu');
+
+      if (wasInDoneCol && !canModifyCompletedTask(currentUserRole, isMaster)) {
+        showToast({
+          type: 'error',
+          message: 'Você não tem permissão para alterar cards concluídos.',
+        });
+        return;
+      }
+    }
+
+    setTasks((prev) => {
+      const updateMap = new Map(updates.map((u) => [u.id, u]));
+
+      return prev.map((t) => {
+        const u = updateMap.get(t.id);
+        if (!u) return t;
+
+        let isCompleted = t.isCompleted;
+        let completedAt = t.completedAt;
+        let activities = t.activities;
+
+        if (u.columnId !== t.columnId) {
+          const project = projects.find((p) => p.id === t.projectId);
+          const targetCol = project?.columns.find((c) => c.id === u.columnId);
+          isCompleted = targetCol?.isCompletedColumn || false;
+          completedAt = isCompleted && !t.isCompleted ? new Date().toISOString() : t.completedAt;
+          activities = [
+            {
+              id: `act-${Date.now()}`,
+              userId: currentUser.id,
+              action: `moveu para "${targetCol?.title || 'outra coluna'}"`,
+              timestamp: new Date().toISOString(),
+            },
+            ...(t.activities || []),
+          ];
+        }
+
+        return {
+          ...t,
+          columnId: u.columnId,
+          order: u.order,
+          isCompleted,
+          completedAt,
+          activities,
+          updatedAt: new Date().toISOString(),
+        };
+      });
+    });
+
+    if (meta && meta.targetColumnId !== meta.prevColumnId) {
+      const task = tasks.find((t) => t.id === meta.taskId);
+      const project = projects.find((p) => p.id === task?.projectId);
+      const targetCol = project?.columns.find((c) => c.id === meta.targetColumnId);
+      if (task && targetCol) {
+        recordActivity(`moveu a tarefa para "${targetCol.title}"`, task.title, task.projectId, task.id);
+      }
+    } else if (meta) {
+      const task = tasks.find((t) => t.id === meta.taskId);
+      if (task) {
+        recordActivity(`reordenou a tarefa no quadro`, task.title, task.projectId, task.id);
+      }
+    }
+  };
+
+  const handleToggleTaskComplete = (taskId: string) => {
+    const targetTask = tasks.find((t) => t.id === taskId);
+    if (!targetTask) return;
+
+    const project = projects.find((p) => p.id === targetTask.projectId);
+    const isCurrentlyDone = isTaskInDoneColumn(targetTask, project?.columns);
+
+    if (isCurrentlyDone && !canModifyCompletedTask(currentUserRole, isMaster)) {
+      showToast({
+        type: 'error',
+        message: 'Você não tem permissão para alterar cards concluídos.',
+      });
+      return;
+    }
+
+    setTasks((prev) =>
+      prev.map((t) => {
+        if (t.id !== taskId) return t;
+        const nextDone = !t.isCompleted;
+        // Encontra coluna de conclusão ou primeira coluna
+        const completedCol = project?.columns.find((c) => c.isCompletedColumn) || project?.columns[project.columns.length - 1];
+        const initialCol = project?.columns[0];
+
+        return {
+          ...t,
+          isCompleted: nextDone,
+          columnId: nextDone ? completedCol?.id || t.columnId : initialCol?.id || t.columnId,
+          completedAt: nextDone ? new Date().toISOString() : null,
+          updatedAt: new Date().toISOString(),
+        };
+      })
+    );
+  };
+
+  const handleDeleteTask = (taskId: string) => {
+    const taskToDelete = tasks.find((t) => t.id === taskId);
+    if (!taskToDelete) return;
+
+    const project = projects.find((p) => p.id === taskToDelete.projectId);
+    const isDone = isTaskInDoneColumn(taskToDelete, project?.columns);
+
+    if (isDone && !canModifyCompletedTask(currentUserRole, isMaster)) {
+      showToast({
+        type: 'error',
+        message: 'Você não tem permissão para excluir cards concluídos.',
+      });
+      return;
+    }
+
+    setTasks((prev) => prev.filter((t) => t.id !== taskId));
+    recordActivity('excluiu a tarefa', taskToDelete.title, taskToDelete.projectId);
+    showToast({
+      type: 'info',
+      message: `Tarefa "${taskToDelete.title}" excluída.`,
+    });
+  };
+
+  const handleDuplicateTask = (originalTask: Task) => {
+    const newTaskId = `task-${Date.now()}`;
+    const targetProject = projects.find((p) => p.id === originalTask.projectId);
+
+    // Duplicar checklist com novos IDs
+    const duplicatedChecklist = (originalTask.checklist || []).map((item, idx) => ({
+      ...item,
+      id: `check-${Date.now()}-${idx}`,
+    }));
+
+    // Duplicar anexos
+    const duplicatedAttachments = originalTask.attachments
+      ? originalTask.attachments.map((att, idx) => ({
+          ...att,
+          id: `att-${Date.now()}-${idx}`,
+          uploadedAt: new Date().toISOString(),
+        }))
+      : [];
+
+    // Colocar ordem logo após a original
+    const nextOrder = (typeof originalTask.order === 'number' ? originalTask.order : 0) + 1;
+
+    const newTask: Task = {
+      ...originalTask,
+      id: newTaskId,
+      title: `${originalTask.title} (cópia)`,
+      checklist: duplicatedChecklist,
+      attachments: duplicatedAttachments,
+      comments: [], // Não copiar comentários
+      activities: [
+        {
+          id: `act-init-${Date.now()}`,
+          userId: currentUser.id,
+          action: `duplicou esta tarefa a partir de "${originalTask.title}"`,
+          timestamp: new Date().toISOString(),
+        },
+      ], // Não copiar histórico
+      isArchived: false,
+      archivedAt: undefined,
+      order: nextOrder,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    setTasks((prev) => [newTask, ...prev]);
+    recordActivity('duplicou a tarefa', newTask.title, originalTask.projectId, newTaskId);
+
+    showToast({
+      type: 'success',
+      message: `Card "${newTask.title}" duplicado na coluna!`,
+      actionLabel: 'Editar cópia',
+      onAction: () => {
+        setTaskToEdit(newTask);
+        setIsTaskModalOpen(true);
+      },
+    });
+  };
+
+  const handleArchiveTask = (taskId: string) => {
+    const taskToArchive = tasks.find((t) => t.id === taskId);
+    if (!taskToArchive) return;
+
+    const project = projects.find((p) => p.id === taskToArchive.projectId);
+    const isDone = isTaskInDoneColumn(taskToArchive, project?.columns);
+
+    if (isDone && !canModifyCompletedTask(currentUserRole, isMaster)) {
+      showToast({
+        type: 'error',
+        message: 'Você não tem permissão para arquivar cards concluídos.',
+      });
+      return;
+    }
+
+    setTasks((prev) =>
+      prev.map((t) =>
+        t.id === taskId
+          ? {
+              ...t,
+              isArchived: true,
+              archivedAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            }
+          : t
+      )
+    );
+    recordActivity('arquivou o card', taskToArchive.title, taskToArchive.projectId, taskToArchive.id);
+
+    showToast({
+      type: 'info',
+      message: `Card "${taskToArchive.title}" arquivado.`,
+      actionLabel: 'Desfazer',
+      onAction: () => handleRestoreTask(taskId),
+    });
+  };
+
+  const handleRestoreTask = (taskId: string, targetColumnId?: string) => {
+    const taskToRestore = tasks.find((t) => t.id === taskId);
+    if (!taskToRestore) return;
+
+    setTasks((prev) =>
+      prev.map((t) => {
+        if (t.id !== taskId) return t;
+        return {
+          ...t,
+          isArchived: false,
+          archivedAt: undefined,
+          columnId: targetColumnId || t.columnId,
+          updatedAt: new Date().toISOString(),
+        };
+      })
+    );
+    recordActivity('restaurou o card para o quadro', taskToRestore.title, taskToRestore.projectId, taskToRestore.id);
+
+    showToast({
+      type: 'success',
+      message: `Card "${taskToRestore.title}" restaurado para o quadro!`,
+    });
+  };
+
+  const handlePermanentDeleteTask = (taskId: string) => {
+    const taskToDelete = tasks.find((t) => t.id === taskId);
+    setTasks((prev) => prev.filter((t) => t.id !== taskId));
+    if (taskToDelete) {
+      recordActivity('excluiu permanentemente o card', taskToDelete.title, taskToDelete.projectId);
+    }
+    showToast({
+      type: 'info',
+      message: 'Card excluído permanentemente.',
+    });
+  };
+
+  // Comentários & Menções
+  const handleAddComment = (taskId: string, commentText: string, mentionedUserIds: string[]) => {
+    const task = tasks.find((t) => t.id === taskId);
+    if (!task) return;
+
+    recordActivity('comentou na tarefa', task.title, task.projectId, task.id);
+
+    // Notificar cada usuário mencionado
+    mentionedUserIds.forEach((uid) => {
+      sendNotification(
+        uid,
+        'mention',
+        'Você foi mencionado em um comentário',
+        `${currentUser.name} mencionou você na tarefa "${task.title}": "${commentText.slice(0, 50)}..."`,
+        task.id,
+        task.projectId
+      );
+    });
+  };
+
+  // Gestão de Workspaces
+  const handleSelectWorkspace = (workspaceId: string) => {
+    const ws = workspaces.find((w) => w.id === workspaceId);
+    if (ws) {
+      setCurrentWorkspace(ws);
+      setSelectedProjectId('all');
+    }
+  };
+
+  const handleCreateWorkspace = (name: string, description: string, color: string) => {
+    const newWs: Workspace = {
+      id: `ws-${Date.now()}`,
+      name,
+      slug: name.toLowerCase().replace(/\s+/g, '-'),
+      description,
+      logoColor: color,
+      ownerId: currentUser.id,
+      members: [{ userId: currentUser.id, role: 'owner', joinedAt: new Date().toISOString() }],
+      createdAt: new Date().toISOString(),
+    };
+
+    setWorkspaces((prev) => [...prev, newWs]);
+    setCurrentWorkspace(newWs);
+    recordActivity(`criou o workspace "${newWs.name}"`);
+  };
+
+  const handleSaveWorkspace = (data: Partial<Workspace>) => {
+    setWorkspaces((prev) =>
+      prev.map((w) => (w.id === currentWorkspace.id ? { ...w, ...data } : w))
+    );
+    setCurrentWorkspace((prev) => ({ ...prev, ...data }));
+    recordActivity('atualizou as configurações do workspace');
+  };
+
+  const handleInviteMember = (email: string, role: WorkspaceRole) => {
+    // Procura se usuário já existe com esse e-mail ou cria um novo perfil
+    let targetUser = users.find((u) => u.email.toLowerCase() === email.toLowerCase());
+    if (!targetUser) {
+      const namePart = email.split('@')[0];
+      const formattedName = namePart.charAt(0).toUpperCase() + namePart.slice(1);
+      targetUser = {
+        id: `user-${Date.now()}`,
+        name: formattedName,
+        email,
+        avatarColor: '#2563eb',
+        title: 'Membro Convidado',
+      };
+      setUsers((prev) => [...prev, targetUser!]);
+    }
+
+    // Adiciona ao workspace se ainda não estiver
+    const isAlreadyMember = currentWorkspace.members.some((m) => m.userId === targetUser!.id);
+    if (!isAlreadyMember) {
+      const updatedMembers = [
+        ...currentWorkspace.members,
+        { userId: targetUser.id, role, joinedAt: new Date().toISOString() },
+      ];
+      handleSaveWorkspace({ members: updatedMembers });
+      const roleLabel = ROLE_CONFIG[role]?.label || role;
+      recordActivity(`convidou ${targetUser.name} (${roleLabel}) para o workspace`);
+      sendNotification(
+        targetUser.id,
+        'status_change',
+        'Bem-vindo ao Workspace!',
+        `Você foi adicionado à equipe "${currentWorkspace.name}" com o cargo ${roleLabel}`
+      );
+    }
+  };
+
+  const handleChangeMemberRole = (userId: string, newRole: WorkspaceRole) => {
+    const updatedMembers = currentWorkspace.members.map((m) =>
+      m.userId === userId ? { ...m, role: newRole } : m
+    );
+    handleSaveWorkspace({ members: updatedMembers });
+    const targetUser = users.find((u) => u.id === userId);
+    const roleLabel = ROLE_CONFIG[newRole]?.label || newRole;
+    recordActivity(`alterou o papel de ${targetUser?.name || 'membro'} para ${roleLabel}`);
+  };
+
+  const handleRemoveMember = (userId: string) => {
+    const updatedMembers = currentWorkspace.members.filter((m) => m.userId !== userId);
+    handleSaveWorkspace({ members: updatedMembers });
+    const targetUser = users.find((u) => u.id === userId);
+    recordActivity(`removeu ${targetUser?.name || 'membro'} do workspace`);
+  };
+
+  const handleDeleteWorkspace = (workspaceId: string) => {
+    const targetWs = workspaces.find((w) => w.id === workspaceId);
+    if (!targetWs) return;
+
+    // Verificar rigorosamente se o usuário autenticado é o Dono (Owner)
+    const member = targetWs.members.find((m) => m.userId === currentUser.id);
+    const isOwner = member?.role === 'owner' || targetWs.ownerId === currentUser.id;
+
+    if (!isOwner) {
+      showToast({
+        type: 'error',
+        message: 'Ação não permitida: Apenas o Dono (Owner) pode excluir este workspace.',
+      });
+      return;
+    }
+
+    if (workspaces.length <= 1) {
+      showToast({
+        type: 'error',
+        message: 'Você precisa manter pelo menos um workspace ativo no sistema.',
+      });
+      return;
+    }
+
+    const remaining = workspaces.filter((w) => w.id !== workspaceId);
+    setWorkspaces(remaining);
+    setCurrentWorkspace(remaining[0]);
+    setSelectedProjectId('all');
+
+    // Limpar projetos e tarefas associados ao workspace excluído
+    setProjects((prev) => prev.filter((p) => p.workspaceId !== workspaceId));
+    setTasks((prev) => prev.filter((t) => t.workspaceId !== workspaceId));
+
+    recordActivity(`excluiu permanentemente o workspace "${targetWs.name}"`);
+    showToast({
+      type: 'info',
+      message: `Workspace "${targetWs.name}" foi excluído permanentemente.`,
+    });
+  };
+
+  // Gestão de Projetos
+  const handleSaveProject = (projectData: Partial<Project> & { id?: string }) => {
+    if (projectData.id) {
+      setProjects((prev) =>
+        prev.map((p) => (p.id === projectData.id ? { ...p, ...projectData } : p))
+      );
+      recordActivity(`atualizou o projeto "${projectData.name}"`);
+    } else {
+      const newProj: Project = {
+        id: `proj-${Date.now()}`,
+        workspaceId: currentWorkspace.id,
+        name: projectData.name || 'Novo Projeto',
+        description: projectData.description || '',
+        color: projectData.color || '#2563eb',
+        icon: projectData.icon || 'code',
+        columns: projectData.columns || [
+          { id: 'col-1', title: 'Backlog', color: '#64748b', order: 0 },
+          { id: 'col-2', title: 'Em Andamento', color: '#2563eb', order: 1 },
+          { id: 'col-3', title: 'Concluído', color: '#059669', order: 2, isCompletedColumn: true },
+        ],
+        memberIds: projectData.memberIds || workspaceMembers.map((m) => m.id),
+        isArchived: false,
+        createdAt: new Date().toISOString(),
+      };
+      setProjects((prev) => [...prev, newProj]);
+      setSelectedProjectId(newProj.id);
+      recordActivity(`criou o novo projeto "${newProj.name}"`);
+    }
+  };
+
+  const handleDeleteProject = (projectId: string) => {
+    const proj = projects.find((p) => p.id === projectId);
+    setProjects((prev) => prev.filter((p) => p.id !== projectId));
+    setTasks((prev) => prev.filter((t) => t.projectId !== projectId));
+    if (selectedProjectId === projectId) setSelectedProjectId('all');
+    if (proj) {
+      recordActivity(`excluiu o projeto "${proj.name}"`);
+      showToast({
+        type: 'info',
+        message: `Projeto "${proj.name}" excluído com sucesso.`,
+      });
+    }
+  };
+
+  const handleDeleteColumn = (columnId: string) => {
+    if (!activeProject) return;
+    if (activeProject.columns.length <= 1) {
+      showToast({
+        type: 'error',
+        message: 'O projeto precisa manter pelo menos uma coluna no quadro.',
+      });
+      return;
+    }
+    const deletedCol = activeProject.columns.find((c) => c.id === columnId);
+    const remainingCols = activeProject.columns.filter((c) => c.id !== columnId);
+    const fallbackColId = remainingCols[0].id;
+
+    // Move tarefas da coluna excluída para a coluna remanescente
+    setTasks((prev) =>
+      prev.map((t) =>
+        t.projectId === activeProject.id && t.columnId === columnId
+          ? { ...t, columnId: fallbackColId, updatedAt: new Date().toISOString() }
+          : t
+      )
+    );
+
+    // Atualiza colunas do projeto
+    setProjects((prev) =>
+      prev.map((p) =>
+        p.id === activeProject.id
+          ? {
+              ...p,
+              columns: remainingCols.map((c, idx) => ({ ...c, order: idx })),
+            }
+          : p
+      )
+    );
+
+    recordActivity(`excluiu a coluna "${deletedCol?.title || 'Coluna'}" do projeto "${activeProject.name}"`);
+    showToast({
+      type: 'info',
+      message: `Coluna "${deletedCol?.title || 'Coluna'}" excluída. Tarefas transferidas para "${remainingCols[0].title}".`,
+    });
+  };
+
+  const handleArchiveProject = (projectId: string, isArchived: boolean) => {
+    setProjects((prev) =>
+      prev.map((p) => (p.id === projectId ? { ...p, isArchived } : p))
+    );
+    const proj = projects.find((p) => p.id === projectId);
+    recordActivity(`${isArchived ? 'arquivou' : 'desarquivou'} o projeto "${proj?.name}"`);
+  };
+
+  // Gestão de Tags
+  const handleCreateTag = (newTag: Tag) => {
+    setTags((prev) => [...prev, newTag]);
+  };
+
+  // Notificações Read
+  const handleMarkNotifRead = (id: string) => {
+    setNotifications((prev) =>
+      prev.map((n) => (n.id === id ? { ...n, read: true } : n))
+    );
+  };
+
+  const handleMarkAllNotifsRead = () => {
+    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+  };
+
+  // Backup & Reset
+  const handleExportBackup = () => {
+    const jsonStr = StorageService.exportBackup();
+    const blob = new Blob([jsonStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `taskflow-team-${new Date().toISOString().split('T')[0]}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportBackup = (fileContent: string) => {
+    const success = StorageService.importBackup(fileContent);
+    if (success) {
+      setUsers(StorageService.getUsers());
+      setCurrentUser(StorageService.getCurrentUser());
+      setWorkspaces(StorageService.getWorkspaces());
+      setCurrentWorkspace(StorageService.getCurrentWorkspace());
+      setProjects(StorageService.getProjects());
+      setTasks(StorageService.getTasks());
+      setTags(StorageService.getTags());
+      setActivities(StorageService.getActivities());
+      setNotifications(StorageService.getNotifications());
+      alert('Workspace e dados da equipe importados com sucesso!');
+    } else {
+      alert('Arquivo de backup inválido.');
+    }
+  };
+
+  const handleResetData = () => {
+    StorageService.resetAll();
+    setUsers(StorageService.getUsers());
+    setCurrentUser(StorageService.getCurrentUser());
+    setWorkspaces(StorageService.getWorkspaces());
+    setCurrentWorkspace(StorageService.getCurrentWorkspace());
+    setProjects(StorageService.getProjects());
+    setTasks(StorageService.getTasks());
+    setTags(StorageService.getTags());
+    setActivities(StorageService.getActivities());
+    setNotifications(StorageService.getNotifications());
+  };
+
+  const overdueCount = workspaceTasks.filter((t) => isTaskOverdue(t)).length;
+  const unreadNotificationCount = notifications.filter((n) => !n.read && n.userId === currentUser.id).length;
+
+  // Tela de Carregamento (Splash Screen) ao acessar o link do OperaTask (2 a 3 segundos com transição suave para login)
+  if (showSplash) {
+    return <SplashScreen onFinish={() => setShowSplash(false)} />;
+  }
+
+  // Tela de Login Obrigatória quando não autenticado
+  if (!isAuthenticated) {
+    return (
+      <LoginScreen
+        users={users}
+        onLoginSuccess={handleLoginSuccess}
+        theme={theme}
+        onToggleTheme={handleToggleTheme}
+      />
+    );
+  }
+
+  return (
+    <div className="flex h-screen w-full bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-hidden font-sans relative">
+      {/* Indicador de Status Offline / PWA */}
+      <OfflineIndicator />
+
+      {/* Barra Lateral com Workspaces, Vistas e Membros */}
+      <Sidebar
+        onLogout={handleLogout}
+        isOpenMobile={isMobileSidebarOpen}
+        onCloseMobile={() => setIsMobileSidebarOpen(false)}
+        workspaces={workspaces}
+        currentWorkspace={currentWorkspace}
+        onSelectWorkspace={handleSelectWorkspace}
+        onOpenCreateWorkspaceModal={() => setIsCreateWorkspaceModalOpen(true)}
+        onOpenWorkspaceSettingsModal={() => setIsWorkspaceModalOpen(true)}
+        projects={workspaceProjects}
+        selectedProjectId={selectedProjectId}
+        onSelectProject={(id) => setSelectedProjectId(id)}
+        activeView={viewMode}
+        onChangeView={handleViewModeChange}
+        myTasksCount={myTasksCount}
+        taskCountsByProject={taskCountsByProject}
+        currentUser={currentUser}
+        allUsers={users}
+        onSelectCurrentUser={(u) => {
+          setCurrentUser(u);
+        }}
+        theme={theme}
+        onToggleTheme={handleToggleTheme}
+        onOpenNewProjectModal={() => {
+          setProjectToEdit(null);
+          setIsProjectModalOpen(true);
+        }}
+        onEditProject={(p) => {
+          setProjectToEdit(p);
+          setIsProjectModalOpen(true);
+        }}
+        archivedTasks={archivedWorkspaceTasks}
+        onRestoreTask={handleRestoreTask}
+        onPermanentDeleteTask={handlePermanentDeleteTask}
+        onSelectArchivedTask={(task) => {
+          setTaskToEdit(task);
+          setIsTaskModalOpen(true);
+        }}
+        onExportBackup={handleExportBackup}
+        onImportBackup={handleImportBackup}
+        onResetData={handleResetData}
+        onOpenSyncSettings={() => setIsSyncSettingsOpen(true)}
+        onOpenUserProfile={() => setIsUserProfileModalOpen(true)}
+        onOpenMasterPanel={() => setIsMasterModalOpen(true)}
+      />
+
+      {/* Conteúdo Principal */}
+      <div className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
+        {/* Cabeçalho */}
+        <Header
+          onOpenMobileMenu={() => setIsMobileSidebarOpen(true)}
+          title={headerDetails.title}
+          subtitle={headerDetails.subtitle}
+          viewMode={viewMode}
+          onChangeViewMode={handleViewModeChange}
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
+          priorityFilter={priorityFilter}
+          onPriorityFilterChange={setPriorityFilter}
+          assigneeFilter={assigneeFilter}
+          onAssigneeFilterChange={setAssigneeFilter}
+          selectedTagId={selectedTagId}
+          onTagFilterChange={setSelectedTagId}
+          availableTags={tags}
+          workspaceMembers={workspaceMembers}
+          unreadNotificationCount={unreadNotificationCount}
+          onOpenNotifications={() => setIsNotificationsOpen(true)}
+          onOpenSyncSettings={() => setIsSyncSettingsOpen(true)}
+          currentUser={currentUser}
+          onOpenUserProfile={() => setIsUserProfileModalOpen(true)}
+          onOpenMasterPanel={() => setIsMasterModalOpen(true)}
+          theme={theme}
+          onToggleTheme={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
+          onOpenNewTaskModal={() => {
+            setTaskToEdit(null);
+            setDefaultColumnId(activeProject?.columns[0]?.id);
+            setIsTaskModalOpen(true);
+          }}
+        />
+
+        {/* Banner de Instalação PWA (Dispensável / Smart Prompt) */}
+        <PWAInstallPrompt variant="banner" />
+
+        {/* Alerta de tarefas atrasadas */}
+        {overdueCount > 0 && !isDismissedAlert && (
+          <div className="bg-red-50 dark:bg-red-950/40 border-b border-red-200 dark:border-red-900/50 px-4 sm:px-6 py-2.5 flex items-center justify-between text-xs text-red-800 dark:text-red-300">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0" />
+              <span>
+                Aviso de Equipe: Existem <strong>{overdueCount}</strong> tarefas atrasadas no workspace.
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setViewMode('my_tasks');
+                }}
+                className="underline font-semibold ml-2 hover:text-red-900 dark:hover:text-red-200"
+              >
+                Ver minhas pendências
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsDismissedAlert(true)}
+              className="text-red-500 hover:text-red-700 dark:hover:text-red-300 p-1 rounded"
+              title="Dispensar aviso"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
+        {/* Área Central Conforme ViewMode Selecionado com Espaço Seguro para Mobile Bottom Nav */}
+        <main className="flex-1 overflow-y-auto px-3 sm:px-6 py-4 sm:py-6 pb-24 md:pb-8">
+          <div className="max-w-7xl mx-auto h-full">
+            {workspaceProjects.length === 0 ? (
+              <WelcomeEmptyState
+                onCreateFirstBoard={() => {
+                  setProjectToEdit(null);
+                  setIsProjectModalOpen(true);
+                }}
+                onLoadSampleBoard={handleLoadSampleBoard}
+                workspaceName={currentWorkspace.name}
+              />
+            ) : (
+              <>
+                {viewMode === 'kanban' && activeProject && (
+                  <KanbanView
+                    tasks={filteredTasks}
+                    project={activeProject}
+                    workspaceMembers={workspaceMembers}
+                    currentUserRole={currentUserRole}
+                    isMaster={isMaster}
+                    onUpdateTaskColumn={handleUpdateTaskColumn}
+                    onReorderTasks={handleReorderTasks}
+                    onToggleTaskComplete={handleToggleTaskComplete}
+                    onEditTask={(task) => {
+                      setTaskToEdit(task);
+                      setIsTaskModalOpen(true);
+                    }}
+                    onDuplicateTask={handleDuplicateTask}
+                    onArchiveTask={handleArchiveTask}
+                    onDeleteTask={handleDeleteTask}
+                    onDeleteColumn={handleDeleteColumn}
+                    onQuickAddTask={(colId) => {
+                      setDefaultColumnId(colId);
+                      setTaskToEdit(null);
+                      setIsTaskModalOpen(true);
+                    }}
+                  />
+                )}
+
+                {viewMode === 'list' && (
+                  <ListView
+                    tasks={filteredTasks}
+                    projects={workspaceProjects}
+                    workspaceMembers={workspaceMembers}
+                    currentUserRole={currentUserRole}
+                    isMaster={isMaster}
+                    onToggleTaskComplete={handleToggleTaskComplete}
+                    onUpdateTaskColumn={handleUpdateTaskColumn}
+                    onEditTask={(task) => {
+                      setTaskToEdit(task);
+                      setIsTaskModalOpen(true);
+                    }}
+                    onDuplicateTask={handleDuplicateTask}
+                    onArchiveTask={handleArchiveTask}
+                    onDeleteTask={handleDeleteTask}
+                    onAddNewTask={() => {
+                      setTaskToEdit(null);
+                      setDefaultColumnId(activeProject?.columns[0]?.id);
+                      setIsTaskModalOpen(true);
+                    }}
+                  />
+                )}
+
+                {viewMode === 'my_tasks' && (
+                  <MyTasksView
+                    tasks={workspaceTasks}
+                    projects={workspaceProjects}
+                    currentUser={currentUser}
+                    onToggleTaskComplete={handleToggleTaskComplete}
+                    onEditTask={(task) => {
+                      setTaskToEdit(task);
+                      setIsTaskModalOpen(true);
+                    }}
+                  />
+                )}
+
+                {viewMode === 'dashboard' && (
+                  <TeamDashboardView
+                    workspace={currentWorkspace}
+                    tasks={workspaceTasks}
+                    projects={workspaceProjects}
+                    workspaceMembers={workspaceMembers}
+                    onSelectProject={(projId) => {
+                      setSelectedProjectId(projId);
+                      setViewMode('kanban');
+                    }}
+                    onSelectMemberFilter={(memberId) => {
+                      setAssigneeFilter(memberId);
+                      setViewMode('list');
+                    }}
+                  />
+                )}
+
+                {viewMode === 'activity_feed' && (
+                  <ActivityFeedView
+                    activities={activities}
+                    workspaceMembers={workspaceMembers}
+                    projects={workspaceProjects}
+                    onSelectTask={(taskId) => {
+                      const t = tasks.find((item) => item.id === taskId);
+                      if (t) {
+                        setTaskToEdit(t);
+                        setIsTaskModalOpen(true);
+                      }
+                    }}
+                  />
+                )}
+              </>
+            )}
+          </div>
+        </main>
+
+        {/* Barra de Navegação Inferior Móvel (Bottom Navigation Bar) */}
+        <MobileBottomNav
+          currentView={viewMode}
+          onChangeView={handleViewModeChange}
+          canAccessDashboard={canViewDashboard}
+          onOpenNewTaskModal={() => {
+            setTaskToEdit(null);
+            setDefaultColumnId(activeProject?.columns[0]?.id);
+            setIsTaskModalOpen(true);
+          }}
+          onOpenSidebar={() => setIsMobileSidebarOpen(true)}
+        />
+      </div>
+
+      {/* Modais Globais */}
+      <TaskModal
+        isOpen={isTaskModalOpen}
+        onClose={() => setIsTaskModalOpen(false)}
+        taskToEdit={taskToEdit}
+        defaultColumnId={defaultColumnId}
+        defaultProjectId={selectedProjectId !== 'all' ? selectedProjectId : activeProject?.id}
+        projects={workspaceProjects}
+        tags={tags}
+        workspaceMembers={workspaceMembers}
+        currentUser={currentUser}
+        currentUserRole={currentUserRole}
+        onSaveTask={handleSaveTask}
+        onDeleteTask={handleDeleteTask}
+        onDuplicateTask={handleDuplicateTask}
+        onArchiveTask={handleArchiveTask}
+        onCreateTag={handleCreateTag}
+        onAddComment={handleAddComment}
+      />
+
+      <ProjectModal
+        isOpen={isProjectModalOpen}
+        onClose={() => setIsProjectModalOpen(false)}
+        projectToEdit={projectToEdit}
+        workspaceId={currentWorkspace.id}
+        workspaceMembers={workspaceMembers}
+        currentWorkspace={currentWorkspace}
+        currentUserRole={currentUserRole}
+        onSaveProject={handleSaveProject}
+        onDeleteProject={handleDeleteProject}
+        onArchiveProject={handleArchiveProject}
+        taskCount={
+          projectToEdit
+            ? workspaceTasks.filter((t) => t.projectId === projectToEdit.id).length
+            : 0
+        }
+      />
+
+      <WorkspaceModal
+        isOpen={isWorkspaceModalOpen}
+        onClose={() => setIsWorkspaceModalOpen(false)}
+        workspace={currentWorkspace}
+        allUsers={users}
+        currentUserId={currentUser.id}
+        onSaveWorkspace={handleSaveWorkspace}
+        onInviteMember={handleInviteMember}
+        onChangeMemberRole={handleChangeMemberRole}
+        onRemoveMember={handleRemoveMember}
+        onDeleteWorkspace={handleDeleteWorkspace}
+      />
+
+      <CreateWorkspaceModal
+        isOpen={isCreateWorkspaceModalOpen}
+        onClose={() => setIsCreateWorkspaceModalOpen(false)}
+        onCreate={handleCreateWorkspace}
+      />
+
+      <NotificationPopover
+        isOpen={isNotificationsOpen}
+        onClose={() => setIsNotificationsOpen(false)}
+        notifications={notifications.filter((n) => n.userId === currentUser.id)}
+        workspaceMembers={workspaceMembers}
+        onMarkAsRead={handleMarkNotifRead}
+        onMarkAllAsRead={handleMarkAllNotifsRead}
+        onSelectTask={(taskId) => {
+          const t = tasks.find((item) => item.id === taskId);
+          if (t) {
+            setTaskToEdit(t);
+            setIsTaskModalOpen(true);
+          }
+        }}
+      />
+
+      <SyncSettingsModal
+        isOpen={isSyncSettingsOpen}
+        onClose={() => setIsSyncSettingsOpen(false)}
+        onDataImported={() => {
+          setTasks(StorageService.getTasks());
+          setProjects(StorageService.getProjects());
+          setWorkspaces(StorageService.getWorkspaces());
+          setUsers(StorageService.getUsers());
+          setTags(StorageService.getTags());
+        }}
+      />
+
+      {/* Modal de Minha Conta / Perfil do Usuário */}
+      <UserProfileModal
+        isOpen={isUserProfileModalOpen}
+        onClose={() => setIsUserProfileModalOpen(false)}
+        currentUser={currentUser}
+        currentWorkspace={currentWorkspace}
+        onUpdateUser={handleUpdateUser}
+        onShowToast={showToast}
+      />
+
+      {/* Painel Master / Super Admin */}
+      <MasterAdminModal
+        isOpen={isMasterModalOpen}
+        onClose={() => setIsMasterModalOpen(false)}
+        currentUser={currentUser}
+        users={users}
+        workspaces={workspaces}
+        projects={projects}
+        tasks={tasks}
+        onUpdateUsers={(updated) => {
+          setUsers(updated);
+          StorageService.saveUsers(updated);
+          const refreshedCurrent = updated.find((u) => u.id === currentUser.id);
+          if (refreshedCurrent) {
+            setCurrentUser(refreshedCurrent);
+          }
+        }}
+        onUpdateWorkspaces={(updated) => {
+          setWorkspaces(updated);
+          StorageService.saveWorkspaces(updated);
+        }}
+        onUpdateProjects={(updated) => {
+          setProjects(updated);
+          StorageService.saveProjects(updated);
+        }}
+        onUpdateTasks={(updated) => {
+          setTasks(updated);
+          StorageService.saveTasks(updated);
+        }}
+        onSelectWorkspace={(workspaceId) => {
+          handleSelectWorkspace(workspaceId);
+          setIsMasterModalOpen(false);
+        }}
+        onShowToast={showToast}
+      />
+
+      {/* Notificação Flutuante / Toast de Feedback */}
+      {toast && (
+        <div className="fixed bottom-5 right-5 z-50 flex items-center gap-3 px-4 py-3 bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 rounded-2xl shadow-2xl border border-slate-700/80 dark:border-slate-300 animate-in slide-in-from-bottom-5 fade-in duration-200 max-w-md">
+          {toast.type === 'success' && (
+            <CheckCircle2 className="w-5 h-5 text-emerald-400 dark:text-emerald-600 shrink-0" />
+          )}
+          {toast.type === 'info' && (
+            <Info className="w-5 h-5 text-blue-400 dark:text-blue-600 shrink-0" />
+          )}
+          {toast.type === 'error' && (
+            <AlertTriangle className="w-5 h-5 text-red-400 dark:text-red-600 shrink-0" />
+          )}
+
+          <p className="text-xs font-medium flex-1">{toast.message}</p>
+
+          {toast.actionLabel && toast.onAction && (
+            <button
+              type="button"
+              onClick={() => {
+                toast.onAction?.();
+                setToast(null);
+              }}
+              className="px-2.5 py-1 text-xs font-bold bg-white/20 hover:bg-white/30 dark:bg-slate-900/10 dark:hover:bg-slate-900/20 text-white dark:text-slate-900 rounded-lg transition-colors shrink-0"
+            >
+              {toast.actionLabel}
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setToast(null)}
+            className="p-1 text-slate-400 hover:text-white dark:hover:text-slate-900 rounded-lg"
+            title="Fechar notificação"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}

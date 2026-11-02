@@ -1,0 +1,6 @@
+{
+  "name": "TaskFlow - Gerenciador de Tarefas",
+  "description": "Gerenciador de tarefas moderno e completo com visualização em Quadros e Lista, projetos personalizados, filtros avançados, estatísticas e tema escuro.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
