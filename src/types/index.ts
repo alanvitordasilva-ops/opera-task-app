@@ -7,6 +7,7 @@ export type SystemRole = 'master' | 'user';
 export interface User {
   id: string;
   name: string;
+  username?: string;
   email: string;
   avatarColor: string;
   title?: string;
@@ -17,6 +18,8 @@ export interface User {
   bio?: string;
   systemRole?: SystemRole;
   isSuperAdmin?: boolean;
+  status?: 'active' | 'inactive';
+  isActive?: boolean;
 }
 
 export interface WorkspaceMember {

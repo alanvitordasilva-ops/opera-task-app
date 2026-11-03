@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   X,
   UserPlus,
@@ -13,18 +13,19 @@ import {
   Check,
   AlertCircle,
   ExternalLink,
-  Sparkles,
-  Share2,
+  Building,
   MessageSquare,
+  AtSign,
 } from 'lucide-react';
-import { WorkspaceRole, User } from '../types/index.ts';
+import { WorkspaceRole, User, Workspace } from '../types/index.ts';
 import { StorageService } from '../services/storage.ts';
 
 interface RegisterUserModalProps {
   isOpen: boolean;
   onClose: () => void;
-  workspaceId: string;
-  onUserCreated?: (newUser: User, role: WorkspaceRole) => void;
+  workspaces?: Workspace[];
+  workspaceId?: string;
+  onUserCreated?: (newUser: User, role: WorkspaceRole, workspaceId: string) => void;
 }
 
 const ROLE_OPTIONS: { role: WorkspaceRole; label: string; desc: string; badgeColor: string }[] = [
@@ -57,11 +58,30 @@ const ROLE_OPTIONS: { role: WorkspaceRole; label: string; desc: string; badgeCol
 export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
   isOpen,
   onClose,
+  workspaces,
   workspaceId,
   onUserCreated,
 }) => {
+  const availableWorkspaces = useMemo(() => {
+    if (workspaces && workspaces.length > 0) return workspaces;
+    return StorageService.getWorkspaces();
+  }, [workspaces, isOpen]);
+
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>(
+    workspaceId || availableWorkspaces[0]?.id || ''
+  );
+
+  useEffect(() => {
+    if (workspaceId) {
+      setSelectedWorkspaceId(workspaceId);
+    } else if (availableWorkspaces.length > 0 && !selectedWorkspaceId) {
+      setSelectedWorkspaceId(availableWorkspaces[0].id);
+    }
+  }, [workspaceId, availableWorkspaces, selectedWorkspaceId]);
+
   const [name, setName] = useState('');
-  const [usernameOrEmail, setUsernameOrEmail] = useState('');
+  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [role, setRole] = useState<WorkspaceRole>('production');
@@ -74,6 +94,7 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
     user: User;
     rawPassword: string;
     role: WorkspaceRole;
+    workspaceName: string;
     accessLink: string;
   } | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
@@ -82,7 +103,8 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
 
   const handleReset = () => {
     setName('');
-    setUsernameOrEmail('');
+    setUsername('');
+    setEmail('');
     setPassword('');
     setConfirmPassword('');
     setRole('production');
@@ -91,6 +113,9 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
     setErrorMessage(null);
     setCreatedResult(null);
     setCopiedLink(false);
+    if (availableWorkspaces[0]?.id) {
+      setSelectedWorkspaceId(workspaceId || availableWorkspaces[0].id);
+    }
   };
 
   const handleClose = () => {
@@ -103,20 +128,33 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
     setErrorMessage(null);
 
     const cleanName = name.trim();
-    const cleanIdent = usernameOrEmail.trim();
+    // Normaliza nome de usuário: minúsculas, sem espaços (substitui espaços por ponto)
+    const cleanUsername = username.trim().toLowerCase().replace(/\s+/g, '.').replace(/[^a-z0-9._-]/g, '');
+    const cleanEmail = email.trim().toLowerCase();
+    const targetWsId = selectedWorkspaceId || availableWorkspaces[0]?.id;
 
     if (!cleanName) {
       setErrorMessage('Por favor, informe o nome completo do usuário.');
       return;
     }
 
-    if (!cleanIdent) {
-      setErrorMessage('Por favor, informe o nome de usuário ou e-mail de acesso.');
+    if (!cleanUsername) {
+      setErrorMessage('Por favor, defina um nome de usuário (Login) para o acesso.');
+      return;
+    }
+
+    if (cleanUsername.length < 3) {
+      setErrorMessage('O nome de usuário deve conter pelo menos 3 caracteres.');
+      return;
+    }
+
+    if (!targetWsId) {
+      setErrorMessage('Por favor, selecione o Workspace para vincular o novo usuário.');
       return;
     }
 
     if (!password) {
-      setErrorMessage('Por favor, defina uma senha para o novo usuário.');
+      setErrorMessage('Por favor, defina uma senha de acesso.');
       return;
     }
 
@@ -135,10 +173,11 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
     setTimeout(() => {
       const result = StorageService.registerUser({
         name: cleanName,
-        usernameOrEmail: cleanIdent,
+        username: cleanUsername,
+        email: cleanEmail || `${cleanUsername}@operatask.app`,
         password,
         role,
-        workspaceId,
+        workspaceId: targetWsId,
       });
 
       setIsSubmitting(false);
@@ -153,17 +192,20 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
           ? window.location.origin || window.location.href.split('?')[0]
           : 'https://operatask.app';
 
+      const targetWs = availableWorkspaces.find((w) => w.id === targetWsId);
+
       setCreatedResult({
         user: result.user,
         rawPassword: password,
         role,
+        workspaceName: targetWs?.name || 'Workspace Principal',
         accessLink: currentOrigin,
       });
 
       if (onUserCreated) {
-        onUserCreated(result.user, role);
+        onUserCreated(result.user, role, targetWsId);
       }
-    }, 350);
+    }, 250);
   };
 
   const getShareText = () => {
@@ -171,7 +213,9 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
     const roleLabel =
       ROLE_OPTIONS.find((r) => r.role === createdResult.role)?.label || 'Membro';
 
-    return `*Acesso ao OperaTask*\n\nOlá, ${createdResult.user.name}! Sua conta foi criada e está 100% liberada para acesso imediato.\n\n🔗 *Link de Acesso:* ${createdResult.accessLink}\n👤 *Usuário / Login:* ${createdResult.user.email}\n🔑 *Senha:* ${createdResult.rawPassword}\n🛡️ *Perfil:* ${roleLabel}\n\nAcesse o link acima e faça login com suas credenciais para começar!`;
+    const loginUser = createdResult.user.username || createdResult.user.email;
+
+    return `*Acesso ao OperaTask*\n\nOlá, ${createdResult.user.name}! Sua conta foi criada e está 100% ativa para acesso imediato.\n\n🔗 *Link do App:* ${createdResult.accessLink}\n👤 *Nome de Usuário (Login):* ${loginUser}\n📧 *E-mail:* ${createdResult.user.email}\n🔑 *Senha:* ${createdResult.rawPassword}\n🏢 *Workspace:* ${createdResult.workspaceName}\n🛡️ *Perfil:* ${roleLabel}\n\nAcesse pelo navegador ou aplicativo e faça login para começar!`;
   };
 
   const handleCopyCredentials = () => {
@@ -205,7 +249,7 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
         className="w-full max-w-lg bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-200/90 dark:border-slate-800 overflow-hidden flex flex-col max-h-[92vh] animate-in zoom-in-95 duration-200"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Cabeçalho no mesmo estilo visual de LoginScreen */}
+        {/* Cabeçalho no padrão visual OperaTask */}
         <div className="bg-[#173653] dark:bg-slate-950 text-white px-6 py-4.5 border-b border-[#11273c] dark:border-slate-800 shrink-0 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl bg-white shadow-xs p-1 flex items-center justify-center shrink-0">
@@ -224,7 +268,7 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
                   Gestão de Equipe
                 </span>
               </div>
-              <p className="text-xs text-slate-300">Cadastrar novo usuário</p>
+              <p className="text-xs text-slate-300">Cadastrar novo usuário com liberação imediata</p>
             </div>
           </div>
 
@@ -255,14 +299,14 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
                   <span>Conta Ativa & 100% Liberada para Acesso Imediato</span>
                 </div>
                 <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm mx-auto">
-                  A conta foi criada com o nome de usuário e a senha definidos. O membro pode fazer login imediatamente no app.
+                  A conta foi criada e vinculada ao workspace <strong>{createdResult.workspaceName}</strong>. O novo membro já pode fazer login tanto no computador quanto no smartphone.
                 </p>
               </div>
 
               {/* Caixa de Credenciais Prontas para Envio */}
               <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-3">
                 <div className="flex items-center justify-between pb-2 border-b border-slate-200/80 dark:border-slate-700/80 text-xs font-bold text-slate-700 dark:text-slate-300">
-                  <span>Dados de Acesso Criados</span>
+                  <span>Credenciais de Acesso</span>
                   <span className="text-[11px] font-semibold text-[#34B1AC]">OperaTask</span>
                 </div>
 
@@ -274,8 +318,14 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
                     </span>
                   </div>
                   <div className="flex justify-between items-center py-1">
-                    <span className="text-slate-500 dark:text-slate-400">Login / E-mail:</span>
-                    <span className="font-mono font-bold text-[#173653] dark:text-[#34B1AC]">
+                    <span className="text-slate-500 dark:text-slate-400">Nome de Usuário (Login):</span>
+                    <span className="font-mono font-bold text-[#173653] dark:text-[#34B1AC] bg-white dark:bg-slate-700 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-600">
+                      {createdResult.user.username || createdResult.user.email}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center py-1">
+                    <span className="text-slate-500 dark:text-slate-400">E-mail Cadastrado:</span>
+                    <span className="font-mono text-slate-700 dark:text-slate-300">
                       {createdResult.user.email}
                     </span>
                   </div>
@@ -286,13 +336,19 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
                     </span>
                   </div>
                   <div className="flex justify-between items-center py-1">
+                    <span className="text-slate-500 dark:text-slate-400">Workspace Vinculado:</span>
+                    <span className="font-bold text-[#173653] dark:text-teal-400">
+                      {createdResult.workspaceName}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center py-1">
                     <span className="text-slate-500 dark:text-slate-400">Função:</span>
                     <span className="font-semibold text-slate-800 dark:text-slate-200">
                       {ROLE_OPTIONS.find((r) => r.role === createdResult.role)?.label}
                     </span>
                   </div>
                   <div className="flex flex-col gap-1 pt-1">
-                    <span className="text-slate-500 dark:text-slate-400">Link de Acesso:</span>
+                    <span className="text-slate-500 dark:text-slate-400">Link de Acesso ao App:</span>
                     <div className="p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-[11px] font-mono text-slate-700 dark:text-slate-300 break-all select-all flex items-center justify-between gap-2">
                       <span className="truncate">{createdResult.accessLink}</span>
                       <ExternalLink className="w-3.5 h-3.5 text-slate-400 shrink-0" />
@@ -358,10 +414,10 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
                 </div>
               )}
 
-              {/* Nome do Usuário */}
+              {/* 1. Nome Completo do Usuário */}
               <div className="space-y-1.5">
                 <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
-                  Nome do Usuário *
+                  Nome Completo *
                 </label>
                 <div className="relative">
                   <UserIcon className="w-4 h-4 text-slate-400 absolute left-3.5 top-3 pointer-events-none" />
@@ -370,35 +426,98 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
                     required
                     autoFocus
                     value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="Ex: Carlos Oliveira, Maria Santos..."
+                    onChange={(e) => {
+                      setName(e.target.value);
+                      // Sugere automaticamente o nome de usuário se ainda estiver vazio
+                      if (!username && e.target.value) {
+                        const suggested = e.target.value.trim().toLowerCase().split(' ')[0];
+                        setUsername(suggested);
+                      }
+                    }}
+                    placeholder="Ex: Carlos Silva, Maria Santos..."
                     className="w-full pl-10 pr-4 py-2.5 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#34B1AC] focus:outline-hidden transition-all"
                   />
                 </div>
               </div>
 
-              {/* Identificador: E-mail ou Nome de Usuário */}
+              {/* 2. Nome de Usuário (Login) */}
               <div className="space-y-1.5">
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
-                  Nome de Usuário / E-mail de Login *
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 flex items-center justify-between">
+                  <span>Nome de Usuário (Login de Acesso) *</span>
+                  <span className="text-[10px] text-teal-600 dark:text-teal-400 font-semibold normal-case">
+                    Usado para entrar no app
+                  </span>
+                </label>
+                <div className="relative">
+                  <AtSign className="w-4 h-4 text-slate-400 absolute left-3.5 top-3 pointer-events-none" />
+                  <input
+                    type="text"
+                    required
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/\s+/g, '.'))}
+                    placeholder="Ex: carlos ou carlos.silva"
+                    className="w-full pl-10 pr-4 py-2.5 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#34B1AC] focus:outline-hidden transition-all font-mono"
+                  />
+                </div>
+                <p className="text-[11px] text-slate-400">
+                  O usuário poderá digitar exatamente este nome de usuário na tela de login.
+                </p>
+              </div>
+
+              {/* 3. E-mail de Acesso (Opcional) */}
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 flex items-center justify-between">
+                  <span>E-mail Corporativo (Opcional)</span>
+                  <span className="text-[10px] text-slate-400 normal-case font-normal">
+                    Opcional
+                  </span>
                 </label>
                 <div className="relative">
                   <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-3 pointer-events-none" />
                   <input
-                    type="text"
-                    required
-                    value={usernameOrEmail}
-                    onChange={(e) => setUsernameOrEmail(e.target.value)}
-                    placeholder="Ex: carlos.producao ou carlos@empresa.com"
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder={`Ex: ${username ? `${username}@empresa.com` : 'carlos@empresa.com'}`}
                     className="w-full pl-10 pr-4 py-2.5 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#34B1AC] focus:outline-hidden transition-all"
                   />
                 </div>
                 <p className="text-[11px] text-slate-400">
-                  Este será o identificador usado pelo usuário para entrar no app.
+                  Se não informado, o sistema vinculará <strong>{username || 'usuario'}@operatask.app</strong>.
                 </p>
               </div>
 
-              {/* Senha (definida pelo Dono/Admin) */}
+              {/* 4. Campo Obrigatório de Seleção de Workspace */}
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <Building className="w-3.5 h-3.5 text-[#34B1AC]" />
+                    <span>Workspace (Espaço de Trabalho) *</span>
+                  </span>
+                  <span className="text-[10px] text-teal-600 dark:text-teal-400 font-semibold normal-case">
+                    Obrigatório
+                  </span>
+                </label>
+                <div className="relative">
+                  <select
+                    value={selectedWorkspaceId}
+                    onChange={(e) => setSelectedWorkspaceId(e.target.value)}
+                    required
+                    className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#34B1AC] focus:outline-hidden transition-all cursor-pointer font-semibold"
+                  >
+                    {availableWorkspaces.map((ws) => (
+                      <option key={ws.id} value={ws.id}>
+                        {ws.name} ({ws.members?.length || 1} membro{ws.members?.length === 1 ? '' : 's'})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <p className="text-[11px] text-slate-400">
+                  O novo usuário terá acesso imediato e liberado a este workspace ao entrar no app.
+                </p>
+              </div>
+
+              {/* 5. Senha e Confirmação de Senha */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
@@ -449,7 +568,7 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
                 </div>
               </div>
 
-              {/* Tipo de Membro */}
+              {/* 6. Tipo de Membro */}
               <div className="space-y-2 pt-1">
                 <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
                   <Shield className="w-3.5 h-3.5 text-[#34B1AC]" />

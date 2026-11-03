@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { User } from '../types/index.ts';
 import { StorageService } from '../services/storage.ts';
-import { Mail, Lock, Eye, EyeOff, ArrowRight, HelpCircle, CheckCircle2, X, Sun, Moon } from 'lucide-react';
+import { User as UserIcon, Lock, Eye, EyeOff, ArrowRight, HelpCircle, CheckCircle2, X, Sun, Moon } from 'lucide-react';
 
 interface LoginScreenProps {
   users: User[];
@@ -29,13 +29,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   const [forgotSent, setForgotSent] = useState(false);
   const [showAdminHelpModal, setShowAdminHelpModal] = useState(false);
 
-  const handleLogin = (e?: React.FormEvent) => {
+  const handleLogin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setErrorMessage('');
 
     const cleanIdent = email.trim().toLowerCase();
     if (!cleanIdent) {
-      setErrorMessage('Por favor, informe seu e-mail ou nome de usuário.');
+      setErrorMessage('Por favor, informe seu nome de usuário ou e-mail.');
       return;
     }
 
@@ -50,33 +50,59 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       cleanIdent === 'alan';
 
     if (isMasterTarget && password !== '273021') {
-      setErrorMessage('Senha incorreta para a conta master. Verifique e tente novamente.');
+      setErrorMessage('Usuário ou senha inválidos.');
       return;
     }
 
     setIsLoading(true);
 
-    setTimeout(() => {
-      // Localiza usuário cadastrado por email, nome ou username
-      const allCurrentUsers = StorageService.getUsers();
-      const combinedUsers = [...allCurrentUsers];
+    try {
+      // 1. Obter usuários locais e das props
+      let allCurrentUsers = StorageService.getUsers();
+      let combinedUsers = [...allCurrentUsers];
       users.forEach((u) => {
         if (!combinedUsers.some((item) => item.id === u.id)) {
           combinedUsers.push(u);
         }
       });
 
-      const existingUser = combinedUsers.find((u) => {
-        const uEmail = (u.email || '').toLowerCase().trim();
-        const uName = (u.name || '').toLowerCase().trim();
-        const uUsername = uEmail.split('@')[0];
-        return (
-          uEmail === cleanIdent ||
-          uName === cleanIdent ||
-          uUsername === cleanIdent ||
-          (cleanIdent.includes('@') && uEmail === cleanIdent)
-        );
-      });
+      const findMatchingUser = (list: User[]) => {
+        return list.find((u) => {
+          const uUsername = (u.username || '').toLowerCase().trim();
+          const uEmail = (u.email || '').toLowerCase().trim();
+          const uName = (u.name || '').toLowerCase().trim();
+          const uEmailPrefix = uEmail.split('@')[0];
+
+          return (
+            (uUsername && uUsername === cleanIdent) ||
+            (uEmail && uEmail === cleanIdent) ||
+            (uName && uName === cleanIdent) ||
+            (uEmailPrefix && uEmailPrefix === cleanIdent)
+          );
+        });
+      };
+
+      let existingUser = findMatchingUser(combinedUsers);
+
+      // 2. Se não encontrar localmente (ex: smartphone recém-aberto ou navegador limpo), sincroniza do servidor
+      if (!existingUser && !isMasterTarget) {
+        try {
+          const resp = await fetch('/api/sync/state');
+          if (resp.ok) {
+            const serverState = await resp.json();
+            if (serverState?.users && Array.isArray(serverState.users)) {
+              StorageService.saveUsers(serverState.users);
+              if (serverState.workspaces) StorageService.saveWorkspaces(serverState.workspaces);
+              if (serverState.projects) StorageService.saveProjects(serverState.projects);
+              if (serverState.tasks) StorageService.saveTasks(serverState.tasks);
+              combinedUsers = serverState.users;
+              existingUser = findMatchingUser(combinedUsers);
+            }
+          }
+        } catch (err) {
+          console.warn('Sync check during login failed or offline:', err);
+        }
+      }
 
       if (isMasterTarget) {
         setIsLoading(false);
@@ -86,15 +112,20 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               systemRole: 'master',
               isSuperAdmin: true,
               title: 'Super Administrador / Master',
+              status: 'active',
+              isActive: true,
             }
           : {
               id: 'user-master-alan',
               name: 'Alan Silva (Master)',
               email: 'alanvitordasilva@gmail.com.br',
+              username: 'alan',
               avatarColor: '#173653',
               title: 'Super Administrador / Master',
               systemRole: 'master',
               isSuperAdmin: true,
+              status: 'active',
+              isActive: true,
               createdAt: '2026-01-01T00:00:00.000Z',
               bio: 'Conta Master com acesso total a todas as configurações e workspaces do OperaTask.',
             };
@@ -102,25 +133,33 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         return;
       }
 
-      // Se o usuário não foi cadastrado pelo Dono/Admin
+      // Se o usuário não existir no sistema
       if (!existingUser) {
         setIsLoading(false);
-        setErrorMessage(
-          'Usuário não cadastrado. O cadastro de novos usuários é realizado exclusivamente pelo Dono ou Administrador do OperaTask.'
-        );
+        setErrorMessage('Conta não encontrada. Verifique os dados ou solicite o cadastro ao administrador.');
         return;
       }
 
       // Validação de senha cadastrada
       if (existingUser.password && existingUser.password !== password) {
         setIsLoading(false);
-        setErrorMessage('Senha incorreta. Verifique suas credenciais e tente novamente.');
+        setErrorMessage('Usuário ou senha inválidos.');
         return;
       }
 
+      // Ativação automática e login imediato
+      const activeUser: User = {
+        ...existingUser,
+        status: 'active',
+        isActive: true,
+      };
+
       setIsLoading(false);
-      onLoginSuccess(existingUser);
-    }, 400);
+      onLoginSuccess(activeUser);
+    } catch (err) {
+      setIsLoading(false);
+      setErrorMessage('Erro ao processar login. Tente novamente.');
+    }
   };
 
   const handleForgotSubmit = (e: React.FormEvent) => {
@@ -215,14 +254,14 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
             {/* Formulário de Login */}
             <form onSubmit={handleLogin} className="space-y-4">
-              {/* Campo E-mail ou Usuário */}
+              {/* Campo Nome de Usuário ou E-mail */}
               <div>
                 <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
-                  E-mail ou Nome de Usuário
+                  Nome de Usuário ou E-mail
                 </label>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
-                    <Mail className="w-4 h-4" />
+                    <UserIcon className="w-4 h-4" />
                   </div>
                   <input
                     type="text"
@@ -231,7 +270,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                       setEmail(e.target.value);
                       if (errorMessage) setErrorMessage('');
                     }}
-                    placeholder="Digite seu e-mail ou nome de usuário..."
+                    placeholder="Digite seu nome de usuário ou e-mail..."
                     required
                     autoComplete="username"
                     className="w-full pl-10 pr-4 py-2.5 sm:py-3 text-sm rounded-xl border border-slate-300 dark:border-slate-700 focus:border-[#34B1AC] dark:focus:border-[#34B1AC] focus:ring-3 focus:ring-[#34B1AC]/15 outline-hidden text-slate-800 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 transition-all bg-slate-50/50 dark:bg-slate-800/60 hover:bg-white dark:hover:bg-slate-800"

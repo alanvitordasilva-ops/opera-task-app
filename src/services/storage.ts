@@ -932,20 +932,24 @@ export const StorageService = {
   // ==========================================
   registerUser(params: {
     name: string;
-    usernameOrEmail: string;
+    username?: string;
+    usernameOrEmail?: string;
+    email?: string;
     password?: string;
     role: WorkspaceRole;
     workspaceId?: string;
   }): { success: boolean; user?: User; error?: string } {
     const cleanName = params.name.trim();
-    const cleanIdentifier = params.usernameOrEmail.trim().toLowerCase();
+    const rawUsername = (params.username || params.usernameOrEmail || '').trim().toLowerCase();
+    const cleanUsername = rawUsername.includes('@') ? rawUsername.split('@')[0] : rawUsername;
+    const cleanEmail = (params.email || (rawUsername.includes('@') ? rawUsername : `${cleanUsername}@operatask.app`)).trim().toLowerCase();
     const cleanPassword = params.password?.trim() || '';
 
     if (!cleanName) {
-      return { success: false, error: 'O nome do usuário é obrigatório.' };
+      return { success: false, error: 'O nome completo do usuário é obrigatório.' };
     }
-    if (!cleanIdentifier) {
-      return { success: false, error: 'O nome de usuário ou e-mail é obrigatório.' };
+    if (!cleanUsername) {
+      return { success: false, error: 'O nome de usuário para login é obrigatório.' };
     }
     if (!cleanPassword || cleanPassword.length < 4) {
       return { success: false, error: 'A senha deve ter no mínimo 4 caracteres.' };
@@ -955,8 +959,9 @@ export const StorageService = {
     // Valida se o nome de usuário ou e-mail já existe
     const exists = currentUsers.some(
       (u) =>
-        u.email.trim().toLowerCase() === cleanIdentifier ||
-        u.name.trim().toLowerCase() === cleanName.toLowerCase()
+        (u.username && u.username.toLowerCase() === cleanUsername) ||
+        u.email.trim().toLowerCase() === cleanEmail ||
+        u.email.trim().toLowerCase().split('@')[0] === cleanUsername
     );
 
     if (exists) {
@@ -987,21 +992,25 @@ export const StorageService = {
       viewer: 'Visualizador',
     };
 
+    const targetWorkspaceId = params.workspaceId || this.getCurrentWorkspace().id;
+
     const newUser: User = {
       id: `user-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
       name: cleanName,
-      email: cleanIdentifier.includes('@') ? cleanIdentifier : `${cleanIdentifier}@operatask.app`,
+      username: cleanUsername,
+      email: cleanEmail,
       password: cleanPassword,
       avatarColor: chosenColor,
       title: roleTitleMap[params.role] || 'Membro da Equipe',
+      status: 'active',
+      isActive: true,
       createdAt: new Date().toISOString(),
     };
 
     const updatedUsers = [...currentUsers, newUser];
     this.saveUsers(updatedUsers, true);
 
-    // Vincula o usuário ao workspace atual se especificado
-    const targetWorkspaceId = params.workspaceId || this.getCurrentWorkspace().id;
+    // Vincula o usuário imediatamente ao workspace selecionado
     if (targetWorkspaceId) {
       const workspaces = this.getWorkspaces();
       const wsIndex = workspaces.findIndex((w) => w.id === targetWorkspaceId);
@@ -1017,6 +1026,24 @@ export const StorageService = {
           this.saveWorkspaces(workspaces, true);
         }
       }
+    }
+
+    // Sincroniza em background com o servidor para persistência e acesso mobile imediato
+    if (typeof window !== 'undefined') {
+      try {
+        fetch('/api/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: cleanName,
+            username: cleanUsername,
+            email: cleanEmail,
+            password: cleanPassword,
+            role: params.role,
+            workspaceId: targetWorkspaceId,
+          }),
+        }).catch(() => {});
+      } catch {}
     }
 
     return { success: true, user: newUser };

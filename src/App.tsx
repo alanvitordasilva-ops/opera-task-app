@@ -1671,6 +1671,7 @@ export default function App() {
       <RegisterUserModal
         isOpen={isRegisterUserOpen}
         onClose={() => setIsRegisterUserOpen(false)}
+        workspaces={workspaces}
         workspaceId={currentWorkspace.id}
         onUserCreated={(newUser) => {
           const freshUsers = StorageService.getUsers();

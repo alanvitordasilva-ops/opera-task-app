@@ -66,6 +66,9 @@ class RealtimeServiceImpl {
 
     // 4. Iniciar canal Supabase Realtime se habilitado
     this.setupSupabaseRealtime();
+
+    // 5. Carregar estado compartilhado do servidor imediatamente
+    this.fetchServerState();
   }
 
   private setStatus(status: 'connected' | 'reconnecting' | 'offline') {
@@ -262,6 +265,22 @@ class RealtimeServiceImpl {
   }
 
   private notifyEntityListeners(entity: SyncEntity, data: any, meta?: SyncMessage['actionMeta']) {
+    const entityToKey: Record<SyncEntity, string> = {
+      users: 'operatask_clean_v1_users',
+      workspaces: 'operatask_clean_v1_workspaces',
+      projects: 'operatask_clean_v1_projects',
+      tasks: 'operatask_clean_v1_tasks',
+      fichas_tecnicas: 'operatask_clean_v1_fichas_tecnicas',
+      tags: 'operatask_clean_v1_tags',
+      activities: 'operatask_clean_v1_activities',
+    };
+    const storageKey = entityToKey[entity];
+    if (storageKey && typeof window !== 'undefined' && data) {
+      try {
+        localStorage.setItem(storageKey, JSON.stringify(data));
+      } catch {}
+    }
+
     const entityListeners = this.listeners.get(entity);
     if (!entityListeners || entityListeners.size === 0) return;
 
@@ -272,6 +291,26 @@ class RealtimeServiceImpl {
         console.error(`Erro no listener realtime de ${entity}:`, err);
       }
     });
+  }
+
+  public async fetchServerState(): Promise<boolean> {
+    if (typeof window === 'undefined') return false;
+    try {
+      const res = await fetch('/api/sync/state');
+      if (res.ok) {
+        const json = await res.json();
+        const data = json.data || json;
+        if (data && typeof data === 'object') {
+          Object.entries(data).forEach(([entity, val]) => {
+            this.notifyEntityListeners(entity as SyncEntity, val, { action: 'http_sync' });
+          });
+          return true;
+        }
+      }
+    } catch (e) {
+      console.warn('Falha ao sincronizar estado com o servidor:', e);
+    }
+    return false;
   }
 
   // ==========================================
