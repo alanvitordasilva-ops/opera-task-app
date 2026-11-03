@@ -22,6 +22,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   const [rememberMe, setRememberMe] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [debugMessage, setDebugMessage] = useState<string | null>(null);
 
   // Modais auxiliares
   const [showForgotPasswordModal, setShowForgotPasswordModal] = useState(false);
@@ -32,8 +33,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   const handleLogin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setErrorMessage('');
+    setDebugMessage(null);
 
-    const cleanIdent = email.trim().toLowerCase();
+    const rawIdent = email.trim();
+    const cleanIdent = rawIdent.toLowerCase();
+    const cleanIdentWithoutAt = cleanIdent.replace(/^@/, '');
+
     if (!cleanIdent) {
       setErrorMessage('Por favor, informe seu nome de usuário ou e-mail.');
       return;
@@ -44,121 +49,145 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       return;
     }
 
-    const isMasterTarget =
-      cleanIdent === 'alanvitordasilva@gmail.com.br' ||
-      cleanIdent === 'alanvitordasilva@gmail.com' ||
-      cleanIdent === 'alan';
-
-    if (isMasterTarget && password !== '273021') {
-      setErrorMessage('Usuário ou senha inválidos.');
-      return;
-    }
-
     setIsLoading(true);
 
     try {
-      // 1. Obter usuários locais e das props
-      let allCurrentUsers = StorageService.getUsers();
-      let combinedUsers = [...allCurrentUsers];
+      // 1. Tenta autenticação direta na API do servidor (/api/auth/login)
+      try {
+        const resp = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            identifier: rawIdent,
+            password: password.trim(),
+          }),
+        });
+
+        const data = await resp.json().catch(() => null);
+
+        if (resp.ok && data?.success && data?.user) {
+          if (Array.isArray(data.allUsers) && data.allUsers.length > 0) {
+            StorageService.saveUsers(data.allUsers, true);
+          }
+          if (Array.isArray(data.workspaces) && data.workspaces.length > 0) {
+            StorageService.saveWorkspaces(data.workspaces, true);
+          }
+          setIsLoading(false);
+          onLoginSuccess(data.user);
+          return;
+        }
+
+        if (data && !data.success) {
+          if (data.debug) {
+            setDebugMessage(data.debug);
+          }
+          if (resp.status === 401) {
+            setIsLoading(false);
+            setErrorMessage('Usuário ou senha inválidos.');
+            return;
+          }
+        }
+      } catch (netErr) {
+        console.warn('[OperaTask] Servidor de autenticação offline ou inacessível, utilizando base local:', netErr);
+      }
+
+      // 2. Fallback de verificação local (IndexedDB / LocalStorage / Master User)
+      try {
+        const syncResp = await fetch('/api/sync/state');
+        if (syncResp.ok) {
+          const syncData = await syncResp.json();
+          const serverUsers = syncData.users || syncData.data?.users;
+          if (Array.isArray(serverUsers) && serverUsers.length > 0) {
+            StorageService.saveUsers(serverUsers, true);
+          }
+          const serverWorkspaces = syncData.workspaces || syncData.data?.workspaces;
+          if (Array.isArray(serverWorkspaces) && serverWorkspaces.length > 0) {
+            StorageService.saveWorkspaces(serverWorkspaces, true);
+          }
+        }
+      } catch {}
+
+      const localUsers = StorageService.getUsers();
+      const combinedUsers = [...localUsers];
       users.forEach((u) => {
         if (!combinedUsers.some((item) => item.id === u.id)) {
           combinedUsers.push(u);
         }
       });
 
-      const findMatchingUser = (list: User[]) => {
-        return list.find((u) => {
-          const uUsername = (u.username || '').toLowerCase().trim();
-          const uEmail = (u.email || '').toLowerCase().trim();
-          const uName = (u.name || '').toLowerCase().trim();
-          const uEmailPrefix = uEmail.split('@')[0];
-
-          return (
-            (uUsername && uUsername === cleanIdent) ||
-            (uEmail && uEmail === cleanIdent) ||
-            (uName && uName === cleanIdent) ||
-            (uEmailPrefix && uEmailPrefix === cleanIdent)
-          );
-        });
-      };
-
-      let existingUser = findMatchingUser(combinedUsers);
-
-      // 2. Se não encontrar localmente (ex: smartphone recém-aberto ou navegador limpo), sincroniza do servidor
-      if (!existingUser && !isMasterTarget) {
-        try {
-          const resp = await fetch('/api/sync/state');
-          if (resp.ok) {
-            const serverState = await resp.json();
-            if (serverState?.users && Array.isArray(serverState.users)) {
-              StorageService.saveUsers(serverState.users);
-              if (serverState.workspaces) StorageService.saveWorkspaces(serverState.workspaces);
-              if (serverState.projects) StorageService.saveProjects(serverState.projects);
-              if (serverState.tasks) StorageService.saveTasks(serverState.tasks);
-              combinedUsers = serverState.users;
-              existingUser = findMatchingUser(combinedUsers);
-            }
-          }
-        } catch (err) {
-          console.warn('Sync check during login failed or offline:', err);
-        }
-      }
+      const isMasterTarget =
+        cleanIdent === 'alanvitordasilva@gmail.com.br' ||
+        cleanIdent === 'alanvitordasilva@gmail.com' ||
+        cleanIdent === 'alan' ||
+        cleanIdentWithoutAt === 'alan';
 
       if (isMasterTarget) {
+        if (password.trim() !== '273021') {
+          setIsLoading(false);
+          setErrorMessage('Usuário ou senha inválidos.');
+          setDebugMessage('Senha incorreta para a conta master.');
+          return;
+        }
         setIsLoading(false);
-        const targetUser: User = existingUser
-          ? {
-              ...existingUser,
-              systemRole: 'master',
-              isSuperAdmin: true,
-              title: 'Super Administrador / Master',
-              status: 'active',
-              isActive: true,
-            }
-          : {
-              id: 'user-master-alan',
-              name: 'Alan Silva (Master)',
-              email: 'alanvitordasilva@gmail.com.br',
-              username: 'alan',
-              avatarColor: '#173653',
-              title: 'Super Administrador / Master',
-              systemRole: 'master',
-              isSuperAdmin: true,
-              status: 'active',
-              isActive: true,
-              createdAt: '2026-01-01T00:00:00.000Z',
-              bio: 'Conta Master com acesso total a todas as configurações e workspaces do OperaTask.',
-            };
-        onLoginSuccess(targetUser);
+        const masterUser = combinedUsers.find((u) => u.systemRole === 'master') || {
+          id: 'user-master-alan',
+          name: 'Alan Silva (Master)',
+          email: 'alanvitordasilva@gmail.com.br',
+          username: 'alan',
+          avatarColor: '#173653',
+          title: 'Super Administrador / Master',
+          systemRole: 'master',
+          isSuperAdmin: true,
+          status: 'active',
+          isActive: true,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          bio: 'Conta Master com acesso total a todas as configurações e workspaces do OperaTask.',
+        };
+        onLoginSuccess(masterUser);
         return;
       }
 
-      // Se o usuário não existir no sistema
-      if (!existingUser) {
+      // Busca flexível na lista local
+      const foundUser = combinedUsers.find((u) => {
+        const uUser = (u.username || '').toLowerCase().trim();
+        const uUserNoAt = uUser.replace(/^@/, '');
+        const uEmail = (u.email || '').toLowerCase().trim();
+        const uName = (u.name || '').toLowerCase().trim();
+        const uEmailPrefix = uEmail.split('@')[0];
+
+        return (
+          (uUser && (uUser === cleanIdent || uUserNoAt === cleanIdentWithoutAt)) ||
+          (uEmail && uEmail === cleanIdent) ||
+          (uEmailPrefix && (uEmailPrefix === cleanIdent || uEmailPrefix === cleanIdentWithoutAt)) ||
+          (uName && uName === cleanIdent) ||
+          (!cleanIdent.includes('@') && uEmail === `${cleanIdentWithoutAt}@operatask.app`)
+        );
+      });
+
+      if (!foundUser) {
         setIsLoading(false);
         setErrorMessage('Conta não encontrada. Verifique os dados ou solicite o cadastro ao administrador.');
+        setDebugMessage(`Usuário '${rawIdent}' não localizado na base de dados (verificado local e servidor).`);
         return;
       }
 
-      // Validação de senha cadastrada
-      if (existingUser.password && existingUser.password !== password) {
+      if (foundUser.password && foundUser.password !== password.trim()) {
         setIsLoading(false);
         setErrorMessage('Usuário ou senha inválidos.');
+        setDebugMessage('Senha informada não confere com a cadastrada.');
         return;
       }
 
-      // Ativação automática e login imediato
-      const activeUser: User = {
-        ...existingUser,
+      setIsLoading(false);
+      onLoginSuccess({
+        ...foundUser,
         status: 'active',
         isActive: true,
-      };
-
+      });
+    } catch (err: any) {
       setIsLoading(false);
-      onLoginSuccess(activeUser);
-    } catch (err) {
-      setIsLoading(false);
-      setErrorMessage('Erro ao processar login. Tente novamente.');
+      setErrorMessage('Erro ao tentar autenticar. Tente novamente.');
+      setDebugMessage(err.message || 'Erro inesperado.');
     }
   };
 
@@ -246,9 +275,16 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
             {/* Mensagem de Erro */}
             {errorMessage && (
-              <div className="mb-4 p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 text-red-700 dark:text-red-300 text-xs font-medium flex items-center gap-2">
-                <div className="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0" />
-                <span>{errorMessage}</span>
+              <div className="mb-4 p-3.5 rounded-2xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 text-red-700 dark:text-red-300 text-xs font-medium space-y-1 animate-in fade-in">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-red-500 shrink-0" />
+                  <span className="font-semibold">{errorMessage}</span>
+                </div>
+                {debugMessage && (
+                  <div className="pl-4 text-[11px] text-red-600/80 dark:text-red-400/80 font-mono">
+                    Detalhe: {debugMessage}
+                  </div>
+                )}
               </div>
             )}
 

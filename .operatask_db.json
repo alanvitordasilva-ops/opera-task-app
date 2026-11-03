@@ -1,0 +1,89 @@
+{
+  "users": [
+    {
+      "id": "user-master-alan",
+      "name": "Alan Silva (Master)",
+      "username": "alan",
+      "email": "alanvitordasilva@gmail.com.br",
+      "avatarColor": "#173653",
+      "title": "Super Administrador / Master",
+      "systemRole": "master",
+      "isSuperAdmin": true,
+      "status": "active",
+      "isActive": true,
+      "password": "273021",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "bio": "Conta Master com acesso total e irrestrito a todas as configurações, workspaces e dados do OperaTask."
+    }
+  ],
+  "workspaces": [
+    {
+      "id": "ws-principal",
+      "name": "Meu Workspace",
+      "slug": "meu-workspace",
+      "description": "Espaço de trabalho corporativo",
+      "logoColor": "#173653",
+      "ownerId": "user-master-alan",
+      "members": [
+        {
+          "userId": "user-master-alan",
+          "role": "owner",
+          "joinedAt": "2026-01-01T00:00:00.000Z"
+        }
+      ],
+      "createdAt": "2026-01-01T00:00:00.000Z"
+    }
+  ],
+  "projects": [],
+  "tasks": [],
+  "tags": [
+    {
+      "id": "tag-frontend",
+      "name": "Frontend",
+      "color": "#2563eb"
+    },
+    {
+      "id": "tag-design",
+      "name": "Design & UX",
+      "color": "#db2777"
+    },
+    {
+      "id": "tag-backend",
+      "name": "Backend & API",
+      "color": "#ea580c"
+    },
+    {
+      "id": "tag-bug",
+      "name": "Bug Crítico",
+      "color": "#dc2626"
+    },
+    {
+      "id": "tag-feature",
+      "name": "Nova Feature",
+      "color": "#059669"
+    },
+    {
+      "id": "tag-devops",
+      "name": "Infra / Cloud",
+      "color": "#7c3aed"
+    }
+  ],
+  "activities": [
+    {
+      "id": "act-1793718754124-bgw1",
+      "workspaceId": "ws-1793718688182",
+      "userId": "user-master-alan",
+      "action": "excluiu permanentemente o workspace \"TAN TAN BAR\"",
+      "timestamp": "2026-11-03T15:12:34.124Z"
+    },
+    {
+      "id": "act-1793718688182-9dos",
+      "workspaceId": "ws-principal",
+      "userId": "user-master-alan",
+      "action": "criou o workspace \"TAN TAN BAR\"",
+      "timestamp": "2026-11-03T15:11:28.182Z"
+    }
+  ],
+  "notifications": [],
+  "fichas_tecnicas": []
+}

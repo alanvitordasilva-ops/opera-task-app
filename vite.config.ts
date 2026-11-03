@@ -85,14 +85,27 @@ function writeDb(data: Record<string, any>) {
 
 function parseJsonBody(req: any): Promise<any> {
   return new Promise((resolve) => {
+    if (req.body && typeof req.body === 'object') {
+      return resolve(req.body);
+    }
+    if (typeof req.body === 'string') {
+      try { return resolve(JSON.parse(req.body)); } catch { return resolve({}); }
+    }
     let raw = '';
-    req.on('data', (chunk: any) => { raw += chunk; });
+    req.on('data', (chunk: any) => {
+      raw += typeof chunk === 'string' ? chunk : chunk.toString('utf-8');
+    });
     req.on('end', () => {
       try {
         resolve(raw ? JSON.parse(raw) : {});
-      } catch {
+      } catch (err) {
+        console.error('[OperaTask] Erro ao parsear JSON no body:', err, raw);
         resolve({});
       }
+    });
+    req.on('error', (err: any) => {
+      console.error('[OperaTask] Erro na stream do body:', err);
+      resolve({});
     });
   });
 }
@@ -155,20 +168,45 @@ function operataskRealtimePlugin() {
         });
       });
 
-      // API: Estado Completo Compartilhado (Sync Cross-Device)
+      // API: Middleware Central de Autenticação e Sincronização Cross-Device
       server.middlewares.use(async (req: any, res: any, next: any) => {
         const url = req.url?.split('?')[0];
 
+        // 1. Estado Completo Compartilhado (Sync Cross-Device Web e Mobile)
         if (url === '/api/sync/state') {
           res.setHeader('Content-Type', 'application/json');
           if (req.method === 'GET') {
-            res.end(JSON.stringify({ status: 'ok', data: sharedCache }));
+            const latestDb = readDb();
+            Object.assign(sharedCache, latestDb);
+            res.end(
+              JSON.stringify({
+                status: 'ok',
+                data: sharedCache,
+                users: sharedCache.users || [],
+                workspaces: sharedCache.workspaces || [],
+                projects: sharedCache.projects || [],
+                tasks: sharedCache.tasks || [],
+                tags: sharedCache.tags || [],
+                activities: sharedCache.activities || [],
+              })
+            );
             return;
           }
           if (req.method === 'POST') {
             const body = await parseJsonBody(req);
             if (body && typeof body === 'object') {
-              Object.assign(sharedCache, body);
+              if (Array.isArray(body.users)) {
+                const userMap = new Map();
+                (sharedCache.users || []).forEach((u: any) => userMap.set(u.id, u));
+                body.users.forEach((u: any) => {
+                  userMap.set(u.id, { ...userMap.get(u.id), ...u, status: 'active', isActive: true });
+                });
+                sharedCache.users = Array.from(userMap.values());
+              }
+              if (Array.isArray(body.workspaces)) sharedCache.workspaces = body.workspaces;
+              if (Array.isArray(body.projects)) sharedCache.projects = body.projects;
+              if (Array.isArray(body.tasks)) sharedCache.tasks = body.tasks;
+
               writeDb(sharedCache);
               broadcastWs({ type: 'INITIAL_STATE', payload: sharedCache });
             }
@@ -177,13 +215,14 @@ function operataskRealtimePlugin() {
           }
         }
 
-        // API: Cadastro Direto de Usuário com Ativação Automática
+        // 2. API: Cadastro Imediato e Persistente de Usuário com Ativação Automática
         if (url === '/api/auth/register' && req.method === 'POST') {
           res.setHeader('Content-Type', 'application/json');
           const body = await parseJsonBody(req);
 
           const cleanName = (body.name || '').trim();
-          const cleanUsername = (body.username || body.usernameOrEmail || '').trim().toLowerCase().split('@')[0];
+          const rawUsername = (body.username || body.usernameOrEmail || '').trim().toLowerCase();
+          const cleanUsername = rawUsername.replace(/\s+/g, '.').replace(/[^a-z0-9._-]/g, '').replace(/^@/, '');
           const cleanEmail = (body.email || (cleanUsername ? `${cleanUsername}@operatask.app` : '')).trim().toLowerCase();
           const cleanPassword = (body.password || '').trim();
           const chosenRole = body.role || 'production';
@@ -195,22 +234,16 @@ function operataskRealtimePlugin() {
             return;
           }
 
-          if (!Array.isArray(sharedCache.users)) {
-            sharedCache.users = [...INITIAL_SERVER_DATA.users];
-          }
-
-          const exists = sharedCache.users.some(
-            (u: any) =>
-              (u.username && u.username.toLowerCase() === cleanUsername) ||
-              (u.email && u.email.toLowerCase() === cleanEmail) ||
-              (u.email && u.email.toLowerCase().split('@')[0] === cleanUsername)
-          );
-
-          if (exists) {
+          if (!targetWorkspaceId) {
             res.statusCode = 400;
-            res.end(JSON.stringify({ success: false, error: 'Já existe um usuário com este nome de usuário ou e-mail.' }));
+            res.end(JSON.stringify({ success: false, error: 'O Workspace selecionado é obrigatório.' }));
             return;
           }
+
+          // Atualiza dados locais da base
+          const freshDb = readDb();
+          sharedCache.users = freshDb.users || sharedCache.users || [...INITIAL_SERVER_DATA.users];
+          sharedCache.workspaces = freshDb.workspaces || sharedCache.workspaces || [...INITIAL_SERVER_DATA.workspaces];
 
           const roleTitleMap: Record<string, string> = {
             owner: 'Dono do Workspace',
@@ -220,26 +253,48 @@ function operataskRealtimePlugin() {
             viewer: 'Visualizador',
           };
 
-          const newUser = {
-            id: `user-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-            name: cleanName,
-            username: cleanUsername,
-            email: cleanEmail,
-            password: cleanPassword,
-            avatarColor: '#34B1AC',
-            title: roleTitleMap[chosenRole] || 'Membro da Equipe',
-            status: 'active',
-            isActive: true,
-            createdAt: new Date().toISOString(),
-          };
+          // Verifica se o usuário já existe
+          const existingIndex = sharedCache.users.findIndex(
+            (u: any) =>
+              (body.id && u.id === body.id) ||
+              (u.username && u.username.toLowerCase() === cleanUsername) ||
+              (u.email && u.email.toLowerCase() === cleanEmail)
+          );
 
-          sharedCache.users.push(newUser);
+          let savedUser: any = null;
 
-          // Vincula imediatamente ao Workspace selecionado
-          if (!Array.isArray(sharedCache.workspaces)) {
-            sharedCache.workspaces = [...INITIAL_SERVER_DATA.workspaces];
+          if (existingIndex !== -1) {
+            // Atualiza usuário existente mantendo status ativo
+            sharedCache.users[existingIndex] = {
+              ...sharedCache.users[existingIndex],
+              name: cleanName,
+              username: cleanUsername,
+              email: cleanEmail,
+              password: cleanPassword,
+              title: roleTitleMap[chosenRole] || sharedCache.users[existingIndex].title || 'Membro da Equipe',
+              status: 'active',
+              isActive: true,
+              avatarColor: body.avatarColor || sharedCache.users[existingIndex].avatarColor || '#34B1AC',
+            };
+            savedUser = sharedCache.users[existingIndex];
+          } else {
+            // Cria novo usuário já ativo
+            savedUser = {
+              id: body.id || `user-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+              name: cleanName,
+              username: cleanUsername,
+              email: cleanEmail,
+              password: cleanPassword,
+              avatarColor: body.avatarColor || '#34B1AC',
+              title: roleTitleMap[chosenRole] || 'Membro da Equipe',
+              status: 'active',
+              isActive: true,
+              createdAt: body.createdAt || new Date().toISOString(),
+            };
+            sharedCache.users.push(savedUser);
           }
 
+          // Vincula imediatamente ao Workspace selecionado
           let ws = sharedCache.workspaces.find((w: any) => w.id === targetWorkspaceId);
           if (!ws && sharedCache.workspaces.length > 0) {
             ws = sharedCache.workspaces[0];
@@ -247,93 +302,157 @@ function operataskRealtimePlugin() {
 
           if (ws) {
             if (!Array.isArray(ws.members)) ws.members = [];
-            if (!ws.members.some((m: any) => m.userId === newUser.id)) {
+            const memberIdx = ws.members.findIndex((m: any) => m.userId === savedUser.id);
+            if (memberIdx !== -1) {
+              ws.members[memberIdx].role = chosenRole;
+            } else {
               ws.members.push({
-                userId: newUser.id,
+                userId: savedUser.id,
                 role: chosenRole,
                 joinedAt: new Date().toISOString(),
               });
             }
           }
 
+          // Grava imediatamente no arquivo .operatask_db.json
           writeDb(sharedCache);
 
+          // Notifica WebSockets
           broadcastWs({ type: 'SYNC_UPDATE', entity: 'users', payload: sharedCache.users });
           broadcastWs({ type: 'SYNC_UPDATE', entity: 'workspaces', payload: sharedCache.workspaces });
 
-          res.end(JSON.stringify({ success: true, user: newUser }));
+          console.log(`[OperaTask Server] Usuário salvo com sucesso: ${savedUser.name} (${savedUser.username})`);
+
+          res.end(
+            JSON.stringify({
+              success: true,
+              user: savedUser,
+              users: sharedCache.users,
+              workspaces: sharedCache.workspaces,
+            })
+          );
           return;
         }
 
-        // API: Validação de Login no Servidor
+        // 3. API: Autenticação Segura e Universal (Busca por Nome de Usuário ou E-mail)
         if (url === '/api/auth/login' && req.method === 'POST') {
           res.setHeader('Content-Type', 'application/json');
           const body = await parseJsonBody(req);
-          const cleanIdent = (body.identifier || body.username || body.email || '').trim().toLowerCase();
+          const rawIdent = (body.identifier || body.username || body.email || '').trim();
+          const cleanIdent = rawIdent.toLowerCase();
+          const cleanIdentWithoutAt = cleanIdent.replace(/^@/, '');
           const password = (body.password || '').trim();
 
           if (!cleanIdent || !password) {
             res.statusCode = 400;
-            res.end(JSON.stringify({ success: false, error: 'Informe suas credenciais.' }));
+            res.end(JSON.stringify({ success: false, error: 'Informe seu nome de usuário ou e-mail e sua senha.' }));
             return;
           }
 
+          // Sempre recarrega do arquivo de banco para garantir leitura de cadastros recentes
+          const latestDb = readDb();
+          sharedCache.users = latestDb.users || sharedCache.users || [];
+          sharedCache.workspaces = latestDb.workspaces || sharedCache.workspaces || [];
+
+          // Validação Conta Master
           const isMaster =
             cleanIdent === 'alanvitordasilva@gmail.com.br' ||
             cleanIdent === 'alanvitordasilva@gmail.com' ||
-            cleanIdent === 'alan';
+            cleanIdent === 'alan' ||
+            cleanIdentWithoutAt === 'alan';
 
           if (isMaster) {
             if (password !== '273021') {
               res.statusCode = 401;
-              res.end(JSON.stringify({ success: false, error: 'Usuário ou senha inválidos.' }));
+              res.end(
+                JSON.stringify({
+                  success: false,
+                  error: 'Usuário ou senha inválidos.',
+                  debug: 'Senha incorreta para a conta master.',
+                })
+              );
               return;
             }
             const masterUser = sharedCache.users?.find((u: any) => u.systemRole === 'master') || INITIAL_SERVER_DATA.users[0];
-            res.end(JSON.stringify({ success: true, user: masterUser }));
+            const activeMaster = { ...masterUser, status: 'active', isActive: true };
+            res.end(
+              JSON.stringify({
+                success: true,
+                user: activeMaster,
+                allUsers: sharedCache.users,
+                workspaces: sharedCache.workspaces,
+              })
+            );
             return;
           }
 
+          // Busca flexível: username, email, prefixo do email ou nome completo (case-insensitive)
           const user = sharedCache.users?.find((u: any) => {
-            const uUser = (u.username || '').toLowerCase();
-            const uEmail = (u.email || '').toLowerCase();
-            const uName = (u.name || '').toLowerCase();
+            const uUser = (u.username || '').toLowerCase().trim();
+            const uUserNoAt = uUser.replace(/^@/, '');
+            const uEmail = (u.email || '').toLowerCase().trim();
+            const uName = (u.name || '').toLowerCase().trim();
+            const uEmailPrefix = uEmail.split('@')[0];
+
             return (
-              uUser === cleanIdent ||
-              uEmail === cleanIdent ||
-              uName === cleanIdent ||
-              uEmail.split('@')[0] === cleanIdent ||
-              (!cleanIdent.includes('@') && uEmail === `${cleanIdent}@operatask.app`)
+              (uUser && (uUser === cleanIdent || uUserNoAt === cleanIdentWithoutAt)) ||
+              (uEmail && uEmail === cleanIdent) ||
+              (uEmailPrefix && (uEmailPrefix === cleanIdent || uEmailPrefix === cleanIdentWithoutAt)) ||
+              (uName && uName === cleanIdent) ||
+              (!cleanIdent.includes('@') && uEmail === `${cleanIdentWithoutAt}@operatask.app`)
             );
           });
 
           if (!user) {
             res.statusCode = 404;
-            res.end(JSON.stringify({ success: false, error: 'Conta não encontrada. Verifique os dados ou solicite o cadastro ao administrador.' }));
+            res.end(
+              JSON.stringify({
+                success: false,
+                error: 'Conta não encontrada. Verifique os dados ou solicite o cadastro ao administrador.',
+                debug: `Usuário '${rawIdent}' não localizado na base (${sharedCache.users?.length || 0} usuários registrados).`,
+              })
+            );
             return;
           }
 
           if (user.password && user.password !== password) {
             res.statusCode = 401;
-            res.end(JSON.stringify({ success: false, error: 'Usuário ou senha inválidos.' }));
+            res.end(
+              JSON.stringify({
+                success: false,
+                error: 'Usuário ou senha inválidos.',
+                debug: 'Senha informada não confere com a cadastrada.',
+              })
+            );
             return;
           }
 
-          res.end(JSON.stringify({ success: true, user }));
+          // Garante retorno ativo
+          const activeUser = { ...user, status: 'active', isActive: true };
+          res.end(
+            JSON.stringify({
+              success: true,
+              user: activeUser,
+              allUsers: sharedCache.users,
+              workspaces: sharedCache.workspaces,
+            })
+          );
           return;
         }
 
-        // API: Lista de Usuários
+        // 4. API: Lista de Usuários
         if (url === '/api/auth/users' && req.method === 'GET') {
           res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ status: 'ok', users: sharedCache.users || [] }));
+          const latestDb = readDb();
+          res.end(JSON.stringify({ status: 'ok', users: latestDb.users || sharedCache.users || [] }));
           return;
         }
 
-        // API: Lista de Workspaces
+        // 5. API: Lista de Workspaces
         if (url === '/api/workspaces' && req.method === 'GET') {
           res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ status: 'ok', workspaces: sharedCache.workspaces || [] }));
+          const latestDb = readDb();
+          res.end(JSON.stringify({ status: 'ok', workspaces: latestDb.workspaces || sharedCache.workspaces || [] }));
           return;
         }
 

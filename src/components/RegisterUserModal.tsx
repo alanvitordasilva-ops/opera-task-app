@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import {
   X,
   UserPlus,
+  Users,
   Lock,
   Mail,
   User as UserIcon,
@@ -99,6 +100,9 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
   } | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
 
+  const [showAllUsersList, setShowAllUsersList] = useState(false);
+  const [allUsersList, setAllUsersList] = useState<User[]>([]);
+
   if (!isOpen) return null;
 
   const handleReset = () => {
@@ -113,6 +117,7 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
     setErrorMessage(null);
     setCreatedResult(null);
     setCopiedLink(false);
+    setShowAllUsersList(false);
     if (availableWorkspaces[0]?.id) {
       setSelectedWorkspaceId(workspaceId || availableWorkspaces[0].id);
     }
@@ -123,13 +128,13 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
     onClose();
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
 
     const cleanName = name.trim();
     // Normaliza nome de usuário: minúsculas, sem espaços (substitui espaços por ponto)
-    const cleanUsername = username.trim().toLowerCase().replace(/\s+/g, '.').replace(/[^a-z0-9._-]/g, '');
+    const cleanUsername = username.trim().toLowerCase().replace(/\s+/g, '.').replace(/[^a-z0-9._-]/g, '').replace(/^@/, '');
     const cleanEmail = email.trim().toLowerCase();
     const targetWsId = selectedWorkspaceId || availableWorkspaces[0]?.id;
 
@@ -170,8 +175,8 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
 
     setIsSubmitting(true);
 
-    setTimeout(() => {
-      const result = StorageService.registerUser({
+    try {
+      const result = await StorageService.registerUser({
         name: cleanName,
         username: cleanUsername,
         email: cleanEmail || `${cleanUsername}@operatask.app`,
@@ -205,7 +210,10 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
       if (onUserCreated) {
         onUserCreated(result.user, role, targetWsId);
       }
-    }, 250);
+    } catch (err: any) {
+      setIsSubmitting(false);
+      setErrorMessage(err.message || 'Erro inesperado ao cadastrar usuário.');
+    }
   };
 
   const getShareText = () => {
@@ -347,6 +355,13 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
                       {ROLE_OPTIONS.find((r) => r.role === createdResult.role)?.label}
                     </span>
                   </div>
+                  <div className="flex justify-between items-center py-1">
+                    <span className="text-slate-500 dark:text-slate-400">Status da Conta:</span>
+                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300 flex items-center gap-1.5 border border-emerald-200 dark:border-emerald-800">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                      Ativo (Acesso Liberado)
+                    </span>
+                  </div>
                   <div className="flex flex-col gap-1 pt-1">
                     <span className="text-slate-500 dark:text-slate-400">Link de Acesso ao App:</span>
                     <div className="p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-[11px] font-mono text-slate-700 dark:text-slate-300 break-all select-all flex items-center justify-between gap-2">
@@ -385,6 +400,52 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
                     </>
                   )}
                 </button>
+
+                {/* Validação da Base de Dados */}
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const nextState = !showAllUsersList;
+                    setShowAllUsersList(nextState);
+                    if (nextState) {
+                      try {
+                        const resp = await fetch('/api/auth/users');
+                        if (resp.ok) {
+                          const json = await resp.json();
+                          if (Array.isArray(json.users)) {
+                            setAllUsersList(json.users);
+                            return;
+                          }
+                        }
+                      } catch {}
+                      setAllUsersList(StorageService.getUsers());
+                    }
+                  }}
+                  className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+                >
+                  <Users className="w-3.5 h-3.5 text-[#34B1AC]" />
+                  <span>{showAllUsersList ? 'Ocultar Usuários da Base' : 'Verificar Lista de Usuários na Base'}</span>
+                </button>
+
+                {showAllUsersList && (
+                  <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-xs space-y-2 max-h-48 overflow-y-auto animate-in fade-in">
+                    <div className="font-bold text-slate-800 dark:text-slate-200 flex items-center justify-between pb-1 border-b border-slate-200 dark:border-slate-700">
+                      <span>Usuários na Base ({allUsersList.length}):</span>
+                      <span className="text-[10px] text-teal-600 dark:text-teal-400 font-semibold">Sincronizado</span>
+                    </div>
+                    {allUsersList.map((u) => (
+                      <div key={u.id} className="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-700/80 flex items-center justify-between gap-2">
+                        <div className="truncate">
+                          <span className="font-bold text-slate-800 dark:text-slate-100">{u.name}</span>
+                          <span className="text-slate-400 font-mono text-[11px] block">@{u.username || u.email.split('@')[0]}</span>
+                        </div>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300">
+                          Ativo
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 <div className="flex gap-2 pt-1">
                   <button

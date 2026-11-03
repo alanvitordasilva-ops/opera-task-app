@@ -35,11 +35,15 @@ const STORAGE_KEYS = {
 export const MASTER_USER: User = {
   id: 'user-master-alan',
   name: 'Alan Silva (Master)',
+  username: 'alan',
   email: 'alanvitordasilva@gmail.com.br',
+  password: '273021',
   avatarColor: '#173653',
   title: 'Super Administrador / Master',
   systemRole: 'master',
   isSuperAdmin: true,
+  status: 'active',
+  isActive: true,
   createdAt: '2026-01-01T00:00:00.000Z',
   bio: 'Conta Master com acesso total e irrestrito a todas as configurações, workspaces e dados do OperaTask.',
 };
@@ -930,26 +934,30 @@ export const StorageService = {
   // ==========================================
   // Cadastro de Novo Usuário (Apenas Dono/Admin)
   // ==========================================
-  registerUser(params: {
+  async registerUser(params: {
     name: string;
     username?: string;
     usernameOrEmail?: string;
     email?: string;
     password?: string;
     role: WorkspaceRole;
-    workspaceId?: string;
-  }): { success: boolean; user?: User; error?: string } {
+    workspaceId: string;
+  }): Promise<{ success: boolean; user?: User; error?: string }> {
     const cleanName = params.name.trim();
     const rawUsername = (params.username || params.usernameOrEmail || '').trim().toLowerCase();
-    const cleanUsername = rawUsername.includes('@') ? rawUsername.split('@')[0] : rawUsername;
-    const cleanEmail = (params.email || (rawUsername.includes('@') ? rawUsername : `${cleanUsername}@operatask.app`)).trim().toLowerCase();
+    const cleanUsername = rawUsername.replace(/\s+/g, '.').replace(/[^a-z0-9._-]/g, '').replace(/^@/, '');
+    const cleanEmail = (params.email || (cleanUsername ? `${cleanUsername}@operatask.app` : '')).trim().toLowerCase();
     const cleanPassword = params.password?.trim() || '';
+    const targetWorkspaceId = params.workspaceId?.trim();
 
     if (!cleanName) {
       return { success: false, error: 'O nome completo do usuário é obrigatório.' };
     }
     if (!cleanUsername) {
       return { success: false, error: 'O nome de usuário para login é obrigatório.' };
+    }
+    if (!targetWorkspaceId) {
+      return { success: false, error: 'A seleção de um Workspace é obrigatória.' };
     }
     if (!cleanPassword || cleanPassword.length < 4) {
       return { success: false, error: 'A senha deve ter no mínimo 4 caracteres.' };
@@ -992,9 +1000,7 @@ export const StorageService = {
       viewer: 'Visualizador',
     };
 
-    const targetWorkspaceId = params.workspaceId || this.getCurrentWorkspace().id;
-
-    const newUser: User = {
+    let newUser: User = {
       id: `user-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
       name: cleanName,
       username: cleanUsername,
@@ -1007,43 +1013,62 @@ export const StorageService = {
       createdAt: new Date().toISOString(),
     };
 
-    const updatedUsers = [...currentUsers, newUser];
-    this.saveUsers(updatedUsers, true);
-
-    // Vincula o usuário imediatamente ao workspace selecionado
-    if (targetWorkspaceId) {
-      const workspaces = this.getWorkspaces();
-      const wsIndex = workspaces.findIndex((w) => w.id === targetWorkspaceId);
-      if (wsIndex !== -1) {
-        const ws = workspaces[wsIndex];
-        const memberExists = ws.members.some((m) => m.userId === newUser.id);
-        if (!memberExists) {
-          ws.members.push({
-            userId: newUser.id,
-            role: params.role,
-            joinedAt: new Date().toISOString(),
-          });
-          this.saveWorkspaces(workspaces, true);
-        }
-      }
-    }
-
-    // Sincroniza em background com o servidor para persistência e acesso mobile imediato
+    // 1. Grava no servidor de forma garantida e síncrona via POST /api/auth/register
     if (typeof window !== 'undefined') {
       try {
-        fetch('/api/auth/register', {
+        const resp = await fetch('/api/auth/register', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            id: newUser.id,
             name: cleanName,
             username: cleanUsername,
             email: cleanEmail,
             password: cleanPassword,
             role: params.role,
             workspaceId: targetWorkspaceId,
+            avatarColor: chosenColor,
           }),
-        }).catch(() => {});
-      } catch {}
+        });
+
+        if (resp.ok) {
+          const resData = await resp.json();
+          if (resData.user) {
+            newUser = { ...newUser, ...resData.user, status: 'active', isActive: true };
+          }
+          if (Array.isArray(resData.users)) {
+            this.saveUsers(resData.users, true);
+          }
+          if (Array.isArray(resData.workspaces)) {
+            this.saveWorkspaces(resData.workspaces, true);
+          }
+        }
+      } catch (e) {
+        console.warn('[OperaTask] Fallback local para registro offline:', e);
+      }
+    }
+
+    // 2. Garante persistência local no navegador atual
+    const freshUsers = this.getUsers();
+    if (!freshUsers.some((u) => u.id === newUser.id)) {
+      freshUsers.push(newUser);
+      this.saveUsers(freshUsers, true);
+    }
+
+    // 3. Vincula o usuário ao workspace selecionado localmente
+    const workspaces = this.getWorkspaces();
+    const wsIndex = workspaces.findIndex((w) => w.id === targetWorkspaceId);
+    if (wsIndex !== -1) {
+      const ws = workspaces[wsIndex];
+      const memberExists = ws.members.some((m) => m.userId === newUser.id);
+      if (!memberExists) {
+        ws.members.push({
+          userId: newUser.id,
+          role: params.role,
+          joinedAt: new Date().toISOString(),
+        });
+        this.saveWorkspaces(workspaces, true);
+      }
     }
 
     return { success: true, user: newUser };
