@@ -34,6 +34,7 @@ import {
   LogOut,
   User as UserIcon,
   Crown,
+  UserPlus,
 } from 'lucide-react';
 import { ProjectIcon } from './ProjectIcon.tsx';
 import { getInitials, ROLE_CONFIG, isUserMaster, canAccessDashboard } from '../utils/helpers.ts';
@@ -45,6 +46,7 @@ interface SidebarProps {
   onLogout?: () => void;
   onOpenUserProfile?: () => void;
   onOpenMasterPanel?: () => void;
+  onOpenRegisterUserModal?: () => void;
   isOpenMobile: boolean;
   onCloseMobile: () => void;
   workspaces: Workspace[];
@@ -109,6 +111,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onLogout,
   onOpenUserProfile,
   onOpenMasterPanel,
+  onOpenRegisterUserModal,
 }) => {
   const [isWorkspaceDropdownOpen, setIsWorkspaceDropdownOpen] = useState(false);
   const [isUserSwitcherOpen, setIsUserSwitcherOpen] = useState(false);
@@ -268,6 +271,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   <Users className="w-3.5 h-3.5" />
                   Gerenciar Membros & Permissões
                 </button>
+
+                {(isMaster || userRole === 'owner' || userRole === 'admin') && onOpenRegisterUserModal && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsWorkspaceDropdownOpen(false);
+                      onOpenRegisterUserModal();
+                    }}
+                    className="w-full flex items-center gap-2 p-2 rounded-lg text-xs font-bold text-[#173653] dark:text-[#34B1AC] bg-[#34B1AC]/10 hover:bg-[#34B1AC]/20 transition-colors"
+                  >
+                    <UserPlus className="w-3.5 h-3.5 text-[#34B1AC]" />
+                    Cadastrar Novo Usuário
+                  </button>
+                )}
               </div>
             </div>
           )}

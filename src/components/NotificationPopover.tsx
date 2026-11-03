@@ -158,7 +158,7 @@ export const NotificationPopover: React.FC<NotificationPopoverProps> = ({
 
         {/* Rodapé */}
         <div className="p-2.5 border-t border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-850 flex justify-between items-center text-xs">
-          <span className="text-slate-400 text-[11px]">TaskFlow Collaboration Engine</span>
+          <span className="text-slate-400 text-[11px]">OperaTask Collaboration Engine</span>
           <button
             type="button"
             onClick={onClose}

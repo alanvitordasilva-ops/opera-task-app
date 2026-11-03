@@ -16,6 +16,8 @@ import {
   Trash2,
   Edit3,
   ArrowRight,
+  ArrowUp,
+  ArrowDown,
   FileSpreadsheet,
   Factory,
   Lock,
@@ -278,6 +280,48 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
     setDropIndicator(null);
   };
 
+  // Reordenação de cards para cima / para baixo com salvamento automático
+  const handleMoveTaskStep = (task: Task, columnId: string, direction: 'up' | 'down') => {
+    const isCompleted = isTaskInDoneColumn(task, columns);
+    if (isCompleted && !canModifyCompletedTask(currentUserRole, isMaster)) {
+      return;
+    }
+
+    const colTasks = tasks
+      .filter((t) => t.columnId === columnId)
+      .sort((a, b) => {
+        const orderA = typeof a.order === 'number' ? a.order : 0;
+        const orderB = typeof b.order === 'number' ? b.order : 0;
+        if (orderA !== orderB) return orderA - orderB;
+        return a.createdAt.localeCompare(b.createdAt);
+      });
+
+    const currentIndex = colTasks.findIndex((t) => t.id === task.id);
+    if (currentIndex === -1) return;
+
+    const targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
+    if (targetIndex < 0 || targetIndex >= colTasks.length) return;
+
+    const reordered = [...colTasks];
+    const temp = reordered[currentIndex];
+    reordered[currentIndex] = reordered[targetIndex];
+    reordered[targetIndex] = temp;
+
+    const updates: TaskReorderUpdate[] = reordered.map((t, idx) => ({
+      id: t.id,
+      columnId,
+      order: idx,
+    }));
+
+    if (onReorderTasks) {
+      onReorderTasks(updates, {
+        taskId: task.id,
+        targetColumnId: columnId,
+        prevColumnId: columnId,
+      });
+    }
+  };
+
   const getMemberUser = (id: string) => workspaceMembers.find((m) => m.id === id);
   const projectBorderColor = project.color || '#2563eb';
 
@@ -344,14 +388,14 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
             onDragOver={(e) => handleColumnDragOver(e, col.id)}
             onDragLeave={(e) => handleColumnDragLeave(e, col.id)}
             onDrop={(e) => handleColumnDrop(e, col.id)}
-            className={`w-[86vw] sm:w-76 shrink-0 snap-center sm:snap-align-none flex flex-col bg-slate-100/70 dark:bg-slate-900/40 rounded-2xl p-2.5 border transition-all ${
+            className={`w-[86vw] sm:w-76 shrink-0 snap-center sm:snap-align-none flex flex-col max-h-[calc(100vh-210px)] sm:max-h-[calc(100vh-220px)] bg-slate-100/70 dark:bg-slate-900/40 rounded-2xl p-2.5 border transition-all ${
               isDropTarget
                 ? 'border-blue-500 bg-blue-50/50 dark:bg-blue-950/20 ring-2 ring-blue-400/20 shadow-md'
                 : 'border-slate-200/80 dark:border-slate-800/80'
             }`}
           >
-            {/* Cabeçalho da Coluna */}
-            <div className="flex items-center justify-between px-2 py-1.5 mb-1.5">
+            {/* Cabeçalho da Coluna: Fixo no topo da coluna */}
+            <div className="flex items-center justify-between px-2 py-1.5 mb-1.5 shrink-0">
               <div className="flex items-center gap-2">
                 <span
                   className="w-2.5 h-2.5 rounded-full shrink-0"
@@ -369,7 +413,7 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                 <button
                   type="button"
                   onClick={() => onQuickAddTask(col.id)}
-                  className="p-1 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100 rounded-lg hover:bg-white dark:hover:bg-slate-800 transition-colors"
+                  className="p-1 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100 rounded-lg hover:bg-white dark:hover:bg-slate-800 transition-colors cursor-pointer"
                   title={`Adicionar tarefa em ${col.title}`}
                 >
                   <Plus className="w-3.5 h-3.5" />
@@ -386,7 +430,7 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                         message: `Tem certeza que deseja excluir a coluna "${col.title}"? As tarefas desta coluna serão transferidas para outra coluna ou removidas. Esta ação não pode ser desfeita.`,
                       })
                     }
-                    className="p-1 text-slate-400 hover:text-red-600 dark:hover:text-red-400 rounded-lg hover:bg-white dark:hover:bg-slate-800 transition-colors"
+                    className="p-1 text-slate-400 hover:text-red-600 dark:hover:text-red-400 rounded-lg hover:bg-white dark:hover:bg-slate-800 transition-colors cursor-pointer"
                     title={`Excluir coluna ${col.title}`}
                   >
                     <Trash2 className="w-3.5 h-3.5" />
@@ -395,9 +439,9 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
               </div>
             </div>
 
-            {/* Lista de Cards da Coluna com Reordenação */}
-            <div className="space-y-2 min-h-[120px] flex-1 flex flex-col">
-              {columnTasks.map((task) => {
+            {/* Lista de Cards da Coluna com Rolagem Interna e Reordenação Suave */}
+            <div className="space-y-2.5 min-h-[120px] flex-1 overflow-y-auto overflow-x-hidden px-1 py-1 scroll-smooth overscroll-contain touch-pan-y custom-scrollbar">
+              {columnTasks.map((task, taskIndex) => {
                 const priorityInfo = PRIORITY_CONFIG[task.priority];
                 const dueInfo = formatDueDatePTBR(task.dueDate);
                 const checklistInfo = calculateChecklistProgress(task.checklist);
@@ -528,11 +572,54 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                                   setOpenMenuTaskId(null);
                                   onEditTask(task);
                                 }}
-                                className="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 flex items-center gap-2 transition-colors"
+                                className="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 flex items-center gap-2 transition-colors cursor-pointer"
                               >
                                 <Edit3 className="w-3.5 h-3.5 text-slate-400" />
                                 <span>{isActionBlocked ? 'Visualizar card' : 'Editar'}</span>
                               </button>
+
+                              {/* Reordenação Rápida no Quadro (1-tap no Mobile e Desktop) */}
+                              {!isActionBlocked && (
+                                <div className="py-1 my-0.5 border-y border-slate-100 dark:border-slate-750/70">
+                                  <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                                    Ordem no Quadro
+                                  </div>
+                                  <button
+                                    type="button"
+                                    disabled={taskIndex === 0}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setOpenMenuTaskId(null);
+                                      handleMoveTaskStep(task, col.id, 'up');
+                                    }}
+                                    className="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 flex items-center justify-between gap-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                                    title="Mover card para cima nesta coluna"
+                                  >
+                                    <span className="flex items-center gap-2">
+                                      <ArrowUp className="w-3.5 h-3.5 text-[#34B1AC]" />
+                                      <span>Mover para cima</span>
+                                    </span>
+                                    <span className="text-[10px] text-slate-400 font-mono">↑</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={taskIndex === columnTasks.length - 1}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setOpenMenuTaskId(null);
+                                      handleMoveTaskStep(task, col.id, 'down');
+                                    }}
+                                    className="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 flex items-center justify-between gap-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                                    title="Mover card para baixo nesta coluna"
+                                  >
+                                    <span className="flex items-center gap-2">
+                                      <ArrowDown className="w-3.5 h-3.5 text-[#34B1AC]" />
+                                      <span>Mover para baixo</span>
+                                    </span>
+                                    <span className="text-[10px] text-slate-400 font-mono">↓</span>
+                                  </button>
+                                </div>
+                              )}
 
                               {canAccessFichaTecnicaAndProduction(currentUserRole) && (
                                 <>
@@ -665,8 +752,8 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                           </div>
                         ) : (
                           <div
-                            className="text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab p-0.5"
-                            title="Arrastar tarefa"
+                            className="text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 opacity-70 sm:opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing p-1"
+                            title="Arrastar e reordenar card"
                             onClick={(e) => e.stopPropagation()}
                           >
                             <GripVertical className="w-3.5 h-3.5" />
@@ -912,11 +999,11 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
               )}
             </div>
 
-            {/* Adição Rápida */}
+            {/* Adição Rápida: Fixa no rodapé da coluna */}
             <button
               type="button"
               onClick={() => onQuickAddTask(col.id)}
-              className="mt-3 py-2 px-3 text-xs font-semibold text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-white dark:hover:bg-slate-800 rounded-xl border border-transparent hover:border-slate-200 dark:hover:border-slate-700 flex items-center justify-center gap-1.5 transition-all"
+              className="shrink-0 mt-2 py-2 px-3 text-xs font-semibold text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-white dark:hover:bg-slate-800 rounded-xl border border-transparent hover:border-slate-200 dark:hover:border-slate-700 flex items-center justify-center gap-1.5 transition-all cursor-pointer"
             >
               <Plus className="w-3.5 h-3.5" />
               Adicionar Card

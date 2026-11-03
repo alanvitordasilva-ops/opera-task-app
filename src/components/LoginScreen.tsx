@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { User } from '../types/index.ts';
+import { StorageService } from '../services/storage.ts';
 import { Mail, Lock, Eye, EyeOff, ArrowRight, HelpCircle, CheckCircle2, X, Sun, Moon } from 'lucide-react';
 
 interface LoginScreenProps {
@@ -56,14 +57,23 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     setIsLoading(true);
 
     setTimeout(() => {
-      // Localiza usuário cadastrado por email ou nome
-      const existingUser = users.find((u) => {
-        const uEmail = u.email.toLowerCase();
-        const uName = u.name.toLowerCase();
+      // Localiza usuário cadastrado por email, nome ou username
+      const allCurrentUsers = StorageService.getUsers();
+      const combinedUsers = [...allCurrentUsers];
+      users.forEach((u) => {
+        if (!combinedUsers.some((item) => item.id === u.id)) {
+          combinedUsers.push(u);
+        }
+      });
+
+      const existingUser = combinedUsers.find((u) => {
+        const uEmail = (u.email || '').toLowerCase().trim();
+        const uName = (u.name || '').toLowerCase().trim();
+        const uUsername = uEmail.split('@')[0];
         return (
           uEmail === cleanIdent ||
           uName === cleanIdent ||
-          uEmail.split('@')[0] === cleanIdent ||
+          uUsername === cleanIdent ||
           (cleanIdent.includes('@') && uEmail === cleanIdent)
         );
       });

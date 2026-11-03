@@ -13,7 +13,7 @@ export const PWAInstallPrompt: React.FC<PWAInstallPromptProps> = ({ variant = 'b
   const [dismissed, setDismissed] = useState(false);
 
   useEffect(() => {
-    const isDismissed = localStorage.getItem('taskflow_pwa_dismissed') === 'true';
+    const isDismissed = localStorage.getItem('operatask_pwa_dismissed') === 'true';
     if (isDismissed) {
       setDismissed(true);
     }
@@ -21,7 +21,7 @@ export const PWAInstallPrompt: React.FC<PWAInstallPromptProps> = ({ variant = 'b
 
   const handleDismiss = () => {
     setDismissed(true);
-    localStorage.setItem('taskflow_pwa_dismissed', 'true');
+    localStorage.setItem('operatask_pwa_dismissed', 'true');
   };
 
   const handleInstallClick = async () => {
@@ -47,11 +47,11 @@ export const PWAInstallPrompt: React.FC<PWAInstallPromptProps> = ({ variant = 'b
       <>
         <button
           onClick={handleInstallClick}
-          className={`flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 text-white shadow-sm transition-all active:scale-95 ${className}`}
-          title="Instalar TaskFlow no celular ou computador"
+          className={`flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-xl bg-[#173653] hover:bg-[#1f486d] text-white shadow-xs border border-white/10 transition-all active:scale-95 ${className}`}
+          title="Instalar OperaTask no celular ou computador"
         >
-          <Download className="w-4 h-4" />
-          <span>Instalar App</span>
+          <Download className="w-4 h-4 text-[#34B1AC]" />
+          <span>Instalar OperaTask App</span>
         </button>
 
         {showIOSModal && (
@@ -68,7 +68,7 @@ export const PWAInstallPrompt: React.FC<PWAInstallPromptProps> = ({ variant = 'b
 
   return (
     <>
-      <aside aria-label="Instalar aplicativo" className={`relative z-40 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 text-white px-4 py-3 shadow-md transition-all ${className}`}>
+      <aside aria-label="Instalar aplicativo" className={`relative z-40 bg-gradient-to-r from-[#173653] via-[#1b3f61] to-[#34B1AC] text-white px-4 py-3 shadow-md transition-all ${className}`}>
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-white shadow-md flex items-center justify-center shrink-0 p-1 overflow-hidden border border-white/20">
@@ -76,13 +76,13 @@ export const PWAInstallPrompt: React.FC<PWAInstallPromptProps> = ({ variant = 'b
             </div>
             <div>
               <div className="flex items-center gap-1.5 font-semibold text-sm">
-                <span>Instale o TaskFlow no seu celular</span>
-                <span className="hidden sm:inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-white/20 text-white">
-                  PWA
+                <span>Instale o OperaTask no seu celular</span>
+                <span className="hidden sm:inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-[#34B1AC]/30 text-white border border-[#34B1AC]/40">
+                  App PWA
                 </span>
               </div>
               <p className="text-xs text-blue-100 hidden xs:block">
-                Acesse mais rápido direto da sua tela de início, offline e sem barras de navegação.
+                Acesse mais rápido direto da sua tela de início, offline e em tela cheia sem barras de navegador.
               </p>
             </div>
           </div>
@@ -90,14 +90,14 @@ export const PWAInstallPrompt: React.FC<PWAInstallPromptProps> = ({ variant = 'b
           <div className="flex items-center gap-2 shrink-0">
             <button
               onClick={handleInstallClick}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold bg-white text-blue-700 hover:bg-blue-50 active:scale-95 rounded-lg shadow-sm transition-all"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold bg-white text-[#173653] hover:bg-slate-100 active:scale-95 rounded-lg shadow-sm transition-all cursor-pointer"
             >
-              <Download className="w-3.5 h-3.5" />
+              <Download className="w-3.5 h-3.5 text-[#34B1AC]" />
               <span>Instalar</span>
             </button>
             <button
               onClick={handleDismiss}
-              className="p-1.5 text-blue-200 hover:text-white hover:bg-white/10 rounded-md transition-colors"
+              className="p-1.5 text-blue-200 hover:text-white hover:bg-white/10 rounded-md transition-colors cursor-pointer"
               title="Dispensar aviso de instalação"
             >
               <X className="w-4 h-4" />
@@ -135,47 +135,47 @@ const IOSInstallModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         </div>
 
         <p className="text-sm text-slate-600 dark:text-slate-300 mb-5 leading-relaxed">
-          Para instalar o TaskFlow no seu iOS e usá-lo como um app de tela cheia sem lojas de aplicativos, siga 3 passos rápidos:
+          Para instalar o <strong>OperaTask</strong> no seu iPhone ou iPad e usá-lo como um app de tela cheia sem lojas de aplicativos, siga 3 passos rápidos:
         </p>
 
         <div className="space-y-4 mb-6">
           <div className="flex items-start gap-3">
-            <div className="w-7 h-7 rounded-full bg-blue-50 dark:bg-blue-950 text-blue-600 dark:text-blue-400 font-bold text-xs flex items-center justify-center shrink-0 border border-blue-200 dark:border-blue-800">
+            <div className="w-7 h-7 rounded-full bg-teal-50 dark:bg-teal-950 text-[#34B1AC] font-bold text-xs flex items-center justify-center shrink-0 border border-teal-200 dark:border-teal-800">
               1
             </div>
             <div className="text-xs text-slate-700 dark:text-slate-300">
               Toque no botão de <strong>Compartilhar</strong> na barra inferior do Safari (
-              <Share2 className="inline w-3.5 h-3.5 text-blue-500 mx-0.5" />
+              <Share2 className="inline w-3.5 h-3.5 text-[#34B1AC] mx-0.5" />
               ).
             </div>
           </div>
 
           <div className="flex items-start gap-3">
-            <div className="w-7 h-7 rounded-full bg-blue-50 dark:bg-blue-950 text-blue-600 dark:text-blue-400 font-bold text-xs flex items-center justify-center shrink-0 border border-blue-200 dark:border-blue-800">
+            <div className="w-7 h-7 rounded-full bg-teal-50 dark:bg-teal-950 text-[#34B1AC] font-bold text-xs flex items-center justify-center shrink-0 border border-teal-200 dark:border-teal-800">
               2
             </div>
             <div className="text-xs text-slate-700 dark:text-slate-300">
               Role o menu para baixo e selecione <strong>"Adicionar à Tela de Início"</strong> (
-              <PlusSquare className="inline w-3.5 h-3.5 text-blue-500 mx-0.5" />
+              <PlusSquare className="inline w-3.5 h-3.5 text-[#34B1AC] mx-0.5" />
               ).
             </div>
           </div>
 
           <div className="flex items-start gap-3">
-            <div className="w-7 h-7 rounded-full bg-blue-50 dark:bg-blue-950 text-blue-600 dark:text-blue-400 font-bold text-xs flex items-center justify-center shrink-0 border border-blue-200 dark:border-blue-800">
+            <div className="w-7 h-7 rounded-full bg-teal-50 dark:bg-teal-950 text-[#34B1AC] font-bold text-xs flex items-center justify-center shrink-0 border border-teal-200 dark:border-teal-800">
               3
             </div>
             <div className="text-xs text-slate-700 dark:text-slate-300">
-              Toque em <strong>"Adicionar"</strong> no canto superior direito para confirmar. O ícone aparecerá instantaneamente na sua tela de apps!
+              Toque em <strong>"Adicionar"</strong> no canto superior direito para confirmar. O ícone do OperaTask aparecerá instantaneamente na sua tela de apps!
             </div>
           </div>
         </div>
 
         <button
           onClick={onClose}
-          className="w-full py-2.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm transition-colors flex items-center justify-center gap-2"
+          className="w-full py-2.5 px-4 rounded-xl bg-[#173653] hover:bg-[#1f486d] text-white font-semibold text-sm transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-md"
         >
-          <Check className="w-4 h-4" />
+          <Check className="w-4 h-4 text-[#34B1AC]" />
           <span>Entendi</span>
         </button>
       </div>

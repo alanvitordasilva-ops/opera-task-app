@@ -1,6 +1,6 @@
 import { MediaCategory, TaskAttachment } from '../types/index.ts';
 
-const DB_NAME = 'taskflow_media_store_v1';
+const DB_NAME = 'operatask_media_store_v1';
 const STORE_NAME = 'media_blobs';
 const DB_VERSION = 1;
 

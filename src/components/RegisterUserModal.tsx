@@ -14,6 +14,8 @@ import {
   AlertCircle,
   ExternalLink,
   Sparkles,
+  Share2,
+  MessageSquare,
 } from 'lucide-react';
 import { WorkspaceRole, User } from '../types/index.ts';
 import { StorageService } from '../services/storage.ts';
@@ -164,18 +166,30 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
     }, 350);
   };
 
-  const handleCopyCredentials = () => {
-    if (!createdResult) return;
+  const getShareText = () => {
+    if (!createdResult) return '';
     const roleLabel =
       ROLE_OPTIONS.find((r) => r.role === createdResult.role)?.label || 'Membro';
 
-    const textToCopy = `*Acesso ao OperaTask*\n\nOlá, ${createdResult.user.name}! Sua conta foi criada pelo Administrador.\n\n🔗 *Link de Acesso:* ${createdResult.accessLink}\n👤 *Usuário / Login:* ${createdResult.user.email}\n🔑 *Senha:* ${createdResult.rawPassword}\n🛡️ *Perfil:* ${roleLabel}\n\nAcesse o link acima e faça login com suas credenciais.`;
+    return `*Acesso ao OperaTask*\n\nOlá, ${createdResult.user.name}! Sua conta foi criada e está 100% liberada para acesso imediato.\n\n🔗 *Link de Acesso:* ${createdResult.accessLink}\n👤 *Usuário / Login:* ${createdResult.user.email}\n🔑 *Senha:* ${createdResult.rawPassword}\n🛡️ *Perfil:* ${roleLabel}\n\nAcesse o link acima e faça login com suas credenciais para começar!`;
+  };
+
+  const handleCopyCredentials = () => {
+    const textToCopy = getShareText();
+    if (!textToCopy) return;
 
     if (navigator.clipboard) {
       navigator.clipboard.writeText(textToCopy);
       setCopiedLink(true);
       setTimeout(() => setCopiedLink(false), 2500);
     }
+  };
+
+  const handleShareWhatsApp = () => {
+    const textToShare = getShareText();
+    if (!textToShare) return;
+    const url = `https://api.whatsapp.com/send?text=${encodeURIComponent(textToShare)}`;
+    window.open(url, '_blank', 'noopener,noreferrer');
   };
 
   return (
@@ -236,8 +250,12 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
                 <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100">
                   Usuário Cadastrado com Sucesso!
                 </h3>
+                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700 text-[11px] font-bold">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                  <span>Conta Ativa & 100% Liberada para Acesso Imediato</span>
+                </div>
                 <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm mx-auto">
-                  A conta foi criada com o nome de usuário e a senha definidos. Envie o link de acesso abaixo para o novo membro acessar a plataforma.
+                  A conta foi criada com o nome de usuário e a senha definidos. O membro pode fazer login imediatamente no app.
                 </p>
               </div>
 
@@ -283,12 +301,21 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
                 </div>
               </div>
 
-              {/* Botões de Ação */}
+              {/* Botões de Ação: WhatsApp & Copiar */}
               <div className="space-y-2 pt-1">
                 <button
                   type="button"
+                  onClick={handleShareWhatsApp}
+                  className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl text-xs font-bold text-white bg-[#25D366] hover:bg-[#20ba59] active:scale-98 shadow-md shadow-emerald-500/20 transition-all cursor-pointer"
+                >
+                  <MessageSquare className="w-4 h-4" />
+                  <span>Enviar Acesso no WhatsApp</span>
+                </button>
+
+                <button
+                  type="button"
                   onClick={handleCopyCredentials}
-                  className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl text-xs font-bold text-white bg-[#34B1AC] hover:bg-[#289e99] active:scale-98 shadow-md shadow-[#34B1AC]/30 transition-all cursor-pointer"
+                  className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs font-bold text-white bg-[#34B1AC] hover:bg-[#289e99] active:scale-98 shadow-xs transition-all cursor-pointer"
                 >
                   {copiedLink ? (
                     <>
@@ -303,7 +330,7 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
                   )}
                 </button>
 
-                <div className="flex gap-2">
+                <div className="flex gap-2 pt-1">
                   <button
                     type="button"
                     onClick={handleReset}

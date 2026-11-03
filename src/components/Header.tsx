@@ -16,6 +16,7 @@ import {
   Crown,
   Sun,
   Moon,
+  UserPlus,
 } from 'lucide-react';
 import { getInitials, isUserMaster } from '../utils/helpers.ts';
 import { UserAvatar } from './UserAvatar.tsx';
@@ -45,6 +46,8 @@ interface HeaderProps {
   onOpenMasterPanel?: () => void;
   theme?: 'light' | 'dark';
   onToggleTheme?: () => void;
+  canRegisterUser?: boolean;
+  onOpenRegisterUserModal?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -72,6 +75,8 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenMasterPanel,
   theme = 'light',
   onToggleTheme,
+  canRegisterUser = false,
+  onOpenRegisterUserModal,
 }) => {
   const [showFilters, setShowFilters] = useState(false);
   const isMaster = isUserMaster(currentUser);
@@ -246,6 +251,19 @@ export const Header: React.FC<HeaderProps> = ({
                 <span className="hidden xl:inline text-xs font-bold text-slate-700 dark:text-slate-200 group-hover:text-[#173653] dark:group-hover:text-[#34B1AC] max-w-[90px] truncate">
                   {currentUser.name.split(' ')[0]}
                 </span>
+              </button>
+            )}
+
+            {/* Botão Cadastrar Novo Usuário (Apenas Dono / Admin / Master) */}
+            {canRegisterUser && onOpenRegisterUserModal && (
+              <button
+                type="button"
+                onClick={onOpenRegisterUserModal}
+                className="hidden sm:flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-[#173653] dark:text-[#34B1AC] bg-[#34B1AC]/10 hover:bg-[#34B1AC]/20 border border-[#34B1AC]/30 active:scale-98 rounded-xl transition-all cursor-pointer"
+                title="Cadastrar novo usuário no workspace"
+              >
+                <UserPlus className="w-4 h-4 text-[#34B1AC]" />
+                <span className="hidden md:inline">Cadastrar Usuário</span>
               </button>
             )}
 

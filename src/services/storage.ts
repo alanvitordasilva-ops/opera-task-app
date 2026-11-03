@@ -14,6 +14,7 @@ import {
   WorkspaceRole,
 } from '../types/index.ts';
 import { SupabaseService } from './supabaseService.ts';
+import { RealtimeService, SyncEntity } from './realtimeService.ts';
 
 const STORAGE_KEYS = {
   USERS: 'operatask_clean_v1_users',
@@ -408,6 +409,21 @@ let pendingCount = 0;
 function handleSaveMutation(entityKey: string, data: any, immediate: boolean = false) {
   pendingCount++;
   const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
+
+  // Broadcast em tempo real para todos os clientes conectados (celular e desktop)
+  const keyToEntityMap: Record<string, SyncEntity> = {
+    [STORAGE_KEYS.TASKS]: 'tasks',
+    [STORAGE_KEYS.PROJECTS]: 'projects',
+    [STORAGE_KEYS.WORKSPACES]: 'workspaces',
+    [STORAGE_KEYS.FICHAS_TECNICAS]: 'fichas_tecnicas',
+    [STORAGE_KEYS.USERS]: 'users',
+    [STORAGE_KEYS.TAGS]: 'tags',
+    [STORAGE_KEYS.ACTIVITIES]: 'activities',
+  };
+  const entity = keyToEntityMap[entityKey];
+  if (entity) {
+    RealtimeService.broadcast(entity, data);
+  }
 
   emitSaveStatus({
     state: isOnline ? 'saving' : 'offline',

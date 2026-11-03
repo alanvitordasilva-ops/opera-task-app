@@ -13,6 +13,7 @@ import {
   Notification,
 } from './types/index.ts';
 import { StorageService } from './services/storage.ts';
+import { RealtimeService } from './services/realtimeService.ts';
 import {
   isTaskOverdue,
   isTaskDueToday,
@@ -23,8 +24,10 @@ import {
   canAccessDashboard,
   canModifyCompletedTask,
   isTaskInDoneColumn,
+  canRegisterUser,
 } from './utils/helpers.ts';
 import { SplashScreen } from './components/SplashScreen.tsx';
+import { RegisterUserModal } from './components/RegisterUserModal.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import { Header } from './components/Header.tsx';
 import { KanbanView } from './components/KanbanView.tsx';
@@ -81,17 +84,53 @@ export default function App() {
   );
 
   const handleLoginSuccess = (user: User) => {
-    let currentUsersList = users;
-    if (!users.some((u) => u.id === user.id || u.email.toLowerCase() === user.email.toLowerCase())) {
-      currentUsersList = [...users, user];
-      setUsers(currentUsersList);
-      StorageService.saveUsers(currentUsersList);
+    // 1. Atualiza lista de usuários com dados mais recentes do armazenamento
+    const freshUsers = StorageService.getUsers();
+    let currentUsersList = freshUsers;
+    if (!currentUsersList.some((u) => u.id === user.id || u.email.toLowerCase() === user.email.toLowerCase())) {
+      currentUsersList = [...freshUsers, user];
+      StorageService.saveUsers(currentUsersList, true);
     }
+    setUsers(currentUsersList);
     setCurrentUser(user);
     StorageService.setCurrentUserId(user.id);
 
-    // Garante que haja um workspace ativo com o usuário como membro
-    if (workspaces.length === 0) {
+    // 2. Garante acesso imediato ao workspace com a função definida no cadastro (sem aprovações adicionais)
+    const freshWorkspaces = StorageService.getWorkspaces();
+    let targetWs = freshWorkspaces.find((w) => w.members.some((m) => m.userId === user.id));
+
+    if (!targetWs && freshWorkspaces.length > 0) {
+      targetWs = freshWorkspaces[0];
+      const isMaster = isUserMaster(user);
+      const assignedRole: WorkspaceRole = isMaster
+        ? 'owner'
+        : user.title?.toLowerCase().includes('admin')
+        ? 'admin'
+        : user.title?.toLowerCase().includes('visualizador')
+        ? 'viewer'
+        : user.title?.toLowerCase().includes('produção') || user.title?.toLowerCase().includes('producao')
+        ? 'production'
+        : 'member';
+
+      const updatedMembers = [
+        ...targetWs.members,
+        {
+          userId: user.id,
+          role: assignedRole,
+          joinedAt: new Date().toISOString(),
+        },
+      ];
+      const updatedWs = { ...targetWs, members: updatedMembers };
+      const updatedAll = freshWorkspaces.map((w) => (w.id === updatedWs.id ? updatedWs : w));
+      setWorkspaces(updatedAll);
+      setCurrentWorkspace(updatedWs);
+      StorageService.saveWorkspaces(updatedAll, true);
+      StorageService.setCurrentWorkspaceId(updatedWs.id);
+    } else if (targetWs) {
+      setWorkspaces(freshWorkspaces);
+      setCurrentWorkspace(targetWs);
+      StorageService.setCurrentWorkspaceId(targetWs.id);
+    } else {
       const newWs: Workspace = {
         id: `ws-${Date.now()}`,
         name: 'Meu Workspace',
@@ -104,32 +143,15 @@ export default function App() {
       };
       setWorkspaces([newWs]);
       setCurrentWorkspace(newWs);
-      StorageService.saveWorkspaces([newWs]);
+      StorageService.saveWorkspaces([newWs], true);
       StorageService.setCurrentWorkspaceId(newWs.id);
-    } else {
-      const isMember = currentWorkspace.members.some((m) => m.userId === user.id);
-      if (!isMember) {
-        const updatedMembers = [
-          ...currentWorkspace.members,
-          {
-            userId: user.id,
-            role: (isUserMaster(user) ? 'owner' : 'owner') as WorkspaceRole,
-            joinedAt: new Date().toISOString(),
-          },
-        ];
-        const updatedWs = { ...currentWorkspace, members: updatedMembers };
-        setCurrentWorkspace(updatedWs);
-        const updatedAll = workspaces.map((w) => (w.id === updatedWs.id ? updatedWs : w));
-        setWorkspaces(updatedAll);
-        StorageService.saveWorkspaces(updatedAll);
-      }
     }
 
     StorageService.setAuthenticated(true);
     setIsAuthenticated(true);
     showToast({
       type: 'success',
-      message: `Bem-vindo(a) ao OperaTask, ${user.name}!`,
+      message: `Bem-vindo(a) ao OperaTask, ${user.name}! Acesso liberado.`,
     });
   };
 
@@ -173,6 +195,7 @@ export default function App() {
   const [isSyncSettingsOpen, setIsSyncSettingsOpen] = useState(false);
   const [isUserProfileModalOpen, setIsUserProfileModalOpen] = useState(false);
   const [isMasterModalOpen, setIsMasterModalOpen] = useState(false);
+  const [isRegisterUserOpen, setIsRegisterUserOpen] = useState(false);
 
   const handleUpdateUser = (updatedUser: User) => {
     const updatedUsers = users.map((u) => (u.id === updatedUser.id ? updatedUser : u));
@@ -254,6 +277,66 @@ export default function App() {
   useEffect(() => {
     StorageService.saveNotifications(notifications);
   }, [notifications]);
+
+  // Sincronização em Tempo Real (WebSockets + BroadcastChannel + Supabase)
+  useEffect(() => {
+    RealtimeService.init();
+
+    // Sincronização de Tarefas (Cards)
+    const unsubTasks = RealtimeService.subscribe('tasks', (incomingTasks: Task[], meta) => {
+      if (Array.isArray(incomingTasks)) {
+        setTasks((prev) => {
+          if (JSON.stringify(prev) === JSON.stringify(incomingTasks)) return prev;
+          return incomingTasks;
+        });
+      }
+    });
+
+    // Sincronização de Projetos e Colunas
+    const unsubProjects = RealtimeService.subscribe('projects', (incomingProjects: Project[]) => {
+      if (Array.isArray(incomingProjects)) {
+        setProjects((prev) => {
+          if (JSON.stringify(prev) === JSON.stringify(incomingProjects)) return prev;
+          return incomingProjects;
+        });
+      }
+    });
+
+    // Sincronização de Workspaces e Membros
+    const unsubWorkspaces = RealtimeService.subscribe('workspaces', (incomingWorkspaces: Workspace[]) => {
+      if (Array.isArray(incomingWorkspaces)) {
+        setWorkspaces((prev) => {
+          if (JSON.stringify(prev) === JSON.stringify(incomingWorkspaces)) return prev;
+          return incomingWorkspaces;
+        });
+        const updatedCurrent = incomingWorkspaces.find((w) => w.id === currentWorkspace.id);
+        if (updatedCurrent) {
+          setCurrentWorkspace(updatedCurrent);
+        }
+      }
+    });
+
+    // Sincronização de Usuários e Permissões
+    const unsubUsers = RealtimeService.subscribe('users', (incomingUsers: User[]) => {
+      if (Array.isArray(incomingUsers)) {
+        setUsers((prev) => {
+          if (JSON.stringify(prev) === JSON.stringify(incomingUsers)) return prev;
+          return incomingUsers;
+        });
+        const updatedSelf = incomingUsers.find((u) => u.id === currentUser.id);
+        if (updatedSelf) {
+          setCurrentUser(updatedSelf);
+        }
+      }
+    });
+
+    return () => {
+      unsubTasks();
+      unsubProjects();
+      unsubWorkspaces();
+      unsubUsers();
+    };
+  }, [currentWorkspace.id, currentUser.id]);
 
   // Membros do workspace atual
   const workspaceMembers = useMemo(() => {
@@ -1149,7 +1232,7 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `taskflow-team-${new Date().toISOString().split('T')[0]}.json`;
+    a.download = `operatask-backup-${new Date().toISOString().split('T')[0]}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -1255,6 +1338,7 @@ export default function App() {
         onOpenSyncSettings={() => setIsSyncSettingsOpen(true)}
         onOpenUserProfile={() => setIsUserProfileModalOpen(true)}
         onOpenMasterPanel={() => setIsMasterModalOpen(true)}
+        onOpenRegisterUserModal={() => setIsRegisterUserOpen(true)}
       />
 
       {/* Conteúdo Principal */}
@@ -1282,6 +1366,8 @@ export default function App() {
           currentUser={currentUser}
           onOpenUserProfile={() => setIsUserProfileModalOpen(true)}
           onOpenMasterPanel={() => setIsMasterModalOpen(true)}
+          canRegisterUser={canRegisterUser(currentUserRole, isMaster)}
+          onOpenRegisterUserModal={() => setIsRegisterUserOpen(true)}
           theme={theme}
           onToggleTheme={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
           onOpenNewTaskModal={() => {
@@ -1579,6 +1665,27 @@ export default function App() {
           setIsMasterModalOpen(false);
         }}
         onShowToast={showToast}
+      />
+
+      {/* Modal de Cadastro de Novos Usuários (Dono e Administrador) */}
+      <RegisterUserModal
+        isOpen={isRegisterUserOpen}
+        onClose={() => setIsRegisterUserOpen(false)}
+        workspaceId={currentWorkspace.id}
+        onUserCreated={(newUser) => {
+          const freshUsers = StorageService.getUsers();
+          setUsers(freshUsers);
+          const freshWorkspaces = StorageService.getWorkspaces();
+          setWorkspaces(freshWorkspaces);
+          const updatedCurrentWs = freshWorkspaces.find((w) => w.id === currentWorkspace.id);
+          if (updatedCurrentWs) {
+            setCurrentWorkspace(updatedCurrentWs);
+          }
+          showToast({
+            type: 'success',
+            message: `Usuário ${newUser.name} cadastrado com sucesso! Conta ativa e link liberado para acesso imediato.`,
+          });
+        }}
       />
 
       {/* Notificação Flutuante / Toast de Feedback */}
