@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Workspace, User, WorkspaceRole } from '../types/index.ts';
 import { X, Users, UserPlus, Shield, Trash2, Check, Mail, Building, Lock, AlertTriangle, ShieldAlert } from 'lucide-react';
-import { ROLE_CONFIG, COLOR_PALETTE, getInitials, canRegisterUser } from '../utils/helpers.ts';
+import { ROLE_CONFIG, COLOR_PALETTE, getInitials, canRegisterUser, canRemoveWorkspaceMember, isUserMaster } from '../utils/helpers.ts';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
 import { ColorPicker } from './ColorPicker.tsx';
 import { RegisterUserModal } from './RegisterUserModal.tsx';
@@ -47,8 +47,11 @@ export const WorkspaceModal: React.FC<WorkspaceModalProps> = ({
   if (!isOpen) return null;
 
   const currentMember = workspace.members.find((m) => m.userId === currentUserId);
-  const isOwner = currentMember?.role === 'owner' || workspace.ownerId === currentUserId;
-  const isAdminOrOwner = isOwner || currentMember?.role === 'admin';
+  const currentMemberUser = allUsers.find((u) => u.id === currentUserId);
+  const isMaster = isUserMaster(currentMemberUser);
+  const isOwner = isMaster || currentMember?.role === 'owner' || workspace.ownerId === currentUserId;
+  const isAdminOrOwner = isOwner || currentMember?.role === 'admin' || currentMember?.role === 'administrador';
+  const currentActorRole: WorkspaceRole = isMaster ? 'owner' : currentMember?.role || (isOwner ? 'owner' : 'member');
 
   const ownerMember =
     workspace.members.find((m) => m.role === 'owner') ||
@@ -56,7 +59,6 @@ export const WorkspaceModal: React.FC<WorkspaceModalProps> = ({
   const ownerUser = ownerMember
     ? allUsers.find((u) => u.id === ownerMember.userId)
     : allUsers.find((u) => u.id === workspace.ownerId);
-  const currentMemberUser = allUsers.find((u) => u.id === currentUserId);
   const currentRoleInfo = currentMember
     ? ROLE_CONFIG[currentMember.role]
     : isOwner
@@ -232,16 +234,36 @@ export const WorkspaceModal: React.FC<WorkspaceModalProps> = ({
                             </span>
                           )}
 
-                          {isAdminOrOwner && !isTargetOwner && !isSelf && (
-                            <button
-                              type="button"
-                              onClick={() => setMemberToDelete({ id: member.userId, name: u.name })}
-                              className="p-1.5 text-slate-400 hover:text-red-600 dark:hover:text-red-400 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
-                              title="Remover membro"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          )}
+                          {(() => {
+                            const canRemove = !isSelf && canRemoveWorkspaceMember(currentActorRole, member.role, isMaster, isOwner);
+                            const isTargetAdmin = member.role === 'admin' || member.role === 'administrador';
+
+                            if (canRemove) {
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={() => setMemberToDelete({ id: member.userId, name: u.name })}
+                                  className="p-1.5 text-slate-400 hover:text-red-600 dark:hover:text-red-400 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors cursor-pointer"
+                                  title="Remover acesso deste membro do workspace"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              );
+                            }
+
+                            if (isTargetAdmin && !isOwner && !isMaster && !isSelf) {
+                              return (
+                                <span
+                                  className="p-1.5 text-slate-300 dark:text-slate-600 cursor-not-allowed"
+                                  title="Apenas Master ou Dono podem remover o acesso de um Administrador"
+                                >
+                                  <Lock className="w-3.5 h-3.5" />
+                                </span>
+                              );
+                            }
+
+                            return null;
+                          })()}
                         </div>
                       </div>
                     );

@@ -81,17 +81,19 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
     return StorageService.getWorkspaces();
   }, [workspaces, isOpen]);
 
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>(
-    workspaceId || availableWorkspaces[0]?.id || ''
-  );
+  const [selectedWorkspaceIds, setSelectedWorkspaceIds] = useState<string[]>(() => {
+    if (workspaceId) return [workspaceId];
+    if (availableWorkspaces.length > 0) return [availableWorkspaces[0].id];
+    return [];
+  });
 
   useEffect(() => {
-    if (workspaceId) {
-      setSelectedWorkspaceId(workspaceId);
-    } else if (availableWorkspaces.length > 0 && !selectedWorkspaceId) {
-      setSelectedWorkspaceId(availableWorkspaces[0].id);
+    if (workspaceId && !selectedWorkspaceIds.includes(workspaceId)) {
+      setSelectedWorkspaceIds((prev) => (prev.length === 0 ? [workspaceId] : prev));
+    } else if (availableWorkspaces.length > 0 && selectedWorkspaceIds.length === 0) {
+      setSelectedWorkspaceIds([availableWorkspaces[0].id]);
     }
-  }, [workspaceId, availableWorkspaces, selectedWorkspaceId]);
+  }, [workspaceId, availableWorkspaces]);
 
   const [name, setName] = useState('');
   const [username, setUsername] = useState('');
@@ -109,6 +111,7 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
     rawPassword: string;
     role: WorkspaceRole;
     workspaceName: string;
+    workspaceNames: string[];
     accessLink: string;
   } | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
@@ -117,6 +120,20 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
   const [allUsersList, setAllUsersList] = useState<User[]>([]);
 
   if (!isOpen) return null;
+
+  const handleToggleWorkspace = (wsId: string) => {
+    setSelectedWorkspaceIds((prev) =>
+      prev.includes(wsId) ? prev.filter((id) => id !== wsId) : [...prev, wsId]
+    );
+  };
+
+  const handleSelectAllWorkspaces = () => {
+    setSelectedWorkspaceIds(availableWorkspaces.map((w) => w.id));
+  };
+
+  const handleClearWorkspaces = () => {
+    setSelectedWorkspaceIds([]);
+  };
 
   const handleReset = () => {
     setName('');
@@ -131,9 +148,7 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
     setCreatedResult(null);
     setCopiedLink(false);
     setShowAllUsersList(false);
-    if (availableWorkspaces[0]?.id) {
-      setSelectedWorkspaceId(workspaceId || availableWorkspaces[0].id);
-    }
+    setSelectedWorkspaceIds(workspaceId ? [workspaceId] : availableWorkspaces[0]?.id ? [availableWorkspaces[0].id] : []);
   };
 
   const handleClose = () => {
@@ -149,7 +164,6 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
     // Normaliza nome de usuário: minúsculas, sem espaços (substitui espaços por ponto)
     const cleanUsername = username.trim().toLowerCase().replace(/\s+/g, '.').replace(/[^a-z0-9._-]/g, '').replace(/^@/, '');
     const cleanEmail = email.trim().toLowerCase();
-    const targetWsId = selectedWorkspaceId || availableWorkspaces[0]?.id;
 
     if (!cleanName) {
       setErrorMessage('Por favor, informe o nome completo do usuário.');
@@ -166,8 +180,8 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
       return;
     }
 
-    if (!targetWsId) {
-      setErrorMessage('Por favor, selecione o Workspace para vincular o novo usuário.');
+    if (selectedWorkspaceIds.length === 0) {
+      setErrorMessage('Por favor, selecione pelo menos um Workspace para vincular o novo usuário (campo obrigatório).');
       return;
     }
 
@@ -195,7 +209,8 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
         email: cleanEmail || `${cleanUsername}@operatask.app`,
         password,
         role,
-        workspaceId: targetWsId,
+        workspaceIds: selectedWorkspaceIds,
+        workspaceId: selectedWorkspaceIds[0],
       });
 
       setIsSubmitting(false);
@@ -207,18 +222,21 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
 
       const currentOrigin = getProductionAppUrl();
 
-      const targetWs = availableWorkspaces.find((w) => w.id === targetWsId);
+      const targetWorkspaces = availableWorkspaces.filter((w) => selectedWorkspaceIds.includes(w.id));
+      const targetWsNames = targetWorkspaces.map((w) => w.name);
+      const combinedWsName = targetWsNames.join(', ') || 'Workspaces Vinculados';
 
       setCreatedResult({
         user: result.user,
         rawPassword: password,
         role,
-        workspaceName: targetWs?.name || 'Workspace Principal',
+        workspaceName: combinedWsName,
+        workspaceNames: targetWsNames,
         accessLink: currentOrigin,
       });
 
       if (onUserCreated) {
-        onUserCreated(result.user, role, targetWsId);
+        onUserCreated(result.user, role, selectedWorkspaceIds[0]);
       }
     } catch (err: any) {
       setIsSubmitting(false);
@@ -558,33 +576,78 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
                 </p>
               </div>
 
-              {/* 4. Campo Obrigatório de Seleção de Workspace */}
-              <div className="space-y-1.5">
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 flex items-center justify-between">
-                  <span className="flex items-center gap-1.5">
+              {/* 4. Campo Obrigatório de Seleção de Workspace (Múltipla Seleção) */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
                     <Building className="w-3.5 h-3.5 text-[#34B1AC]" />
-                    <span>Workspace (Espaço de Trabalho) *</span>
-                  </span>
-                  <span className="text-[10px] text-teal-600 dark:text-teal-400 font-semibold normal-case">
-                    Obrigatório
-                  </span>
-                </label>
-                <div className="relative">
-                  <select
-                    value={selectedWorkspaceId}
-                    onChange={(e) => setSelectedWorkspaceId(e.target.value)}
-                    required
-                    className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#34B1AC] focus:outline-hidden transition-all cursor-pointer font-semibold"
-                  >
-                    {availableWorkspaces.map((ws) => (
-                      <option key={ws.id} value={ws.id}>
-                        {ws.name} ({ws.members?.length || 1} membro{ws.members?.length === 1 ? '' : 's'})
-                      </option>
-                    ))}
-                  </select>
+                    <span>Workspaces Vinculados *</span>
+                    <span className="text-[10px] text-teal-600 dark:text-teal-400 font-semibold normal-case">
+                      ({selectedWorkspaceIds.length} selecionado{selectedWorkspaceIds.length === 1 ? '' : 's'})
+                    </span>
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleSelectAllWorkspaces}
+                      className="text-[11px] font-semibold text-[#34B1AC] hover:underline cursor-pointer"
+                    >
+                      Selecionar todos
+                    </button>
+                    <span className="text-slate-300 dark:text-slate-600">·</span>
+                    <button
+                      type="button"
+                      onClick={handleClearWorkspaces}
+                      className="text-[11px] font-semibold text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                    >
+                      Limpar
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5 max-h-48 overflow-y-auto p-1.5 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-800/40">
+                  {availableWorkspaces.map((ws) => {
+                    const isSelected = selectedWorkspaceIds.includes(ws.id);
+                    return (
+                      <div
+                        key={ws.id}
+                        onClick={() => handleToggleWorkspace(ws.id)}
+                        className={`flex items-center justify-between p-2.5 rounded-xl border text-xs cursor-pointer transition-all ${
+                          isSelected
+                            ? 'border-[#34B1AC] bg-[#34B1AC]/10 dark:bg-[#34B1AC]/15 shadow-xs'
+                            : 'border-slate-200/80 dark:border-slate-700/80 bg-white dark:bg-slate-800 hover:border-slate-300 dark:hover:border-slate-600'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div
+                            className="w-3 h-3 rounded-full shrink-0"
+                            style={{ backgroundColor: ws.logoColor || '#34B1AC' }}
+                          />
+                          <div className="min-w-0">
+                            <span className="font-bold text-slate-800 dark:text-slate-100 block truncate">
+                              {ws.name}
+                            </span>
+                            <span className="text-[10px] text-slate-400 dark:text-slate-500">
+                              {ws.members?.length || 1} membro{ws.members?.length === 1 ? '' : 's'}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div
+                          className={`w-4.5 h-4.5 rounded-md border flex items-center justify-center shrink-0 transition-colors ${
+                            isSelected
+                              ? 'bg-[#34B1AC] border-[#34B1AC] text-white'
+                              : 'border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700'
+                          }`}
+                        >
+                          {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
                 <p className="text-[11px] text-slate-400">
-                  O novo usuário terá acesso imediato e liberado a este workspace ao entrar no app.
+                  O usuário só terá acesso e visibilidade aos workspaces selecionados. Workspaces não marcados permanecerão 100% invisíveis para ele.
                 </p>
               </div>
 

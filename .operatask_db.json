@@ -51,6 +51,19 @@
       "status": "active",
       "isActive": true,
       "createdAt": "2026-11-04T10:37:46.090Z"
+    },
+    {
+      "id": "user-1793792108304-72mo",
+      "name": "Juliana Costa",
+      "username": "juliana",
+      "email": "juliana@empresa.com",
+      "password": "password123",
+      "avatarColor": "#34B1AC",
+      "title": "Membro da Equipe",
+      "tipo": "membro",
+      "status": "active",
+      "isActive": true,
+      "createdAt": "2026-11-04T11:35:08.304Z"
     }
   ],
   "workspaces": [
@@ -78,9 +91,9 @@
           "joinedAt": "2026-11-04T10:19:06.280Z"
         },
         {
-          "userId": "user-1793788666090-6lfr",
-          "role": "producao",
-          "joinedAt": "2026-11-04T10:37:46.090Z"
+          "userId": "user-1793792108304-72mo",
+          "role": "membro",
+          "joinedAt": "2026-11-04T11:35:08.304Z"
         }
       ],
       "createdAt": "2026-01-01T00:00:00.000Z"
@@ -120,22 +133,7 @@
       "color": "#7c3aed"
     }
   ],
-  "activities": [
-    {
-      "id": "act-1793718754124-bgw1",
-      "workspaceId": "ws-1793718688182",
-      "userId": "user-master-alan",
-      "action": "excluiu permanentemente o workspace \"TAN TAN BAR\"",
-      "timestamp": "2026-11-03T15:12:34.124Z"
-    },
-    {
-      "id": "act-1793718688182-9dos",
-      "workspaceId": "ws-principal",
-      "userId": "user-master-alan",
-      "action": "criou o workspace \"TAN TAN BAR\"",
-      "timestamp": "2026-11-03T15:11:28.182Z"
-    }
-  ],
+  "activities": [],
   "notifications": [],
   "fichas_tecnicas": []
 }

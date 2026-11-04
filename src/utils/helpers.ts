@@ -116,74 +116,118 @@ export function isUserMaster(user?: Partial<User> | null): boolean {
   return (
     user.systemRole === 'master' ||
     user.isSuperAdmin === true ||
-    user.email?.trim().toLowerCase() === 'alanvitordasilva@gmail.com.br'
+    user.email?.trim().toLowerCase() === 'alanvitordasilva@gmail.com.br' ||
+    user.username?.trim().toLowerCase() === 'alan'
   );
 }
 
 export function canManageWorkspace(role: WorkspaceRole, isMaster = false): boolean {
   if (isMaster) return true;
-  return role === 'owner' || role === 'admin';
+  return role === 'owner' || role === 'dono' || role === 'admin' || role === 'administrador';
 }
 
 export function canCreateProject(role: WorkspaceRole, isMaster = false): boolean {
   if (isMaster) return true;
-  return role === 'owner' || role === 'admin';
+  return role === 'owner' || role === 'dono' || role === 'admin' || role === 'administrador';
 }
 
 export function canEditTask(role: WorkspaceRole, isMaster = false): boolean {
   if (isMaster) return true;
-  return role === 'owner' || role === 'admin' || role === 'member' || role === 'production';
+  return (
+    role === 'owner' ||
+    role === 'dono' ||
+    role === 'admin' ||
+    role === 'administrador' ||
+    role === 'member' ||
+    role === 'membro' ||
+    role === 'production' ||
+    role === 'producao'
+  );
 }
 
 export function canManageMembers(role: WorkspaceRole, isMaster = false): boolean {
   if (isMaster) return true;
-  return role === 'owner' || role === 'admin';
+  return role === 'owner' || role === 'dono' || role === 'admin' || role === 'administrador';
 }
 
 export function canDeleteTask(role: WorkspaceRole, isMaster = false): boolean {
   if (isMaster) return true;
-  return role === 'owner' || role === 'admin' || role === 'member' || role === 'production';
+  return (
+    role === 'owner' ||
+    role === 'dono' ||
+    role === 'admin' ||
+    role === 'administrador' ||
+    role === 'member' ||
+    role === 'membro' ||
+    role === 'production' ||
+    role === 'producao'
+  );
 }
 
 export function canDeleteColumn(role: WorkspaceRole, isMaster = false): boolean {
   if (isMaster) return true;
-  return role === 'owner' || role === 'admin';
+  return role === 'owner' || role === 'dono' || role === 'admin' || role === 'administrador';
 }
 
 export function canDeleteProject(role: WorkspaceRole, isMaster = false): boolean {
   if (isMaster) return true;
-  return role === 'owner' || role === 'admin';
+  return role === 'owner' || role === 'dono' || role === 'admin' || role === 'administrador';
 }
 
 export function canDeleteComment(role: WorkspaceRole, isAuthor: boolean, isMaster = false): boolean {
   if (isMaster) return true;
-  if (role === 'viewer') return false;
-  return role === 'owner' || role === 'admin' || isAuthor;
+  if (role === 'viewer' || role === 'visualizador') return false;
+  return role === 'owner' || role === 'dono' || role === 'admin' || role === 'administrador' || isAuthor;
 }
 
 export function canDeleteAttachment(role: WorkspaceRole, isMaster = false): boolean {
   if (isMaster) return true;
-  return role === 'owner' || role === 'admin' || role === 'member' || role === 'production';
+  return (
+    role === 'owner' ||
+    role === 'dono' ||
+    role === 'admin' ||
+    role === 'administrador' ||
+    role === 'member' ||
+    role === 'membro' ||
+    role === 'production' ||
+    role === 'producao'
+  );
 }
 
 export function canDeleteChecklist(role: WorkspaceRole, isMaster = false): boolean {
   if (isMaster) return true;
-  return role === 'owner' || role === 'admin' || role === 'member' || role === 'production';
+  return (
+    role === 'owner' ||
+    role === 'dono' ||
+    role === 'admin' ||
+    role === 'administrador' ||
+    role === 'member' ||
+    role === 'membro' ||
+    role === 'production' ||
+    role === 'producao'
+  );
 }
 
 export function canManageFichaTecnica(role: WorkspaceRole, isMaster = false): boolean {
   if (isMaster) return true;
-  return role === 'owner' || role === 'admin';
+  return role === 'owner' || role === 'dono' || role === 'admin' || role === 'administrador';
 }
 
 export function canAccessProduction(role: WorkspaceRole, isMaster = false): boolean {
   if (isMaster) return true;
-  return role === 'owner' || role === 'admin' || role === 'production';
+  return (
+    role === 'owner' ||
+    role === 'dono' ||
+    role === 'admin' ||
+    role === 'administrador' ||
+    role === 'production' ||
+    role === 'producao'
+  );
 }
 
 export function canRegisterUser(role: WorkspaceRole, isMaster = false): boolean {
   if (isMaster) return true;
-  return role === 'owner' || role === 'admin';
+  return role === 'owner' || role === 'dono' || role === 'admin' || role === 'administrador';
 }
 
 export function canAccessFichaTecnicaAndProduction(role: WorkspaceRole, isMaster = false): boolean {
@@ -192,7 +236,93 @@ export function canAccessFichaTecnicaAndProduction(role: WorkspaceRole, isMaster
 
 export function canAccessDashboard(role: WorkspaceRole, isMaster = false): boolean {
   if (isMaster) return true;
-  return role === 'owner' || role === 'admin';
+  return role === 'owner' || role === 'dono' || role === 'admin' || role === 'administrador';
+}
+
+/**
+ * Regra estrita de permissão para remover membros do Workspace:
+ * - Master e Dono podem remover qualquer membro (inclusive Administradores).
+ * - Administrador NÃO pode remover outro Administrador nem o Dono.
+ * - Ninguém pode remover o Dono ou Master do sistema através do workspace.
+ */
+export function canRemoveWorkspaceMember(
+  actorRole: WorkspaceRole,
+  targetRole: WorkspaceRole,
+  isMaster = false,
+  isWorkspaceOwner = false
+): boolean {
+  if (isMaster) return true;
+
+  const targetIsOwner = targetRole === 'owner' || targetRole === 'dono';
+  const targetIsAdmin = targetRole === 'admin' || targetRole === 'administrador';
+
+  // Ninguém remove o dono do workspace
+  if (targetIsOwner) return false;
+
+  // Dono do workspace tem poder total sobre o workspace (pode remover administradores e qualquer membro)
+  if (isWorkspaceOwner || actorRole === 'owner' || actorRole === 'dono') {
+    return true;
+  }
+
+  // Administrador pode remover membros operacionais, mas NÃO outros administradores nem o dono
+  if (actorRole === 'admin' || actorRole === 'administrador') {
+    return !targetIsAdmin;
+  }
+
+  return false;
+}
+
+/**
+ * Normaliza textos de autenticação (remove acentuações, espaços múltiplos, arroba, e caixa)
+ */
+export function normalizeAuthText(text: string): string {
+  if (!text) return '';
+  return text
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ');
+}
+
+/**
+ * Validação inteligente e tolerante para identificar se o login corresponde a um usuário
+ */
+export function matchUserIdentifier(user: Partial<User>, searchInput: string): boolean {
+  const normSearch = normalizeAuthText(searchInput);
+  if (!normSearch) return false;
+
+  const searchWithoutAt = normSearch.replace(/^@/, '');
+  const searchSlug = searchWithoutAt.replace(/[^a-z0-9]/g, '');
+
+  const normUser = normalizeAuthText(user.username || '');
+  const normUserWithoutAt = normUser.replace(/^@/, '');
+  const userSlug = normUserWithoutAt.replace(/[^a-z0-9]/g, '');
+
+  const normEmail = normalizeAuthText(user.email || '');
+  const emailPrefix = normEmail.split('@')[0] || '';
+  const emailSlug = emailPrefix.replace(/[^a-z0-9]/g, '');
+
+  const normName = normalizeAuthText(user.name || '');
+  const nameParts = normName.split(' ');
+  const firstName = nameParts[0] || '';
+
+  // 1. Username exato ou sem @ ou sem pontuação
+  if (normUser && (normUser === normSearch || normUserWithoutAt === searchWithoutAt)) return true;
+  if (userSlug && searchSlug && userSlug === searchSlug) return true;
+
+  // 2. Email exato ou prefixo do e-mail
+  if (normEmail && normEmail === normSearch) return true;
+  if (emailPrefix && (emailPrefix === searchWithoutAt || emailSlug === searchSlug)) return true;
+
+  // 3. E-mail com domínio padrão da plataforma
+  if (!normSearch.includes('@') && normEmail === `${searchWithoutAt}@operatask.app`) return true;
+
+  // 4. Nome completo ou primeiro nome (ex: "Carlos" acha "Carlos Silva")
+  if (normName && normName === normSearch) return true;
+  if (firstName && firstName.length >= 3 && firstName === searchWithoutAt) return true;
+
+  return false;
 }
 
 export function canModifyCompletedTask(role: WorkspaceRole, isMaster = false): boolean {

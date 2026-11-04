@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { User } from '../types/index.ts';
 import { StorageService } from '../services/storage.ts';
 import { SupabaseService } from '../services/supabaseService.ts';
+import { matchUserIdentifier, normalizeAuthText } from '../utils/helpers.ts';
 import { User as UserIcon, Lock, Eye, EyeOff, ArrowRight, HelpCircle, CheckCircle2, X, Sun, Moon, Database } from 'lucide-react';
 
 interface LoginScreenProps {
@@ -27,7 +28,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
   // Sincroniza a base de dados remota compartilhada assim que a tela de login for carregada
   useEffect(() => {
-    StorageService.syncWithServer().catch(() => {});
+    StorageService.syncWithServer().catch((e) => {
+      console.warn('[OperaTask Login] Sync inicial com o servidor:', e);
+    });
   }, []);
 
   // Modais auxiliares
@@ -42,61 +45,52 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     setDebugMessage(null);
 
     const rawIdent = email.trim();
-    const cleanIdent = rawIdent.toLowerCase();
+    const cleanIdent = normalizeAuthText(rawIdent);
     const cleanIdentWithoutAt = cleanIdent.replace(/^@/, '');
+    const cleanPassword = password.trim();
 
-    if (!cleanIdent) {
+    if (!rawIdent) {
       setErrorMessage('Por favor, informe seu nome de usuário ou e-mail.');
       return;
     }
 
-    if (!password.trim()) {
+    if (!cleanPassword) {
       setErrorMessage('Por favor, digite sua senha.');
       return;
     }
 
     setIsLoading(true);
 
-    try {
-      // 1. Se o Supabase estiver configurado, tenta autenticar via Supabase Auth & Profiles
-      if (SupabaseService.isConfigured()) {
-        try {
-          const sbAuth = await SupabaseService.login(rawIdent, password.trim());
-          if (sbAuth.success && sbAuth.user) {
-            // Garante que o usuário autenticado esteja salvo no cache local
-            const all = StorageService.getUsers();
-            if (!all.some((u) => u.id === sbAuth.user!.id)) {
-              StorageService.saveUsers([...all, sbAuth.user], true);
-            }
-            StorageService.setCurrentUserId(sbAuth.user.id);
-            StorageService.setAuthenticated(true);
-            setIsLoading(false);
-            onLoginSuccess(sbAuth.user);
-            return;
-          }
-          if (sbAuth.error && sbAuth.error.toLowerCase().includes('invalid login credentials')) {
-            setIsLoading(false);
-            setErrorMessage('Usuário ou senha inválidos.');
-            setDebugMessage('Supabase Auth: Credenciais inválidas.');
-            return;
-          }
-        } catch (sbErr) {
-          console.warn('[OperaTask] Supabase Auth tentado, passando para fallback:', sbErr);
-        }
-      }
+    console.log('[OperaTask Client Login] Tentativa de login iniciada:', {
+      rawIdent,
+      cleanIdent,
+      cleanIdentWithoutAt,
+      passwordLength: cleanPassword.length,
+      usersLocais: users.length,
+    });
 
-      // 2. Tenta autenticação autoritativa no banco central do servidor (/api/auth/login)
+    try {
+      // 1. Tenta autenticação autoritativa direta no banco do servidor (/api/auth/login)
+      let serverChecked = false;
       try {
+        console.log('[OperaTask Client Login] Enviando requisição para /api/auth/login...');
         const resp = await fetch('/api/auth/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             identifier: rawIdent,
-            password: password.trim(),
+            password: cleanPassword,
           }),
         });
 
         const data = await resp.json().catch(() => null);
+        serverChecked = true;
+
+        console.log('[OperaTask Client Login] Resposta de /api/auth/login:', {
+          status: resp.status,
+          success: data?.success,
+          user: data?.user ? `${data.user.name} (@${data.user.username})` : null,
+        });
 
         if (resp.ok && data?.success && data?.user) {
           if (Array.isArray(data.allUsers) && data.allUsers.length > 0) {
@@ -111,29 +105,59 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           if (Array.isArray(data.tasks)) {
             StorageService.saveTasks(data.tasks, true);
           }
+          StorageService.setCurrentUserId(data.user.id);
+          StorageService.setAuthenticated(true);
           setIsLoading(false);
+          console.log('[OperaTask Client Login] Login autorizado com sucesso via servidor central!');
           onLoginSuccess(data.user);
           return;
         }
 
         if (data && !data.success) {
-          setIsLoading(false);
           if (resp.status === 401) {
+            setIsLoading(false);
             setErrorMessage('Usuário ou senha inválidos.');
+            setDebugMessage('A senha informada não confere com o cadastro.');
+            console.warn('[OperaTask Client Login] Senha inválida retornada pelo servidor.');
             return;
           }
-          if (resp.status === 404) {
-            setErrorMessage('Conta não encontrada. Verifique os dados ou solicite o cadastro ao administrador.');
-            return;
-          }
-          setErrorMessage(data.error || 'Erro ao tentar autenticar.');
-          return;
+          // Se for 404 no servidor central, continua para checar Supabase e cache local
+          console.warn('[OperaTask Client Login] Servidor central retornou 404, tentando outras fontes:', data.debug);
         }
       } catch (netErr) {
-        console.warn('[OperaTask] Servidor offline ou sem rede, tentando validação local offline:', netErr);
+        console.warn('[OperaTask Client Login] Servidor /api offline ou com erro de conexão, tentando alternativas:', netErr);
       }
 
-      // 2. Fallback de verificação local (IndexedDB / LocalStorage / Master User)
+      // 2. Se o Supabase estiver configurado, tenta autenticar via Supabase
+      if (SupabaseService.isConfigured()) {
+        try {
+          console.log('[OperaTask Client Login] Tentando autenticação via Supabase Auth...');
+          const sbAuth = await SupabaseService.login(rawIdent, cleanPassword);
+          console.log('[OperaTask Client Login] Resposta do Supabase Auth:', sbAuth);
+          if (sbAuth.success && sbAuth.user) {
+            const all = StorageService.getUsers();
+            if (!all.some((u) => u.id === sbAuth.user!.id)) {
+              StorageService.saveUsers([...all, sbAuth.user], true);
+            }
+            StorageService.setCurrentUserId(sbAuth.user.id);
+            StorageService.setAuthenticated(true);
+            setIsLoading(false);
+            console.log('[OperaTask Client Login] Login autorizado com sucesso via Supabase!');
+            onLoginSuccess(sbAuth.user);
+            return;
+          }
+          if (sbAuth.error && sbAuth.error.toLowerCase().includes('invalid login credentials')) {
+            setIsLoading(false);
+            setErrorMessage('Usuário ou senha inválidos.');
+            setDebugMessage('Supabase Auth: Credenciais inválidas.');
+            return;
+          }
+        } catch (sbErr) {
+          console.warn('[OperaTask Client Login] Supabase Auth aviso:', sbErr);
+        }
+      }
+
+      // 3. Fallback: Sincroniza estado e consulta usuários em cache local
       try {
         const syncResp = await fetch('/api/sync/state');
         if (syncResp.ok) {
@@ -157,14 +181,20 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         }
       });
 
+      console.log('[OperaTask Client Login] Consultando lista combinada de usuários locais:', {
+        total: combinedUsers.length,
+        disponiveis: combinedUsers.map((u) => `@${u.username} (${u.email})`),
+      });
+
+      // Validação da Conta Master
       const isMasterTarget =
-        cleanIdent === 'alanvitordasilva@gmail.com.br' ||
-        cleanIdent === 'alanvitordasilva@gmail.com' ||
-        cleanIdent === 'alan' ||
-        cleanIdentWithoutAt === 'alan';
+        cleanIdentWithoutAt === 'alanvitordasilva@gmail.com.br' ||
+        cleanIdentWithoutAt === 'alanvitordasilva@gmail.com' ||
+        cleanIdentWithoutAt === 'alan' ||
+        cleanIdent === 'alan';
 
       if (isMasterTarget) {
-        if (password.trim() !== '273021') {
+        if (cleanPassword !== '273021') {
           setIsLoading(false);
           setErrorMessage('Usuário ou senha inválidos.');
           setDebugMessage('Senha incorreta para a conta master.');
@@ -185,51 +215,53 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           createdAt: '2026-01-01T00:00:00.000Z',
           bio: 'Conta Master com acesso total a todas as configurações e workspaces do OperaTask.',
         };
+        StorageService.setCurrentUserId(masterUser.id);
+        StorageService.setAuthenticated(true);
+        console.log('[OperaTask Client Login] Master logado com sucesso!');
         onLoginSuccess(masterUser);
         return;
       }
 
-      // Busca flexível na lista local
-      const foundUser = combinedUsers.find((u) => {
-        const uUser = (u.username || '').toLowerCase().trim();
-        const uUserNoAt = uUser.replace(/^@/, '');
-        const uEmail = (u.email || '').toLowerCase().trim();
-        const uName = (u.name || '').toLowerCase().trim();
-        const uEmailPrefix = uEmail.split('@')[0];
-
-        return (
-          (uUser && (uUser === cleanIdent || uUserNoAt === cleanIdentWithoutAt)) ||
-          (uEmail && uEmail === cleanIdent) ||
-          (uEmailPrefix && (uEmailPrefix === cleanIdent || uEmailPrefix === cleanIdentWithoutAt)) ||
-          (uName && uName === cleanIdent) ||
-          (!cleanIdent.includes('@') && uEmail === `${cleanIdentWithoutAt}@operatask.app`)
-        );
-      });
+      // Busca inteligente com tolerância a acentos, pontuações e formatos
+      const foundUser = combinedUsers.find((u) => matchUserIdentifier(u, rawIdent));
 
       if (!foundUser) {
         setIsLoading(false);
         setErrorMessage('Conta não encontrada. Verifique os dados ou solicite o cadastro ao administrador.');
-        setDebugMessage(`Usuário '${rawIdent}' não localizado na base de dados (verificado local e servidor).`);
+        setDebugMessage(
+          `Usuário '${rawIdent}' não localizado na base (${combinedUsers.length} usuários verificados).`
+        );
+        console.warn('[OperaTask Client Login] Usuário não localizado na base local:', {
+          rawIdent,
+          cleanIdentWithoutAt,
+          usuariosDisponiveis: combinedUsers.map((u) => ({
+            name: u.name,
+            username: u.username,
+            email: u.email,
+          })),
+        });
         return;
       }
 
-      if (foundUser.password && foundUser.password !== password.trim()) {
+      if (foundUser.password && foundUser.password.trim() !== cleanPassword) {
         setIsLoading(false);
         setErrorMessage('Usuário ou senha inválidos.');
         setDebugMessage('Senha informada não confere com a cadastrada.');
+        console.warn('[OperaTask Client Login] Senha incorreta para o usuário encontrado:', foundUser.name);
         return;
       }
 
       setIsLoading(false);
-      onLoginSuccess({
-        ...foundUser,
-        status: 'active',
-        isActive: true,
-      });
+      const activeUser = { ...foundUser, status: 'active' as const, isActive: true };
+      StorageService.setCurrentUserId(activeUser.id);
+      StorageService.setAuthenticated(true);
+      console.log('[OperaTask Client Login] Usuário autenticado com sucesso localmente:', activeUser.name);
+      onLoginSuccess(activeUser);
     } catch (err: any) {
       setIsLoading(false);
       setErrorMessage('Erro ao tentar autenticar. Tente novamente.');
       setDebugMessage(err.message || 'Erro inesperado.');
+      console.error('[OperaTask Client Login] Erro inesperado no login:', err);
     }
   };
 

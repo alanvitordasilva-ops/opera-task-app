@@ -230,7 +230,13 @@ function operataskRealtimePlugin() {
           const cleanEmail = (body.email || (cleanUsername ? `${cleanUsername}@operatask.app` : '')).trim().toLowerCase();
           const cleanPassword = (body.password || '').trim();
           const chosenRole = body.role || 'production';
-          const targetWorkspaceId = body.workspaceId || sharedCache.workspaces?.[0]?.id || 'ws-principal';
+
+          const rawWsIds: string[] = Array.isArray(body.workspaceIds) && body.workspaceIds.length > 0
+            ? body.workspaceIds
+            : body.workspaceId
+            ? [body.workspaceId]
+            : [sharedCache.workspaces?.[0]?.id || 'ws-principal'];
+          const targetWorkspaceIds = rawWsIds.map((id: any) => String(id).trim()).filter(Boolean);
 
           if (!cleanName || !cleanUsername || !cleanPassword) {
             res.statusCode = 400;
@@ -238,9 +244,9 @@ function operataskRealtimePlugin() {
             return;
           }
 
-          if (!targetWorkspaceId) {
+          if (targetWorkspaceIds.length === 0) {
             res.statusCode = 400;
-            res.end(JSON.stringify({ success: false, error: 'O Workspace selecionado é obrigatório.' }));
+            res.end(JSON.stringify({ success: false, error: 'Pelo menos um Workspace deve ser selecionado.' }));
             return;
           }
 
@@ -306,25 +312,27 @@ function operataskRealtimePlugin() {
             sharedCache.users.push(savedUser);
           }
 
-          // Vincula imediatamente ao Workspace selecionado
-          let ws = sharedCache.workspaces.find((w: any) => w.id === targetWorkspaceId);
-          if (!ws && sharedCache.workspaces.length > 0) {
-            ws = sharedCache.workspaces[0];
-          }
-
-          if (ws) {
+          // Vincula o usuário a todos os Workspaces selecionados
+          sharedCache.workspaces.forEach((ws: any) => {
             if (!Array.isArray(ws.members)) ws.members = [];
+            const isSelected = targetWorkspaceIds.includes(ws.id);
             const memberIdx = ws.members.findIndex((m: any) => m.userId === savedUser.id);
-            if (memberIdx !== -1) {
-              ws.members[memberIdx].role = chosenRole;
-            } else {
-              ws.members.push({
-                userId: savedUser.id,
-                role: chosenRole,
-                joinedAt: new Date().toISOString(),
-              });
+
+            if (isSelected) {
+              if (memberIdx !== -1) {
+                ws.members[memberIdx].role = chosenRole;
+              } else {
+                ws.members.push({
+                  userId: savedUser.id,
+                  role: chosenRole,
+                  joinedAt: new Date().toISOString(),
+                });
+              }
+            } else if (memberIdx !== -1 && !body.keepExistingWorkspaces) {
+              // Se não foi selecionado e não é update parcial, remove do workspace não selecionado
+              ws.members.splice(memberIdx, 1);
             }
-          }
+          });
 
           // Grava imediatamente no arquivo .operatask_db.json
           writeDb(sharedCache);
@@ -333,7 +341,7 @@ function operataskRealtimePlugin() {
           broadcastWs({ type: 'SYNC_UPDATE', entity: 'users', payload: sharedCache.users });
           broadcastWs({ type: 'SYNC_UPDATE', entity: 'workspaces', payload: sharedCache.workspaces });
 
-          console.log(`[OperaTask Server] Usuário salvo com sucesso: ${savedUser.name} (${savedUser.username})`);
+          console.log(`[OperaTask Server] Usuário salvo com sucesso: ${savedUser.name} (@${savedUser.username}) em ${targetWorkspaceIds.length} workspace(s):`, targetWorkspaceIds);
 
           res.end(
             JSON.stringify({
@@ -346,16 +354,24 @@ function operataskRealtimePlugin() {
           return;
         }
 
-        // 3. API: Autenticação Segura e Universal (Busca por Nome de Usuário ou E-mail)
+        // 3. API: Autenticação Segura, Normalizada e Universal (Busca por Nome de Usuário ou E-mail)
         if (url === '/api/auth/login' && req.method === 'POST') {
           res.setHeader('Content-Type', 'application/json');
           const body = await parseJsonBody(req);
-          const rawIdent = (body.identifier || body.username || body.email || '').trim();
-          const cleanIdent = rawIdent.toLowerCase();
-          const cleanIdentWithoutAt = cleanIdent.replace(/^@/, '');
-          const password = (body.password || '').trim();
+          const rawIdent = String(body.identifier || body.username || body.email || '').trim();
+          const password = String(body.password || '').trim();
 
-          if (!cleanIdent || !password) {
+          const normInput = rawIdent.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+          const normInputNoAt = normInput.replace(/^@/, '');
+          const normInputSlug = normInputNoAt.replace(/[^a-z0-9]/g, '');
+
+          console.log('[OperaTask Auth Server] Tentativa de login recebida:', {
+            rawIdent,
+            normInputNoAt,
+            hasPassword: Boolean(password),
+          });
+
+          if (!rawIdent || !password) {
             res.statusCode = 400;
             res.end(JSON.stringify({ success: false, error: 'Informe seu nome de usuário ou e-mail e sua senha.' }));
             return;
@@ -368,13 +384,14 @@ function operataskRealtimePlugin() {
 
           // Validação Conta Master
           const isMaster =
-            cleanIdent === 'alanvitordasilva@gmail.com.br' ||
-            cleanIdent === 'alanvitordasilva@gmail.com' ||
-            cleanIdent === 'alan' ||
-            cleanIdentWithoutAt === 'alan';
+            normInputNoAt === 'alanvitordasilva@gmail.com.br' ||
+            normInputNoAt === 'alanvitordasilva@gmail.com' ||
+            normInputNoAt === 'alan' ||
+            normInput === 'alan';
 
           if (isMaster) {
             if (password !== '273021') {
+              console.warn('[OperaTask Auth Server] Senha incorreta para conta master alan.');
               res.statusCode = 401;
               res.end(
                 JSON.stringify({
@@ -387,6 +404,7 @@ function operataskRealtimePlugin() {
             }
             const masterUser = sharedCache.users?.find((u: any) => u.systemRole === 'master') || INITIAL_SERVER_DATA.users[0];
             const activeMaster = { ...masterUser, status: 'active', isActive: true };
+            console.log('[OperaTask Auth Server] Login da Conta Master efetuado com sucesso.');
             res.end(
               JSON.stringify({
                 success: true,
@@ -402,24 +420,36 @@ function operataskRealtimePlugin() {
             return;
           }
 
-          // Busca flexível: username, email, prefixo do email ou nome completo (case-insensitive)
+          // Busca flexível, tolerante a acentos, pontuações, arroba e caixa alta/baixa
           const user = sharedCache.users?.find((u: any) => {
-            const uUser = (u.username || '').toLowerCase().trim();
+            const uUser = String(u.username || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
             const uUserNoAt = uUser.replace(/^@/, '');
-            const uEmail = (u.email || '').toLowerCase().trim();
-            const uName = (u.name || '').toLowerCase().trim();
-            const uEmailPrefix = uEmail.split('@')[0];
+            const uUserSlug = uUserNoAt.replace(/[^a-z0-9]/g, '');
+
+            const uEmail = String(u.email || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+            const uEmailPrefix = uEmail.split('@')[0] || '';
+            const uEmailSlug = uEmailPrefix.replace(/[^a-z0-9]/g, '');
+
+            const uName = String(u.name || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+            const firstName = uName.split(' ')[0] || '';
 
             return (
-              (uUser && (uUser === cleanIdent || uUserNoAt === cleanIdentWithoutAt)) ||
-              (uEmail && uEmail === cleanIdent) ||
-              (uEmailPrefix && (uEmailPrefix === cleanIdent || uEmailPrefix === cleanIdentWithoutAt)) ||
-              (uName && uName === cleanIdent) ||
-              (!cleanIdent.includes('@') && uEmail === `${cleanIdentWithoutAt}@operatask.app`)
+              (uUser && (uUser === normInput || uUserNoAt === normInputNoAt || uUserSlug === normInputSlug)) ||
+              (uEmail && (uEmail === normInput || uEmail === normInputNoAt)) ||
+              (uEmailPrefix && (uEmailPrefix === normInputNoAt || uEmailSlug === normInputSlug)) ||
+              (uName && (uName === normInput || firstName === normInputNoAt)) ||
+              (!normInput.includes('@') && uEmail === `${normInputNoAt}@operatask.app`)
             );
           });
 
           if (!user) {
+            console.warn('[OperaTask Auth Server] Usuário NÃO localizado:', {
+              rawIdent,
+              normInputNoAt,
+              totalUsers: sharedCache.users?.length,
+              availableUsers: sharedCache.users?.map((u: any) => `@${u.username} (${u.email})`),
+            });
+
             res.statusCode = 404;
             res.end(
               JSON.stringify({
@@ -431,7 +461,8 @@ function operataskRealtimePlugin() {
             return;
           }
 
-          if (user.password && user.password !== password) {
+          if (user.password && String(user.password).trim() !== password) {
+            console.warn('[OperaTask Auth Server] Senha incorreta para o usuário:', user.username || user.email);
             res.statusCode = 401;
             res.end(
               JSON.stringify({
@@ -442,6 +473,12 @@ function operataskRealtimePlugin() {
             );
             return;
           }
+
+          console.log('[OperaTask Auth Server] Login efetuado com sucesso:', {
+            id: user.id,
+            name: user.name,
+            username: user.username,
+          });
 
           // Garante retorno ativo
           const activeUser = { ...user, status: 'active', isActive: true };

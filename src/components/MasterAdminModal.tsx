@@ -32,6 +32,7 @@ import {
 } from 'lucide-react';
 import { StorageService } from '../services/storage.ts';
 import { getProductionAppUrl } from '../utils/appUrl.ts';
+import { isUserMaster } from '../utils/helpers.ts';
 
 interface MasterAdminModalProps {
   isOpen: boolean;
@@ -80,8 +81,10 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
   const [newUserEmail, setNewUserEmail] = useState('');
   const [newUserPassword, setNewUserPassword] = useState('');
   const [newUserConfirmPassword, setNewUserConfirmPassword] = useState('');
-  const [newUserWorkspaceId, setNewUserWorkspaceId] = useState('');
-  const [newUserWorkspaceRole, setNewUserWorkspaceRole] = useState<WorkspaceRole>('member');
+  const [newUserWorkspaceIds, setNewUserWorkspaceIds] = useState<string[]>(() =>
+    workspaces.length > 0 ? [workspaces[0].id] : []
+  );
+  const [newUserWorkspaceRole, setNewUserWorkspaceRole] = useState<WorkspaceRole>('producao');
   const [newUserTitle, setNewUserTitle] = useState('');
   const [newUserRole, setNewUserRole] = useState<SystemRole>('user');
   const [newUserAvatarColor, setNewUserAvatarColor] = useState('#34B1AC');
@@ -185,7 +188,7 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
     const cleanUsername = rawUsername.replace(/\s+/g, '.').replace(/[^a-z0-9._-]/g, '').replace(/^@/, '');
     const cleanEmail = (newUserEmail || (cleanUsername ? `${cleanUsername}@operatask.app` : '')).trim().toLowerCase();
     const cleanPassword = newUserPassword.trim();
-    const targetWsId = newUserWorkspaceId || workspaces[0]?.id || 'ws-principal';
+    const targetWsId = newUserWorkspaceIds[0] || workspaces[0]?.id || 'ws-principal';
 
     if (!cleanName) {
       onShowToast({ type: 'error', message: 'Preencha o nome completo do novo usuário.' });
@@ -193,6 +196,10 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
     }
     if (!cleanUsername || cleanUsername.length < 3) {
       onShowToast({ type: 'error', message: 'Defina um nome de usuário (Login) com pelo menos 3 caracteres.' });
+      return;
+    }
+    if (newUserWorkspaceIds.length === 0) {
+      onShowToast({ type: 'error', message: 'Por favor, selecione pelo menos um Workspace para o novo usuário.' });
       return;
     }
     if (!cleanPassword || cleanPassword.length < 4) {
@@ -212,7 +219,8 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
         email: cleanEmail,
         password: cleanPassword,
         role: newUserWorkspaceRole,
-        workspaceId: targetWsId,
+        workspaceIds: newUserWorkspaceIds,
+        workspaceId: newUserWorkspaceIds[0],
       });
 
       if (!result.success || !result.user) {
@@ -233,12 +241,14 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
       const freshUsers = StorageService.getUsers();
       onUpdateUsers(freshUsers);
 
-      const targetWs = workspaces.find((w) => w.id === targetWsId);
+      const targetWorkspaces = workspaces.filter((w) => newUserWorkspaceIds.includes(w.id));
+      const combinedWsNames = targetWorkspaces.map((w) => w.name).join(', ') || 'Workspaces Vinculados';
+
       setCreatedResult({
         user: result.user,
         rawPassword: cleanPassword,
         role: newUserWorkspaceRole,
-        workspaceName: targetWs?.name || 'Workspace Principal',
+        workspaceName: combinedWsNames,
         accessLink: getProductionAppUrl(),
       });
 
@@ -279,7 +289,45 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
   const handleConfirmDeleteUser = () => {
     if (!deleteTargetUser) return;
     if (deleteTargetUser.id === currentUser.id) {
-      onShowToast({ type: 'error', message: 'A conta master atual não pode ser excluída.' });
+      onShowToast({ type: 'error', message: 'A sua própria conta ativa não pode ser excluída.' });
+      setDeleteTargetUser(null);
+      return;
+    }
+
+    const isTargetMaster = isUserMaster(deleteTargetUser);
+    if (isTargetMaster) {
+      onShowToast({ type: 'error', message: 'Contas com perfil Master não podem ser excluídas.' });
+      setDeleteTargetUser(null);
+      return;
+    }
+
+    const isCurrentMaster = isUserMaster(currentUser);
+    const isCurrentAnyOwner = workspaces.some(
+      (w) => w.ownerId === currentUser.id || w.members.some((m) => m.userId === currentUser.id && (m.role === 'owner' || m.role === 'dono'))
+    );
+    const targetIsAdmin = workspaces.some((w) =>
+      w.members.some((m) => m.userId === deleteTargetUser.id && (m.role === 'admin' || m.role === 'administrador'))
+    );
+    const targetIsOwner = workspaces.some(
+      (w) => w.ownerId === deleteTargetUser.id || w.members.some((m) => m.userId === deleteTargetUser.id && (m.role === 'owner' || m.role === 'dono'))
+    );
+
+    // Requisito 3: Administrador NÃO pode remover outro Administrador, nem o Dono, nem Master.
+    // Master e Dono podem remover o acesso de um Administrador.
+    if (!isCurrentMaster && !isCurrentAnyOwner && targetIsAdmin) {
+      onShowToast({
+        type: 'error',
+        message: 'Apenas Master ou Dono podem excluir o acesso de um Administrador da plataforma.',
+      });
+      setDeleteTargetUser(null);
+      return;
+    }
+
+    if (!isCurrentMaster && targetIsOwner) {
+      onShowToast({
+        type: 'error',
+        message: 'Apenas Master pode excluir a conta de um Dono de Workspace.',
+      });
       setDeleteTargetUser(null);
       return;
     }
@@ -1041,22 +1089,72 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block font-bold text-slate-700 dark:text-slate-200 mb-1">Workspace de Destino *</label>
-                    <select
-                      value={newUserWorkspaceId || workspaces[0]?.id || ''}
-                      onChange={(e) => setNewUserWorkspaceId(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#34B1AC]"
-                    >
-                      {workspaces.map((w) => (
-                        <option key={w.id} value={w.id}>
-                          {w.name}
-                        </option>
-                      ))}
-                    </select>
+                {/* Seleção de Workspaces com Múltipla Escolha */}
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block font-bold text-slate-700 dark:text-slate-200">
+                      Workspaces Vinculados * ({newUserWorkspaceIds.length} selecionado{newUserWorkspaceIds.length === 1 ? '' : 's'})
+                    </label>
+                    <div className="flex items-center gap-2 text-[10px]">
+                      <button
+                        type="button"
+                        onClick={() => setNewUserWorkspaceIds(workspaces.map((w) => w.id))}
+                        className="text-teal-600 dark:text-teal-400 font-semibold hover:underline cursor-pointer"
+                      >
+                        Todos
+                      </button>
+                      <span className="text-slate-300">·</span>
+                      <button
+                        type="button"
+                        onClick={() => setNewUserWorkspaceIds([])}
+                        className="text-slate-400 hover:text-slate-600 cursor-pointer"
+                      >
+                        Limpar
+                      </button>
+                    </div>
                   </div>
+                  <div className="max-h-36 overflow-y-auto space-y-1 p-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40">
+                    {workspaces.map((w) => {
+                      const isChecked = newUserWorkspaceIds.includes(w.id);
+                      return (
+                        <div
+                          key={w.id}
+                          onClick={() => {
+                            setNewUserWorkspaceIds((prev) =>
+                              prev.includes(w.id) ? prev.filter((id) => id !== w.id) : [...prev, w.id]
+                            );
+                          }}
+                          className={`flex items-center justify-between p-2 rounded-lg border text-xs cursor-pointer transition-all ${
+                            isChecked
+                              ? 'border-[#34B1AC] bg-[#34B1AC]/10 dark:bg-[#34B1AC]/15'
+                              : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:border-slate-300'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <div
+                              className="w-2.5 h-2.5 rounded-full shrink-0"
+                              style={{ backgroundColor: w.logoColor || '#34B1AC' }}
+                            />
+                            <span className="font-semibold text-slate-800 dark:text-slate-100 truncate">
+                              {w.name}
+                            </span>
+                          </div>
+                          <div
+                            className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
+                              isChecked
+                                ? 'bg-[#34B1AC] border-[#34B1AC] text-white'
+                                : 'border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700'
+                            }`}
+                          >
+                            {isChecked && <Check className="w-3 h-3 stroke-[3]" />}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
 
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block font-bold text-slate-700 dark:text-slate-200 mb-1">Tipo de Membro</label>
                     <select
@@ -1072,9 +1170,7 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
                       <option value="master">Master (Super Admin)</option>
                     </select>
                   </div>
-                </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block font-bold text-slate-700 dark:text-slate-200 mb-1">Cargo / Função</label>
                     <input
@@ -1085,18 +1181,18 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
                       className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#34B1AC]"
                     />
                   </div>
+                </div>
 
-                  <div>
-                    <label className="block font-bold text-slate-700 dark:text-slate-200 mb-1">Nível de Sistema</label>
-                    <select
-                      value={newUserRole}
-                      onChange={(e) => setNewUserRole(e.target.value as SystemRole)}
-                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#34B1AC]"
-                    >
-                      <option value="user">Usuário Padrão</option>
-                      <option value="master">Super Administrador / Master</option>
-                    </select>
-                  </div>
+                <div>
+                  <label className="block font-bold text-slate-700 dark:text-slate-200 mb-1">Nível de Sistema</label>
+                  <select
+                    value={newUserRole}
+                    onChange={(e) => setNewUserRole(e.target.value as SystemRole)}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#34B1AC]"
+                  >
+                    <option value="user">Usuário Padrão</option>
+                    <option value="master">Super Administrador / Master</option>
+                  </select>
                 </div>
 
                 <div>

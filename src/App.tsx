@@ -95,41 +95,19 @@ export default function App() {
     setCurrentUser(user);
     StorageService.setCurrentUserId(user.id);
 
-    // 2. Garante acesso imediato ao workspace com a função definida no cadastro (sem aprovações adicionais)
+    // 2. Garante acesso imediato exclusivamente aos workspaces aos quais o usuário foi vinculado
     const freshWorkspaces = StorageService.getWorkspaces();
-    let targetWs = freshWorkspaces.find((w) => w.members.some((m) => m.userId === user.id));
+    const isMasterUser = isUserMaster(user);
+    const allowedWorkspaces = isMasterUser
+      ? freshWorkspaces
+      : freshWorkspaces.filter(
+          (w) => w.ownerId === user.id || w.members.some((m) => m.userId === user.id)
+        );
 
-    if (!targetWs && freshWorkspaces.length > 0) {
-      targetWs = freshWorkspaces[0];
-      const isMaster = isUserMaster(user);
-      const assignedRole: WorkspaceRole = isMaster
-        ? 'owner'
-        : user.title?.toLowerCase().includes('admin')
-        ? 'admin'
-        : user.title?.toLowerCase().includes('visualizador')
-        ? 'viewer'
-        : user.title?.toLowerCase().includes('produção') || user.title?.toLowerCase().includes('producao')
-        ? 'production'
-        : 'member';
-
-      const updatedMembers = [
-        ...targetWs.members,
-        {
-          userId: user.id,
-          role: assignedRole,
-          joinedAt: new Date().toISOString(),
-        },
-      ];
-      const updatedWs = { ...targetWs, members: updatedMembers };
-      const updatedAll = freshWorkspaces.map((w) => (w.id === updatedWs.id ? updatedWs : w));
-      setWorkspaces(updatedAll);
-      setCurrentWorkspace(updatedWs);
-      StorageService.saveWorkspaces(updatedAll, true);
-      StorageService.setCurrentWorkspaceId(updatedWs.id);
-    } else if (targetWs) {
+    if (allowedWorkspaces.length > 0) {
       setWorkspaces(freshWorkspaces);
-      setCurrentWorkspace(targetWs);
-      StorageService.setCurrentWorkspaceId(targetWs.id);
+      setCurrentWorkspace(allowedWorkspaces[0]);
+      StorageService.setCurrentWorkspaceId(allowedWorkspaces[0].id);
     } else {
       const newWs: Workspace = {
         id: `ws-${Date.now()}`,
@@ -141,9 +119,10 @@ export default function App() {
         members: [{ userId: user.id, role: 'owner', joinedAt: new Date().toISOString() }],
         createdAt: new Date().toISOString(),
       };
-      setWorkspaces([newWs]);
+      const updatedAll = [...freshWorkspaces, newWs];
+      setWorkspaces(updatedAll);
       setCurrentWorkspace(newWs);
-      StorageService.saveWorkspaces([newWs], true);
+      StorageService.saveWorkspaces(updatedAll, true);
       StorageService.setCurrentWorkspaceId(newWs.id);
     }
 
@@ -261,7 +240,15 @@ export default function App() {
       if (current) {
         setCurrentUser(current);
       }
-      const curWs = freshWorkspaces.find((w) => w.id === currentWorkspace.id) || freshWorkspaces[0];
+      const isMast = isUserMaster(current || currentUser);
+      const allowedWs = isMast
+        ? freshWorkspaces
+        : freshWorkspaces.filter(
+            (w) =>
+              w.ownerId === (current?.id || currentUser.id) ||
+              w.members.some((m) => m.userId === (current?.id || currentUser.id))
+          );
+      const curWs = allowedWs.find((w) => w.id === currentWorkspace.id) || allowedWs[0];
       if (curWs) {
         setCurrentWorkspace(curWs);
       }
@@ -405,6 +392,27 @@ export default function App() {
 
   // Permissão do Dashboard da Equipe: Apenas Administrador e Dono (ocultar completamente para outros papéis)
   const isMaster = isUserMaster(currentUser);
+
+  // Visibilidade estrita de Workspaces:
+  // - Master enxerga e acessa todos os workspaces do sistema.
+  // - Demais usuários só enxergam e acessam os workspaces aos quais foram vinculados.
+  // Workspaces não vinculados permanecem 100% invisíveis.
+  const userVisibleWorkspaces = useMemo(() => {
+    if (isMaster) return workspaces;
+    return workspaces.filter(
+      (w) => w.ownerId === currentUser.id || w.members.some((m) => m.userId === currentUser.id)
+    );
+  }, [workspaces, currentUser, isMaster]);
+
+  // Redireciona caso o workspace atual não esteja mais na lista visível
+  useEffect(() => {
+    if (userVisibleWorkspaces.length > 0 && !userVisibleWorkspaces.some((w) => w.id === currentWorkspace.id)) {
+      const fallback = userVisibleWorkspaces[0];
+      setCurrentWorkspace(fallback);
+      StorageService.setCurrentWorkspaceId(fallback.id);
+    }
+  }, [userVisibleWorkspaces, currentWorkspace.id]);
+
   const canViewDashboard = canAccessDashboard(currentUserRole, isMaster);
 
   // Redireciona automaticamente se estiver no Dashboard sem permissão
@@ -1333,7 +1341,7 @@ export default function App() {
         onLogout={handleLogout}
         isOpenMobile={isMobileSidebarOpen}
         onCloseMobile={() => setIsMobileSidebarOpen(false)}
-        workspaces={workspaces}
+        workspaces={userVisibleWorkspaces}
         currentWorkspace={currentWorkspace}
         onSelectWorkspace={handleSelectWorkspace}
         onOpenCreateWorkspaceModal={() => setIsCreateWorkspaceModalOpen(true)}
@@ -1706,7 +1714,7 @@ export default function App() {
       <RegisterUserModal
         isOpen={isRegisterUserOpen}
         onClose={() => setIsRegisterUserOpen(false)}
-        workspaces={workspaces}
+        workspaces={userVisibleWorkspaces}
         workspaceId={currentWorkspace.id}
         onUserCreated={(newUser) => {
           const freshUsers = StorageService.getUsers();

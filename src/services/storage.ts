@@ -1033,14 +1033,20 @@ export const StorageService = {
     email?: string;
     password?: string;
     role: WorkspaceRole;
-    workspaceId: string;
+    workspaceId?: string;
+    workspaceIds?: string[];
   }): Promise<{ success: boolean; user?: User; error?: string }> {
     const cleanName = params.name.trim();
     const rawUsername = (params.username || params.usernameOrEmail || '').trim().toLowerCase();
     const cleanUsername = rawUsername.replace(/\s+/g, '.').replace(/[^a-z0-9._-]/g, '').replace(/^@/, '');
     const cleanEmail = (params.email || (cleanUsername ? `${cleanUsername}@operatask.app` : '')).trim().toLowerCase();
     const cleanPassword = params.password?.trim() || '';
-    const targetWorkspaceId = params.workspaceId?.trim();
+
+    const targetWorkspaceIds: string[] = Array.isArray(params.workspaceIds) && params.workspaceIds.length > 0
+      ? params.workspaceIds.map((w) => w.trim()).filter(Boolean)
+      : params.workspaceId?.trim()
+      ? [params.workspaceId.trim()]
+      : [];
 
     if (!cleanName) {
       return { success: false, error: 'O nome completo do usuário é obrigatório.' };
@@ -1048,8 +1054,8 @@ export const StorageService = {
     if (!cleanUsername) {
       return { success: false, error: 'O nome de usuário para login é obrigatório.' };
     }
-    if (!targetWorkspaceId) {
-      return { success: false, error: 'A seleção de um Workspace é obrigatória.' };
+    if (targetWorkspaceIds.length === 0) {
+      return { success: false, error: 'A seleção de pelo menos um Workspace é obrigatória.' };
     }
     if (!cleanPassword || cleanPassword.length < 4) {
       return { success: false, error: 'A senha deve ter no mínimo 4 caracteres.' };
@@ -1115,17 +1121,19 @@ export const StorageService = {
     // 0. Se Supabase estiver configurado, grava no Supabase (auth.users + profiles + workspace_members)
     if (SupabaseService.isConfigured()) {
       try {
-        const sbResult = await SupabaseService.registerUser({
-          name: cleanName,
-          username: cleanUsername,
-          email: cleanEmail,
-          password: cleanPassword,
-          tipo: (params.role as any) || 'membro',
-          workspaceId: targetWorkspaceId,
-          avatarColor: chosenColor,
-        });
-        if (sbResult.success && sbResult.user) {
-          newUser = { ...newUser, ...sbResult.user, id: sbResult.user.id };
+        for (const wsId of targetWorkspaceIds) {
+          const sbResult = await SupabaseService.registerUser({
+            name: cleanName,
+            username: cleanUsername,
+            email: cleanEmail,
+            password: cleanPassword,
+            tipo: (params.role as any) || 'membro',
+            workspaceId: wsId,
+            avatarColor: chosenColor,
+          });
+          if (sbResult.success && sbResult.user) {
+            newUser = { ...newUser, ...sbResult.user, id: sbResult.user.id };
+          }
         }
       } catch (sbErr) {
         console.warn('[OperaTask] Supabase registration notice:', sbErr);
@@ -1145,7 +1153,8 @@ export const StorageService = {
             email: cleanEmail,
             password: cleanPassword,
             role: params.role,
-            workspaceId: targetWorkspaceId,
+            workspaceId: targetWorkspaceIds[0],
+            workspaceIds: targetWorkspaceIds,
             avatarColor: chosenColor,
           }),
         });
@@ -1174,20 +1183,26 @@ export const StorageService = {
       this.saveUsers(freshUsers, true);
     }
 
-    // 3. Vincula o usuário ao workspace selecionado localmente
+    // 3. Vincula o usuário aos workspaces selecionados localmente
     const workspaces = this.getWorkspaces();
-    const wsIndex = workspaces.findIndex((w) => w.id === targetWorkspaceId);
-    if (wsIndex !== -1) {
-      const ws = workspaces[wsIndex];
-      const memberExists = ws.members.some((m) => m.userId === newUser.id);
-      if (!memberExists) {
-        ws.members.push({
-          userId: newUser.id,
-          role: params.role,
-          joinedAt: new Date().toISOString(),
-        });
-        this.saveWorkspaces(workspaces, true);
+    let workspacesChanged = false;
+    for (const wsId of targetWorkspaceIds) {
+      const wsIndex = workspaces.findIndex((w) => w.id === wsId);
+      if (wsIndex !== -1) {
+        const ws = workspaces[wsIndex];
+        const memberExists = ws.members.some((m) => m.userId === newUser.id);
+        if (!memberExists) {
+          ws.members.push({
+            userId: newUser.id,
+            role: params.role,
+            joinedAt: new Date().toISOString(),
+          });
+          workspacesChanged = true;
+        }
       }
+    }
+    if (workspacesChanged) {
+      this.saveWorkspaces(workspaces, true);
     }
 
     return { success: true, user: newUser };
