@@ -241,6 +241,34 @@ export default function App() {
     StorageService.saveTheme(theme);
   }, [theme]);
 
+  // Sincronização autoritativa inicial com o banco de dados remoto
+  useEffect(() => {
+    const fetchLatestServerState = async () => {
+      await StorageService.syncWithServer();
+      const freshUsers = StorageService.getUsers();
+      const freshWorkspaces = StorageService.getWorkspaces();
+      const freshProjects = StorageService.getProjects();
+      const freshTasks = StorageService.getTasks();
+      const freshTags = StorageService.getTags();
+
+      setUsers(freshUsers);
+      setWorkspaces(freshWorkspaces);
+      setProjects(freshProjects);
+      setTasks(freshTasks);
+      setTags(freshTags);
+
+      const current = freshUsers.find((u) => u.id === currentUser.id);
+      if (current) {
+        setCurrentUser(current);
+      }
+      const curWs = freshWorkspaces.find((w) => w.id === currentWorkspace.id) || freshWorkspaces[0];
+      if (curWs) {
+        setCurrentWorkspace(curWs);
+      }
+    };
+    fetchLatestServerState();
+  }, []);
+
   // Auto-save de estado
   useEffect(() => {
     StorageService.saveUsers(users);
@@ -1024,21 +1052,28 @@ export default function App() {
     recordActivity('atualizou as configurações do workspace');
   };
 
-  const handleInviteMember = (email: string, role: WorkspaceRole) => {
-    // Procura se usuário já existe com esse e-mail ou cria um novo perfil
+  const handleInviteMember = async (email: string, role: WorkspaceRole) => {
+    // Procura se usuário já existe com esse e-mail ou cria um novo perfil no banco remoto
     let targetUser = users.find((u) => u.email.toLowerCase() === email.toLowerCase());
     if (!targetUser) {
       const namePart = email.split('@')[0];
       const formattedName = namePart.charAt(0).toUpperCase() + namePart.slice(1);
-      targetUser = {
-        id: `user-${Date.now()}`,
+      const usernamePart = namePart.toLowerCase().replace(/[^a-z0-9._-]/g, '');
+      const reg = await StorageService.registerUser({
         name: formattedName,
+        username: usernamePart || `user.${Date.now()}`,
         email,
-        avatarColor: '#2563eb',
-        title: 'Membro Convidado',
-      };
-      setUsers((prev) => [...prev, targetUser!]);
+        password: '123',
+        role,
+        workspaceId: currentWorkspace.id,
+      });
+      if (reg.user) {
+        targetUser = reg.user;
+        setUsers(StorageService.getUsers());
+      }
     }
+
+    if (!targetUser) return;
 
     // Adiciona ao workspace se ainda não estiver
     const isAlreadyMember = currentWorkspace.members.some((m) => m.userId === targetUser!.id);

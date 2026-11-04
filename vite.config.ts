@@ -206,6 +206,10 @@ function operataskRealtimePlugin() {
               if (Array.isArray(body.workspaces)) sharedCache.workspaces = body.workspaces;
               if (Array.isArray(body.projects)) sharedCache.projects = body.projects;
               if (Array.isArray(body.tasks)) sharedCache.tasks = body.tasks;
+              if (Array.isArray(body.tags)) sharedCache.tags = body.tags;
+              if (Array.isArray(body.activities)) sharedCache.activities = body.activities;
+              if (Array.isArray(body.fichas_tecnicas)) sharedCache.fichas_tecnicas = body.fichas_tecnicas;
+              if (Array.isArray(body.notifications)) sharedCache.notifications = body.notifications;
 
               writeDb(sharedCache);
               broadcastWs({ type: 'INITIAL_STATE', payload: sharedCache });
@@ -246,10 +250,16 @@ function operataskRealtimePlugin() {
           sharedCache.workspaces = freshDb.workspaces || sharedCache.workspaces || [...INITIAL_SERVER_DATA.workspaces];
 
           const roleTitleMap: Record<string, string> = {
+            master: 'Super Administrador / Master',
+            dono: 'Dono do Workspace',
             owner: 'Dono do Workspace',
+            administrador: 'Administrador',
             admin: 'Administrador',
+            producao: 'Produção',
             production: 'Produção',
+            membro: 'Membro da Equipe',
             member: 'Membro da Equipe',
+            visualizador: 'Visualizador',
             viewer: 'Visualizador',
           };
 
@@ -272,6 +282,7 @@ function operataskRealtimePlugin() {
               email: cleanEmail,
               password: cleanPassword,
               title: roleTitleMap[chosenRole] || sharedCache.users[existingIndex].title || 'Membro da Equipe',
+              tipo: chosenRole,
               status: 'active',
               isActive: true,
               avatarColor: body.avatarColor || sharedCache.users[existingIndex].avatarColor || '#34B1AC',
@@ -287,6 +298,7 @@ function operataskRealtimePlugin() {
               password: cleanPassword,
               avatarColor: body.avatarColor || '#34B1AC',
               title: roleTitleMap[chosenRole] || 'Membro da Equipe',
+              tipo: chosenRole,
               status: 'active',
               isActive: true,
               createdAt: body.createdAt || new Date().toISOString(),
@@ -381,6 +393,10 @@ function operataskRealtimePlugin() {
                 user: activeMaster,
                 allUsers: sharedCache.users,
                 workspaces: sharedCache.workspaces,
+                projects: sharedCache.projects || [],
+                tasks: sharedCache.tasks || [],
+                tags: sharedCache.tags || [],
+                activities: sharedCache.activities || [],
               })
             );
             return;
@@ -435,12 +451,86 @@ function operataskRealtimePlugin() {
               user: activeUser,
               allUsers: sharedCache.users,
               workspaces: sharedCache.workspaces,
+              projects: sharedCache.projects || [],
+              tasks: sharedCache.tasks || [],
+              tags: sharedCache.tags || [],
+              activities: sharedCache.activities || [],
             })
           );
           return;
         }
 
-        // 4. API: Lista de Usuários
+        // 4. API: Atualização Centralizada de Usuário (Senha, Cargo, Permissões)
+        if (url === '/api/users/update' && req.method === 'POST') {
+          res.setHeader('Content-Type', 'application/json');
+          const body = await parseJsonBody(req);
+          if (!body?.id) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ success: false, error: 'ID do usuário é obrigatório.' }));
+            return;
+          }
+
+          const freshDb = readDb();
+          sharedCache.users = freshDb.users || sharedCache.users || [];
+          const idx = sharedCache.users.findIndex((u: any) => u.id === body.id);
+          if (idx !== -1) {
+            sharedCache.users[idx] = {
+              ...sharedCache.users[idx],
+              ...body,
+              status: 'active',
+              isActive: true,
+            };
+            writeDb(sharedCache);
+            broadcastWs({ type: 'SYNC_UPDATE', entity: 'users', payload: sharedCache.users });
+            res.end(JSON.stringify({ success: true, user: sharedCache.users[idx], users: sharedCache.users }));
+            return;
+          } else {
+            res.statusCode = 404;
+            res.end(JSON.stringify({ success: false, error: 'Usuário não encontrado.' }));
+            return;
+          }
+        }
+
+        // 5. API: Exclusão Centralizada de Usuário
+        if (url === '/api/users/delete' && req.method === 'POST') {
+          res.setHeader('Content-Type', 'application/json');
+          const body = await parseJsonBody(req);
+          if (!body?.id) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ success: false, error: 'ID do usuário é obrigatório.' }));
+            return;
+          }
+
+          const freshDb = readDb();
+          sharedCache.users = (freshDb.users || sharedCache.users || []).filter((u: any) => u.id !== body.id);
+          // Remove também dos workspaces
+          if (Array.isArray(sharedCache.workspaces)) {
+            sharedCache.workspaces.forEach((w: any) => {
+              if (Array.isArray(w.members)) {
+                w.members = w.members.filter((m: any) => m.userId !== body.id);
+              }
+            });
+          }
+          writeDb(sharedCache);
+          broadcastWs({ type: 'SYNC_UPDATE', entity: 'users', payload: sharedCache.users });
+          broadcastWs({ type: 'SYNC_UPDATE', entity: 'workspaces', payload: sharedCache.workspaces });
+          res.end(JSON.stringify({ success: true, users: sharedCache.users, workspaces: sharedCache.workspaces }));
+          return;
+        }
+
+        // 6. API: Configuração Pública (URL Oficial de Produção)
+        if (url === '/api/config/public' && req.method === 'GET') {
+          res.setHeader('Content-Type', 'application/json');
+          res.end(
+            JSON.stringify({
+              productionUrl: 'https://ais-pre-v3pyk2r5zyjj6fe7ngn3pp-898367602402.us-east1.run.app',
+              appUrl: process.env.APP_URL || 'https://ais-pre-v3pyk2r5zyjj6fe7ngn3pp-898367602402.us-east1.run.app',
+            })
+          );
+          return;
+        }
+
+        // 7. API: Lista de Usuários
         if (url === '/api/auth/users' && req.method === 'GET') {
           res.setHeader('Content-Type', 'application/json');
           const latestDb = readDb();
@@ -448,7 +538,7 @@ function operataskRealtimePlugin() {
           return;
         }
 
-        // 5. API: Lista de Workspaces
+        // 8. API: Lista de Workspaces
         if (url === '/api/workspaces' && req.method === 'GET') {
           res.setHeader('Content-Type', 'application/json');
           const latestDb = readDb();

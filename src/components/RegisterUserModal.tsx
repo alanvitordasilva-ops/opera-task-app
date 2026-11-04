@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { WorkspaceRole, User, Workspace } from '../types/index.ts';
 import { StorageService } from '../services/storage.ts';
+import { getProductionAppUrl } from '../utils/appUrl.ts';
 
 interface RegisterUserModalProps {
   isOpen: boolean;
@@ -31,28 +32,40 @@ interface RegisterUserModalProps {
 
 const ROLE_OPTIONS: { role: WorkspaceRole; label: string; desc: string; badgeColor: string }[] = [
   {
-    role: 'admin',
+    role: 'administrador',
     label: 'Administrador',
     desc: 'Gerencia membros, quadros, tarefas e permissões',
     badgeColor: 'bg-purple-100 text-purple-700 dark:bg-purple-950/50 dark:text-purple-300 border-purple-200 dark:border-purple-800',
   },
   {
-    role: 'production',
+    role: 'producao',
     label: 'Produção',
     desc: 'Cria tarefas, movimenta cards e executa ordens de produção',
     badgeColor: 'bg-teal-100 text-teal-800 dark:bg-teal-950/50 dark:text-teal-300 border-teal-200 dark:border-teal-800',
   },
   {
-    role: 'member',
+    role: 'membro',
     label: 'Membro',
     desc: 'Cria, edita e movimenta cards, anexa mídias e comenta',
     badgeColor: 'bg-blue-100 text-blue-700 dark:bg-blue-950/50 dark:text-blue-300 border-blue-200 dark:border-blue-800',
   },
   {
-    role: 'viewer',
+    role: 'visualizador',
     label: 'Visualizador',
     desc: 'Apenas visualiza quadros, projetos e tarefas',
     badgeColor: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300 border-slate-200 dark:border-slate-700',
+  },
+  {
+    role: 'dono',
+    label: 'Dono',
+    desc: 'Controle total sobre o Workspace e seus membros',
+    badgeColor: 'bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-300 border-amber-200 dark:border-amber-800',
+  },
+  {
+    role: 'master',
+    label: 'Master (Super Admin)',
+    desc: 'Acesso irrestrito a todos os workspaces e configurações',
+    badgeColor: 'bg-rose-100 text-rose-800 dark:bg-rose-950/50 dark:text-rose-300 border-rose-200 dark:border-rose-800',
   },
 ];
 
@@ -85,7 +98,7 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [role, setRole] = useState<WorkspaceRole>('production');
+  const [role, setRole] = useState<WorkspaceRole>('producao');
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
@@ -111,7 +124,7 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
     setEmail('');
     setPassword('');
     setConfirmPassword('');
-    setRole('production');
+    setRole('producao');
     setShowPassword(false);
     setShowConfirmPassword(false);
     setErrorMessage(null);
@@ -192,10 +205,7 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
         return;
       }
 
-      const currentOrigin =
-        typeof window !== 'undefined'
-          ? window.location.origin || window.location.href.split('?')[0]
-          : 'https://operatask.app';
+      const currentOrigin = getProductionAppUrl();
 
       const targetWs = availableWorkspaces.find((w) => w.id === targetWsId);
 

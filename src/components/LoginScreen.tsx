@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { User } from '../types/index.ts';
 import { StorageService } from '../services/storage.ts';
-import { User as UserIcon, Lock, Eye, EyeOff, ArrowRight, HelpCircle, CheckCircle2, X, Sun, Moon } from 'lucide-react';
+import { SupabaseService } from '../services/supabaseService.ts';
+import { User as UserIcon, Lock, Eye, EyeOff, ArrowRight, HelpCircle, CheckCircle2, X, Sun, Moon, Database } from 'lucide-react';
 
 interface LoginScreenProps {
   users: User[];
@@ -23,6 +24,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [debugMessage, setDebugMessage] = useState<string | null>(null);
+
+  // Sincroniza a base de dados remota compartilhada assim que a tela de login for carregada
+  useEffect(() => {
+    StorageService.syncWithServer().catch(() => {});
+  }, []);
 
   // Modais auxiliares
   const [showForgotPasswordModal, setShowForgotPasswordModal] = useState(false);
@@ -52,7 +58,34 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     setIsLoading(true);
 
     try {
-      // 1. Tenta autenticação direta na API do servidor (/api/auth/login)
+      // 1. Se o Supabase estiver configurado, tenta autenticar via Supabase Auth & Profiles
+      if (SupabaseService.isConfigured()) {
+        try {
+          const sbAuth = await SupabaseService.login(rawIdent, password.trim());
+          if (sbAuth.success && sbAuth.user) {
+            // Garante que o usuário autenticado esteja salvo no cache local
+            const all = StorageService.getUsers();
+            if (!all.some((u) => u.id === sbAuth.user!.id)) {
+              StorageService.saveUsers([...all, sbAuth.user], true);
+            }
+            StorageService.setCurrentUserId(sbAuth.user.id);
+            StorageService.setAuthenticated(true);
+            setIsLoading(false);
+            onLoginSuccess(sbAuth.user);
+            return;
+          }
+          if (sbAuth.error && sbAuth.error.toLowerCase().includes('invalid login credentials')) {
+            setIsLoading(false);
+            setErrorMessage('Usuário ou senha inválidos.');
+            setDebugMessage('Supabase Auth: Credenciais inválidas.');
+            return;
+          }
+        } catch (sbErr) {
+          console.warn('[OperaTask] Supabase Auth tentado, passando para fallback:', sbErr);
+        }
+      }
+
+      // 2. Tenta autenticação autoritativa no banco central do servidor (/api/auth/login)
       try {
         const resp = await fetch('/api/auth/login', {
           method: 'POST',
@@ -72,23 +105,32 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           if (Array.isArray(data.workspaces) && data.workspaces.length > 0) {
             StorageService.saveWorkspaces(data.workspaces, true);
           }
+          if (Array.isArray(data.projects)) {
+            StorageService.saveProjects(data.projects, true);
+          }
+          if (Array.isArray(data.tasks)) {
+            StorageService.saveTasks(data.tasks, true);
+          }
           setIsLoading(false);
           onLoginSuccess(data.user);
           return;
         }
 
         if (data && !data.success) {
-          if (data.debug) {
-            setDebugMessage(data.debug);
-          }
+          setIsLoading(false);
           if (resp.status === 401) {
-            setIsLoading(false);
             setErrorMessage('Usuário ou senha inválidos.');
             return;
           }
+          if (resp.status === 404) {
+            setErrorMessage('Conta não encontrada. Verifique os dados ou solicite o cadastro ao administrador.');
+            return;
+          }
+          setErrorMessage(data.error || 'Erro ao tentar autenticar.');
+          return;
         }
       } catch (netErr) {
-        console.warn('[OperaTask] Servidor de autenticação offline ou inacessível, utilizando base local:', netErr);
+        console.warn('[OperaTask] Servidor offline ou sem rede, tentando validação local offline:', netErr);
       }
 
       // 2. Fallback de verificação local (IndexedDB / LocalStorage / Master User)

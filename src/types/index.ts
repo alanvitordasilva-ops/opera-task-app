@@ -1,8 +1,36 @@
 export type Priority = 'low' | 'medium' | 'high' | 'urgent';
 
-export type WorkspaceRole = 'owner' | 'admin' | 'member' | 'production' | 'viewer';
+export type ProfileTipo =
+  | 'master'
+  | 'dono'
+  | 'administrador'
+  | 'producao'
+  | 'membro'
+  | 'visualizador';
+
+export type WorkspaceRole =
+  | 'owner'
+  | 'admin'
+  | 'member'
+  | 'production'
+  | 'viewer'
+  | 'master'
+  | 'dono'
+  | 'administrador'
+  | 'producao'
+  | 'membro'
+  | 'visualizador';
 
 export type SystemRole = 'master' | 'user';
+
+export interface SupabaseProfile {
+  id: string; // uuid
+  nome: string;
+  email: string;
+  tipo: ProfileTipo;
+  avatar_url?: string;
+  created_at?: string;
+}
 
 export interface User {
   id: string;
@@ -20,6 +48,7 @@ export interface User {
   isSuperAdmin?: boolean;
   status?: 'active' | 'inactive';
   isActive?: boolean;
+  tipo?: ProfileTipo;
 }
 
 export interface WorkspaceMember {

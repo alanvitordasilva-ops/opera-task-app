@@ -449,6 +449,17 @@ function handleSaveMutation(entityKey: string, data: any, immediate: boolean = f
         StorageService.syncWithCloud().catch(() => {});
       }
 
+      // 3. Persistência Centralizada e Compartilhada no Servidor (cross-device para smartphone e desktop)
+      if (currentOnline && typeof window !== 'undefined' && entity) {
+        fetch('/api/sync/state', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ [entity]: data }),
+        }).catch((err) => {
+          console.warn('[OperaTask] Falha ao sincronizar com o banco central:', err);
+        });
+      }
+
       pendingCount = Math.max(0, pendingCount - 1);
       emitSaveStatus({
         state: currentOnline ? 'saved' : 'offline',
@@ -556,6 +567,87 @@ export const StorageService = {
       });
     }
     return res;
+  },
+
+  // Sincronização centralizada e bidirecional com o banco remoto compartilhado
+  async syncWithServer(): Promise<boolean> {
+    if (typeof window === 'undefined') return false;
+    try {
+      const res = await fetch('/api/sync/state');
+      if (res.ok) {
+        const json = await res.json();
+        const data = json.data || json;
+        if (data && typeof data === 'object') {
+          if (Array.isArray(data.users) && data.users.length > 0) {
+            localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(data.users));
+          }
+          if (Array.isArray(data.workspaces) && data.workspaces.length > 0) {
+            localStorage.setItem(STORAGE_KEYS.WORKSPACES, JSON.stringify(data.workspaces));
+          }
+          if (Array.isArray(data.projects)) {
+            localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify(data.projects));
+          }
+          if (Array.isArray(data.tasks)) {
+            localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(data.tasks));
+          }
+          if (Array.isArray(data.tags)) {
+            localStorage.setItem(STORAGE_KEYS.TAGS, JSON.stringify(data.tags));
+          }
+          if (Array.isArray(data.activities)) {
+            localStorage.setItem(STORAGE_KEYS.ACTIVITIES, JSON.stringify(data.activities));
+          }
+          return true;
+        }
+      }
+    } catch (e) {
+      console.warn('[OperaTask] Falha ao sincronizar dados com o servidor:', e);
+    }
+    return false;
+  },
+
+  // Atualizar dados de usuário no servidor central
+  async updateUserOnServer(userData: Partial<User> & { id: string }): Promise<boolean> {
+    try {
+      const resp = await fetch('/api/users/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(userData),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (Array.isArray(data.users)) {
+          this.saveUsers(data.users, true);
+        }
+        return true;
+      }
+    } catch (err) {
+      console.warn('Erro ao atualizar usuário no servidor:', err);
+    }
+    return false;
+  },
+
+  // Excluir usuário no servidor central
+  async deleteUserOnServer(userId: string): Promise<boolean> {
+    try {
+      const resp = await fetch('/api/users/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: userId }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (Array.isArray(data.users)) {
+          this.saveUsers(data.users, true);
+        }
+        if (Array.isArray(data.workspaces)) {
+          this.saveWorkspaces(data.workspaces, true);
+        }
+        return true;
+      }
+    } catch (err) {
+      console.warn('Erro ao excluir usuário no servidor:', err);
+    }
+    return false;
   },
 
   getUsers(): User[] {
@@ -992,11 +1084,17 @@ export const StorageService = {
     ];
     const chosenColor = avatarColors[Math.floor(Math.random() * avatarColors.length)];
 
-    const roleTitleMap: Record<WorkspaceRole, string> = {
+    const roleTitleMap: Record<string, string> = {
+      master: 'Super Administrador / Master',
+      dono: 'Dono do Workspace',
       owner: 'Dono do Workspace',
+      administrador: 'Administrador',
       admin: 'Administrador',
+      producao: 'Produção',
       production: 'Produção',
+      membro: 'Membro da Equipe',
       member: 'Membro da Equipe',
+      visualizador: 'Visualizador',
       viewer: 'Visualizador',
     };
 
@@ -1008,10 +1106,31 @@ export const StorageService = {
       password: cleanPassword,
       avatarColor: chosenColor,
       title: roleTitleMap[params.role] || 'Membro da Equipe',
+      tipo: (params.role as any) || 'membro',
       status: 'active',
       isActive: true,
       createdAt: new Date().toISOString(),
     };
+
+    // 0. Se Supabase estiver configurado, grava no Supabase (auth.users + profiles + workspace_members)
+    if (SupabaseService.isConfigured()) {
+      try {
+        const sbResult = await SupabaseService.registerUser({
+          name: cleanName,
+          username: cleanUsername,
+          email: cleanEmail,
+          password: cleanPassword,
+          tipo: (params.role as any) || 'membro',
+          workspaceId: targetWorkspaceId,
+          avatarColor: chosenColor,
+        });
+        if (sbResult.success && sbResult.user) {
+          newUser = { ...newUser, ...sbResult.user, id: sbResult.user.id };
+        }
+      } catch (sbErr) {
+        console.warn('[OperaTask] Supabase registration notice:', sbErr);
+      }
+    }
 
     // 1. Grava no servidor de forma garantida e síncrona via POST /api/auth/register
     if (typeof window !== 'undefined') {

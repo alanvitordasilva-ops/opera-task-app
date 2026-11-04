@@ -26,7 +26,12 @@ import {
   Mail,
   Archive,
   RefreshCw,
+  Copy,
+  Check,
+  MessageSquare,
 } from 'lucide-react';
+import { StorageService } from '../services/storage.ts';
+import { getProductionAppUrl } from '../utils/appUrl.ts';
 
 interface MasterAdminModalProps {
   isOpen: boolean;
@@ -71,10 +76,24 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
   const [newTempPassword, setNewTempPassword] = useState('');
   const [isNewUserModalOpen, setIsNewUserModalOpen] = useState(false);
   const [newUserName, setNewUserName] = useState('');
+  const [newUserUsername, setNewUserUsername] = useState('');
   const [newUserEmail, setNewUserEmail] = useState('');
+  const [newUserPassword, setNewUserPassword] = useState('');
+  const [newUserConfirmPassword, setNewUserConfirmPassword] = useState('');
+  const [newUserWorkspaceId, setNewUserWorkspaceId] = useState('');
+  const [newUserWorkspaceRole, setNewUserWorkspaceRole] = useState<WorkspaceRole>('member');
   const [newUserTitle, setNewUserTitle] = useState('');
   const [newUserRole, setNewUserRole] = useState<SystemRole>('user');
   const [newUserAvatarColor, setNewUserAvatarColor] = useState('#34B1AC');
+  const [isSubmittingNewUser, setIsSubmittingNewUser] = useState(false);
+  const [createdResult, setCreatedResult] = useState<{
+    user: User;
+    rawPassword: string;
+    role: string;
+    workspaceName: string;
+    accessLink: string;
+  } | null>(null);
+  const [copiedCredentials, setCopiedCredentials] = useState(false);
 
   // Exclusões com confirmação
   const [deleteTargetUser, setDeleteTargetUser] = useState<User | null>(null);
@@ -125,6 +144,12 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
     });
 
     onUpdateUsers(updatedUsers);
+    StorageService.updateUserOnServer({
+      id: targetUser.id,
+      systemRole: nextRole,
+      isSuperAdmin: nextRole === 'master',
+      title: nextRole === 'master' ? 'Super Administrador / Master' : targetUser.title || 'Membro da Equipe',
+    });
     onShowToast({
       type: 'success',
       message: `Usuário ${targetUser.name} agora possui nível: ${nextRole === 'master' ? 'Super Admin / Master' : 'Usuário Padrão'}.`,
@@ -135,62 +160,120 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
     e.preventDefault();
     if (!passwordResetUser || !newTempPassword.trim()) return;
 
+    const newPass = newTempPassword.trim();
     const updatedUsers = users.map((u) => {
       if (u.id === passwordResetUser.id) {
-        return { ...u, password: newTempPassword.trim() };
+        return { ...u, password: newPass };
       }
       return u;
     });
 
     onUpdateUsers(updatedUsers);
+    StorageService.updateUserOnServer({ id: passwordResetUser.id, password: newPass });
     onShowToast({
       type: 'success',
-      message: `Senha de ${passwordResetUser.name} redefinida com sucesso!`,
+      message: `Senha de ${passwordResetUser.name} redefinida com sucesso no banco de dados!`,
     });
     setPasswordResetUser(null);
     setNewTempPassword('');
   };
 
-  const handleCreateUser = (e: React.FormEvent) => {
+  const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newUserName.trim() || !newUserEmail.trim()) {
-      onShowToast({ type: 'error', message: 'Preencha o nome e e-mail do novo usuário.' });
+    const cleanName = newUserName.trim();
+    const rawUsername = (newUserUsername || newUserName).trim().toLowerCase();
+    const cleanUsername = rawUsername.replace(/\s+/g, '.').replace(/[^a-z0-9._-]/g, '').replace(/^@/, '');
+    const cleanEmail = (newUserEmail || (cleanUsername ? `${cleanUsername}@operatask.app` : '')).trim().toLowerCase();
+    const cleanPassword = newUserPassword.trim();
+    const targetWsId = newUserWorkspaceId || workspaces[0]?.id || 'ws-principal';
+
+    if (!cleanName) {
+      onShowToast({ type: 'error', message: 'Preencha o nome completo do novo usuário.' });
+      return;
+    }
+    if (!cleanUsername || cleanUsername.length < 3) {
+      onShowToast({ type: 'error', message: 'Defina um nome de usuário (Login) com pelo menos 3 caracteres.' });
+      return;
+    }
+    if (!cleanPassword || cleanPassword.length < 4) {
+      onShowToast({ type: 'error', message: 'Defina uma senha de acesso com pelo menos 4 caracteres.' });
+      return;
+    }
+    if (newUserConfirmPassword && cleanPassword !== newUserConfirmPassword.trim()) {
+      onShowToast({ type: 'error', message: 'A confirmação de senha não confere com a senha digitada.' });
       return;
     }
 
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(newUserEmail.trim())) {
-      onShowToast({ type: 'error', message: 'Insira um formato de e-mail válido.' });
-      return;
+    setIsSubmittingNewUser(true);
+    try {
+      const result = await StorageService.registerUser({
+        name: cleanName,
+        username: cleanUsername,
+        email: cleanEmail,
+        password: cleanPassword,
+        role: newUserWorkspaceRole,
+        workspaceId: targetWsId,
+      });
+
+      if (!result.success || !result.user) {
+        setIsSubmittingNewUser(false);
+        onShowToast({ type: 'error', message: result.error || 'Falha ao cadastrar usuário no banco de dados.' });
+        return;
+      }
+
+      if (newUserRole === 'master') {
+        await StorageService.updateUserOnServer({
+          id: result.user.id,
+          systemRole: 'master',
+          isSuperAdmin: true,
+          title: 'Super Administrador / Master',
+        });
+      }
+
+      const freshUsers = StorageService.getUsers();
+      onUpdateUsers(freshUsers);
+
+      const targetWs = workspaces.find((w) => w.id === targetWsId);
+      setCreatedResult({
+        user: result.user,
+        rawPassword: cleanPassword,
+        role: newUserWorkspaceRole,
+        workspaceName: targetWs?.name || 'Workspace Principal',
+        accessLink: getProductionAppUrl(),
+      });
+
+      setIsSubmittingNewUser(false);
+      onShowToast({
+        type: 'success',
+        message: `Usuário ${result.user.name} cadastrado e ativo no banco de dados!`,
+      });
+    } catch (err: any) {
+      setIsSubmittingNewUser(false);
+      onShowToast({ type: 'error', message: err.message || 'Erro inesperado ao cadastrar usuário.' });
     }
+  };
 
-    if (users.some((u) => u.email.toLowerCase() === newUserEmail.trim().toLowerCase())) {
-      onShowToast({ type: 'error', message: 'Já existe um usuário cadastrado com este e-mail.' });
-      return;
+  const getShareText = () => {
+    if (!createdResult) return '';
+    return `*Acesso ao OperaTask*\n\nOlá, ${createdResult.user.name}! Sua conta foi criada no sistema e já está 100% liberada para acesso imediato.\n\n🔗 *Link do App:* ${createdResult.accessLink}\n👤 *Nome de Usuário (Login):* ${createdResult.user.username || createdResult.user.email}\n📧 *E-mail:* ${createdResult.user.email}\n🔑 *Senha:* ${createdResult.rawPassword}\n🏢 *Workspace:* ${createdResult.workspaceName}\n\nAcesse pelo navegador ou celular e faça login para começar!`;
+  };
+
+  const handleCopyCredentials = () => {
+    const text = getShareText();
+    if (!text) return;
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text);
+      setCopiedCredentials(true);
+      setTimeout(() => setCopiedCredentials(false), 2500);
+      onShowToast({ type: 'success', message: 'Credenciais e link copiados com sucesso!' });
     }
+  };
 
-    const created: User = {
-      id: `user-${Date.now()}`,
-      name: newUserName.trim(),
-      email: newUserEmail.trim(),
-      title: newUserTitle.trim() || (newUserRole === 'master' ? 'Super Administrador' : 'Membro'),
-      avatarColor: newUserAvatarColor || (newUserRole === 'master' ? '#173653' : '#34B1AC'),
-      systemRole: newUserRole,
-      isSuperAdmin: newUserRole === 'master',
-      createdAt: new Date().toISOString(),
-    };
-
-    onUpdateUsers([...users, created]);
-    onShowToast({
-      type: 'success',
-      message: `Usuário ${created.name} cadastrado com sucesso!`,
-    });
-
-    setIsNewUserModalOpen(false);
-    setNewUserName('');
-    setNewUserEmail('');
-    setNewUserTitle('');
-    setNewUserRole('user');
+  const handleShareWhatsApp = () => {
+    const text = getShareText();
+    if (!text) return;
+    const url = `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`;
+    window.open(url, '_blank');
   };
 
   const handleConfirmDeleteUser = () => {
@@ -203,6 +286,7 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
 
     const updatedUsers = users.filter((u) => u.id !== deleteTargetUser.id);
     onUpdateUsers(updatedUsers);
+    StorageService.deleteUserOnServer(deleteTargetUser.id);
     onShowToast({
       type: 'success',
       message: `Usuário ${deleteTargetUser.name} removido com sucesso do sistema.`,
@@ -774,98 +858,277 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
       {/* Modal Interno: Cadastrar Novo Usuário pelo Master */}
       {isNewUserModalOpen && (
         <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-in fade-in">
-          <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 max-w-md w-full shadow-2xl border border-slate-200 dark:border-slate-800 space-y-4">
-            <div className="flex items-center justify-between">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 max-w-lg w-full shadow-2xl border border-slate-200 dark:border-slate-800 space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
               <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
                 <Plus className="w-4 h-4 text-[#34B1AC]" />
-                Cadastrar Novo Usuário
+                {createdResult ? 'Usuário Cadastrado com Sucesso!' : 'Cadastrar Novo Usuário (Acesso Remoto)'}
               </h3>
               <button
                 type="button"
-                onClick={() => setIsNewUserModalOpen(false)}
-                className="text-slate-400 hover:text-slate-600"
+                onClick={() => {
+                  setIsNewUserModalOpen(false);
+                  setCreatedResult(null);
+                }}
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form onSubmit={handleCreateUser} className="space-y-3 text-xs">
-              <div>
-                <label className="block font-bold text-slate-700 dark:text-slate-200 mb-1">Nome Completo *</label>
-                <input
-                  type="text"
-                  required
-                  value={newUserName}
-                  onChange={(e) => setNewUserName(e.target.value)}
-                  placeholder="Nome do usuário"
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#34B1AC]"
-                />
-              </div>
+            {createdResult ? (
+              <div className="space-y-4">
+                <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/60 flex items-start gap-3">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                  <div>
+                    <h4 className="text-xs font-bold text-emerald-900 dark:text-emerald-200">
+                      Conta ativa no banco de dados central!
+                    </h4>
+                    <p className="text-[11px] text-emerald-700 dark:text-emerald-400 mt-0.5">
+                      O usuário já pode fazer login imediatamente de qualquer smartphone, celular ou computador com os dados abaixo.
+                    </p>
+                  </div>
+                </div>
 
-              <div>
-                <label className="block font-bold text-slate-700 dark:text-slate-200 mb-1">E-mail *</label>
-                <input
-                  type="email"
-                  required
-                  value={newUserEmail}
-                  onChange={(e) => setNewUserEmail(e.target.value)}
-                  placeholder="email@empresa.com"
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#34B1AC]"
-                />
-              </div>
+                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 space-y-2.5 text-xs">
+                  <div>
+                    <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">Link Oficial de Produção</span>
+                    <a
+                      href={createdResult.accessLink}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-mono text-teal-600 dark:text-teal-400 break-all flex items-center gap-1 hover:underline"
+                    >
+                      {createdResult.accessLink}
+                      <ExternalLink className="w-3 h-3 inline" />
+                    </a>
+                  </div>
 
-              <div>
-                <label className="block font-bold text-slate-700 dark:text-slate-200 mb-1">Cargo / Função</label>
-                <input
-                  type="text"
-                  value={newUserTitle}
-                  onChange={(e) => setNewUserTitle(e.target.value)}
-                  placeholder="Ex: Engenheiro de Software"
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#34B1AC]"
-                />
-              </div>
+                  <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-200 dark:border-slate-700">
+                    <div>
+                      <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">Nome de Usuário (Login)</span>
+                      <span className="font-mono font-bold text-slate-900 dark:text-slate-100">{createdResult.user.username || createdResult.user.email}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">Senha</span>
+                      <span className="font-mono font-bold text-slate-900 dark:text-slate-100">{createdResult.rawPassword}</span>
+                    </div>
+                  </div>
 
-              <div>
-                <label className="block font-bold text-slate-700 dark:text-slate-200 mb-1">Nível de Sistema</label>
-                <select
-                  value={newUserRole}
-                  onChange={(e) => setNewUserRole(e.target.value as SystemRole)}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#34B1AC]"
-                >
-                  <option value="user">Usuário Padrão</option>
-                  <option value="master">Super Administrador / Master</option>
-                </select>
-              </div>
+                  <div className="pt-2 border-t border-slate-200 dark:border-slate-700">
+                    <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">Workspace Vinculado</span>
+                    <span className="font-semibold text-slate-800 dark:text-slate-200">{createdResult.workspaceName}</span>
+                  </div>
+                </div>
 
-              <div>
-                <ColorPicker
-                  label="Cor de Destaque do Avatar"
-                  description="Exibida no perfil e nos cards"
-                  value={newUserAvatarColor}
-                  onChange={(newColor) => setNewUserAvatarColor(newColor)}
-                  size="sm"
-                  showPaletteStrip={true}
-                  quickPaletteCount={5}
-                />
-              </div>
+                <div className="flex flex-col sm:flex-row gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={handleCopyCredentials}
+                    className="flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs font-bold bg-[#173653] hover:bg-[#1f476d] text-white transition-all shadow-xs cursor-pointer"
+                  >
+                    {copiedCredentials ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                    <span>{copiedCredentials ? 'Copiado!' : 'Copiar Dados de Acesso'}</span>
+                  </button>
 
+                  <button
+                    type="button"
+                    onClick={handleShareWhatsApp}
+                    className="flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white transition-all shadow-xs cursor-pointer"
+                  >
+                    <MessageSquare className="w-4 h-4" />
+                    <span>WhatsApp</span>
+                  </button>
+                </div>
 
-              <div className="flex justify-end gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setIsNewUserModalOpen(false)}
-                  className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-500"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  className="px-5 py-2 rounded-xl text-xs font-bold text-white bg-[#34B1AC] hover:bg-[#289e99]"
-                >
-                  Criar Usuário
-                </button>
+                <div className="flex justify-between items-center pt-3 border-t border-slate-100 dark:border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCreatedResult(null);
+                      setNewUserName('');
+                      setNewUserUsername('');
+                      setNewUserEmail('');
+                      setNewUserPassword('');
+                      setNewUserConfirmPassword('');
+                    }}
+                    className="text-xs font-semibold text-teal-600 dark:text-teal-400 hover:underline cursor-pointer"
+                  >
+                    + Cadastrar Outro Usuário
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsNewUserModalOpen(false);
+                      setCreatedResult(null);
+                    }}
+                    className="px-4 py-2 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 cursor-pointer"
+                  >
+                    Concluir
+                  </button>
+                </div>
               </div>
-            </form>
+            ) : (
+              <form onSubmit={handleCreateUser} className="space-y-3 text-xs">
+                <div>
+                  <label className="block font-bold text-slate-700 dark:text-slate-200 mb-1">Nome Completo *</label>
+                  <input
+                    type="text"
+                    required
+                    value={newUserName}
+                    onChange={(e) => {
+                      setNewUserName(e.target.value);
+                      if (!newUserUsername) {
+                        const sug = e.target.value.toLowerCase().trim().replace(/\s+/g, '.').replace(/[^a-z0-9._-]/g, '');
+                        setNewUserUsername(sug);
+                      }
+                    }}
+                    placeholder="Ex: Carlos Silva"
+                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#34B1AC]"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-bold text-slate-700 dark:text-slate-200 mb-1">
+                      Nome de Usuário (Login) *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={newUserUsername}
+                      onChange={(e) => setNewUserUsername(e.target.value.toLowerCase().replace(/\s+/g, ''))}
+                      placeholder="Ex: carlos.silva"
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#34B1AC]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-700 dark:text-slate-200 mb-1">E-mail</label>
+                    <input
+                      type="email"
+                      value={newUserEmail}
+                      onChange={(e) => setNewUserEmail(e.target.value)}
+                      placeholder="carlos@empresa.com"
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#34B1AC]"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-bold text-slate-700 dark:text-slate-200 mb-1">Senha de Acesso *</label>
+                    <input
+                      type="text"
+                      required
+                      value={newUserPassword}
+                      onChange={(e) => setNewUserPassword(e.target.value)}
+                      placeholder="Mín. 4 caracteres"
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#34B1AC]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-700 dark:text-slate-200 mb-1">Confirmar Senha *</label>
+                    <input
+                      type="text"
+                      required
+                      value={newUserConfirmPassword}
+                      onChange={(e) => setNewUserConfirmPassword(e.target.value)}
+                      placeholder="Repita a senha"
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#34B1AC]"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-bold text-slate-700 dark:text-slate-200 mb-1">Workspace de Destino *</label>
+                    <select
+                      value={newUserWorkspaceId || workspaces[0]?.id || ''}
+                      onChange={(e) => setNewUserWorkspaceId(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#34B1AC]"
+                    >
+                      {workspaces.map((w) => (
+                        <option key={w.id} value={w.id}>
+                          {w.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-700 dark:text-slate-200 mb-1">Tipo de Membro</label>
+                    <select
+                      value={newUserWorkspaceRole}
+                      onChange={(e) => setNewUserWorkspaceRole(e.target.value as WorkspaceRole)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#34B1AC]"
+                    >
+                      <option value="producao">Produção</option>
+                      <option value="membro">Membro</option>
+                      <option value="administrador">Administrador</option>
+                      <option value="visualizador">Visualizador</option>
+                      <option value="dono">Dono</option>
+                      <option value="master">Master (Super Admin)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-bold text-slate-700 dark:text-slate-200 mb-1">Cargo / Função</label>
+                    <input
+                      type="text"
+                      value={newUserTitle}
+                      onChange={(e) => setNewUserTitle(e.target.value)}
+                      placeholder="Ex: Operador / Designer"
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#34B1AC]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-700 dark:text-slate-200 mb-1">Nível de Sistema</label>
+                    <select
+                      value={newUserRole}
+                      onChange={(e) => setNewUserRole(e.target.value as SystemRole)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#34B1AC]"
+                    >
+                      <option value="user">Usuário Padrão</option>
+                      <option value="master">Super Administrador / Master</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <ColorPicker
+                    label="Cor de Destaque do Avatar"
+                    description="Exibida no perfil e nos cards"
+                    value={newUserAvatarColor}
+                    onChange={(newColor) => setNewUserAvatarColor(newColor)}
+                    size="sm"
+                    showPaletteStrip={true}
+                    quickPaletteCount={5}
+                  />
+                </div>
+
+                <div className="flex justify-end gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setIsNewUserModalOpen(false)}
+                    className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-500 cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSubmittingNewUser}
+                    className="px-5 py-2 rounded-xl text-xs font-bold text-white bg-[#34B1AC] hover:bg-[#289e99] disabled:opacity-50 cursor-pointer shadow-xs"
+                  >
+                    {isSubmittingNewUser ? 'Salvando no Banco...' : 'Cadastrar e Ativar Usuário'}
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       )}

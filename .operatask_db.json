@@ -14,6 +14,43 @@
       "password": "273021",
       "createdAt": "2026-01-01T00:00:00.000Z",
       "bio": "Conta Master com acesso total e irrestrito a todas as configurações, workspaces e dados do OperaTask."
+    },
+    {
+      "id": "user-1793786775388-zb8a",
+      "name": "Carlos Silva",
+      "username": "carlos",
+      "email": "carlos@operatask.app",
+      "password": "123",
+      "avatarColor": "#34B1AC",
+      "title": "Membro da Equipe",
+      "status": "active",
+      "isActive": true,
+      "createdAt": "2026-11-04T10:06:15.388Z"
+    },
+    {
+      "id": "user-1793787546280-fcia",
+      "name": "Maria Silva",
+      "username": "mariasilva",
+      "email": "mariasilva@operatask.app",
+      "password": "opera123",
+      "avatarColor": "#34B1AC",
+      "title": "Produção",
+      "status": "active",
+      "isActive": true,
+      "createdAt": "2026-11-04T10:19:06.280Z"
+    },
+    {
+      "id": "user-1793788666090-6lfr",
+      "name": "Carlos Eduardo Silva",
+      "username": "carlos.silva",
+      "email": "carlos.silva@operatask.app",
+      "password": "password123",
+      "avatarColor": "#34B1AC",
+      "title": "Produção",
+      "tipo": "producao",
+      "status": "active",
+      "isActive": true,
+      "createdAt": "2026-11-04T10:37:46.090Z"
     }
   ],
   "workspaces": [
@@ -29,6 +66,21 @@
           "userId": "user-master-alan",
           "role": "owner",
           "joinedAt": "2026-01-01T00:00:00.000Z"
+        },
+        {
+          "userId": "user-1793786775388-zb8a",
+          "role": "member",
+          "joinedAt": "2026-11-04T10:06:15.388Z"
+        },
+        {
+          "userId": "user-1793787546280-fcia",
+          "role": "production",
+          "joinedAt": "2026-11-04T10:19:06.280Z"
+        },
+        {
+          "userId": "user-1793788666090-6lfr",
+          "role": "producao",
+          "joinedAt": "2026-11-04T10:37:46.090Z"
         }
       ],
       "createdAt": "2026-01-01T00:00:00.000Z"
