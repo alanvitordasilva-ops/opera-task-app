@@ -50,6 +50,56 @@ export const MASTER_USER: User = {
 
 export const DEFAULT_USERS: User[] = [
   MASTER_USER,
+  {
+    id: 'user-1793786775388-zb8a',
+    name: 'Carlos Silva',
+    username: 'carlos',
+    email: 'carlos@operatask.app',
+    password: '123',
+    avatarColor: '#34B1AC',
+    title: 'Membro da Equipe',
+    status: 'active',
+    isActive: true,
+    createdAt: '2026-11-04T10:06:15.388Z',
+  },
+  {
+    id: 'user-1793787546280-fcia',
+    name: 'Maria Silva',
+    username: 'mariasilva',
+    email: 'mariasilva@operatask.app',
+    password: 'opera123',
+    avatarColor: '#34B1AC',
+    title: 'Produção',
+    status: 'active',
+    isActive: true,
+    createdAt: '2026-11-04T10:19:06.280Z',
+  },
+  {
+    id: 'user-1793788666090-6lfr',
+    name: 'Carlos Eduardo Silva',
+    username: 'carlos.silva',
+    email: 'carlos.silva@operatask.app',
+    password: 'password123',
+    avatarColor: '#34B1AC',
+    title: 'Produção',
+    tipo: 'producao',
+    status: 'active',
+    isActive: true,
+    createdAt: '2026-11-04T10:37:46.090Z',
+  },
+  {
+    id: 'user-1793792108304-72mo',
+    name: 'Juliana Costa',
+    username: 'juliana',
+    email: 'juliana@empresa.com',
+    password: 'password123',
+    avatarColor: '#34B1AC',
+    title: 'Membro da Equipe',
+    tipo: 'membro',
+    status: 'active',
+    isActive: true,
+    createdAt: '2026-11-04T11:35:08.304Z',
+  },
 ];
 
 export const DEFAULT_FICHAS_TECNICAS: FichaTecnica[] = [
@@ -145,6 +195,10 @@ export const DEFAULT_WORKSPACES: Workspace[] = [
     ownerId: MASTER_USER.id,
     members: [
       { userId: MASTER_USER.id, role: 'owner', joinedAt: '2026-01-01T00:00:00.000Z' },
+      { userId: 'user-1793786775388-zb8a', role: 'member', joinedAt: '2026-11-04T10:06:15.388Z' },
+      { userId: 'user-1793787546280-fcia', role: 'production', joinedAt: '2026-11-04T10:19:06.280Z' },
+      { userId: 'user-1793788666090-6lfr', role: 'production', joinedAt: '2026-11-04T10:37:46.090Z' },
+      { userId: 'user-1793792108304-72mo', role: 'member', joinedAt: '2026-11-04T11:35:08.304Z' },
     ],
     createdAt: '2026-01-01T00:00:00.000Z',
   },
@@ -410,6 +464,23 @@ if (typeof window !== 'undefined') {
 let debounceTimer: any = null;
 let pendingCount = 0;
 
+let _serverApiAvailable: boolean | null = null;
+
+export function isServerApiAvailable(): boolean {
+  if (_serverApiAvailable !== null) return _serverApiAvailable;
+  // Se estivermos em localhost ou porta de dev, assume true inicialmente; senão falso até comprovar
+  if (typeof window !== 'undefined') {
+    const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    _serverApiAvailable = isLocal;
+    return isLocal;
+  }
+  return false;
+}
+
+export function setServerApiAvailable(val: boolean): void {
+  _serverApiAvailable = val;
+}
+
 function handleSaveMutation(entityKey: string, data: any, immediate: boolean = false) {
   pendingCount++;
   const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
@@ -449,14 +520,15 @@ function handleSaveMutation(entityKey: string, data: any, immediate: boolean = f
         StorageService.syncWithCloud().catch(() => {});
       }
 
-      // 3. Persistência Centralizada e Compartilhada no Servidor (cross-device para smartphone e desktop)
-      if (currentOnline && typeof window !== 'undefined' && entity) {
+      // 3. Persistência Centralizada e Compartilhada no Servidor (apenas se API estiver disponível)
+      if (currentOnline && typeof window !== 'undefined' && entity && isServerApiAvailable()) {
         fetch('/api/sync/state', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ [entity]: data }),
         }).catch((err) => {
-          console.warn('[OperaTask] Falha ao sincronizar com o banco central:', err);
+          setServerApiAvailable(false);
+          console.warn('[OperaTask] Servidor de sincronização indisponível:', err);
         });
       }
 
@@ -571,7 +643,7 @@ export const StorageService = {
 
   // Sincronização centralizada e bidirecional com o banco remoto compartilhado
   async syncWithServer(): Promise<boolean> {
-    if (typeof window === 'undefined') return false;
+    if (typeof window === 'undefined' || !isServerApiAvailable()) return false;
     try {
       const res = await fetch('/api/sync/state');
       if (res.ok) {
@@ -598,15 +670,19 @@ export const StorageService = {
           }
           return true;
         }
+      } else if (res.status === 404) {
+        setServerApiAvailable(false);
       }
     } catch (e) {
-      console.warn('[OperaTask] Falha ao sincronizar dados com o servidor:', e);
+      setServerApiAvailable(false);
+      console.warn('[OperaTask] Servidor de sincronização indisponível:', e);
     }
     return false;
   },
 
   // Atualizar dados de usuário no servidor central
   async updateUserOnServer(userData: Partial<User> & { id: string }): Promise<boolean> {
+    if (!isServerApiAvailable()) return false;
     try {
       const resp = await fetch('/api/users/update', {
         method: 'POST',
@@ -619,8 +695,11 @@ export const StorageService = {
           this.saveUsers(data.users, true);
         }
         return true;
+      } else if (resp.status === 404) {
+        setServerApiAvailable(false);
       }
     } catch (err) {
+      setServerApiAvailable(false);
       console.warn('Erro ao atualizar usuário no servidor:', err);
     }
     return false;
@@ -628,6 +707,7 @@ export const StorageService = {
 
   // Excluir usuário no servidor central
   async deleteUserOnServer(userId: string): Promise<boolean> {
+    if (!isServerApiAvailable()) return false;
     try {
       const resp = await fetch('/api/users/delete', {
         method: 'POST',
@@ -643,8 +723,11 @@ export const StorageService = {
           this.saveWorkspaces(data.workspaces, true);
         }
         return true;
+      } else if (resp.status === 404) {
+        setServerApiAvailable(false);
       }
     } catch (err) {
+      setServerApiAvailable(false);
       console.warn('Erro ao excluir usuário no servidor:', err);
     }
     return false;
@@ -659,6 +742,21 @@ export const StorageService = {
       const mockIds = ['user-beatriz', 'user-lucas', 'user-mariana', 'user-rafael', 'user-alan'];
       list = list.filter((u) => !mockIds.includes(u.id) && !u.email.endsWith('@taskflow.dev'));
 
+      // Garante que TODOS os DEFAULT_USERS estejam presentes na lista
+      let modified = false;
+      DEFAULT_USERS.forEach((defUser) => {
+        const hasUser = list.some(
+          (u) =>
+            u.id === defUser.id ||
+            (u.username && defUser.username && u.username.toLowerCase() === defUser.username.toLowerCase()) ||
+            u.email.toLowerCase() === defUser.email.toLowerCase()
+        );
+        if (!hasUser) {
+          list.push(defUser);
+          modified = true;
+        }
+      });
+
       // Garante presença da Conta Master com papel master
       const masterIdx = list.findIndex(
         (u) =>
@@ -667,7 +765,7 @@ export const StorageService = {
       );
       if (masterIdx === -1) {
         list = [MASTER_USER, ...list];
-        this.saveUsers(list);
+        modified = true;
       } else if (!list[masterIdx].systemRole || !list[masterIdx].isSuperAdmin) {
         list[masterIdx] = {
           ...list[masterIdx],
@@ -675,11 +773,15 @@ export const StorageService = {
           isSuperAdmin: true,
           title: list[masterIdx].title || 'Super Administrador / Master',
         };
-        this.saveUsers(list);
+        modified = true;
+      }
+
+      if (modified || !data) {
+        localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(list));
       }
       return list;
     } catch {
-      return [MASTER_USER];
+      return DEFAULT_USERS;
     }
   },
 
@@ -1140,8 +1242,8 @@ export const StorageService = {
       }
     }
 
-    // 1. Grava no servidor de forma garantida e síncrona via POST /api/auth/register
-    if (typeof window !== 'undefined') {
+    // 1. Grava no servidor via POST /api/auth/register (se a API estiver disponível)
+    if (typeof window !== 'undefined' && isServerApiAvailable()) {
       try {
         const resp = await fetch('/api/auth/register', {
           method: 'POST',
@@ -1170,8 +1272,11 @@ export const StorageService = {
           if (Array.isArray(resData.workspaces)) {
             this.saveWorkspaces(resData.workspaces, true);
           }
+        } else if (resp.status === 404) {
+          setServerApiAvailable(false);
         }
       } catch (e) {
+        setServerApiAvailable(false);
         console.warn('[OperaTask] Fallback local para registro offline:', e);
       }
     }

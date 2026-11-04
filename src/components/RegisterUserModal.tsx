@@ -19,7 +19,7 @@ import {
   AtSign,
 } from 'lucide-react';
 import { WorkspaceRole, User, Workspace } from '../types/index.ts';
-import { StorageService } from '../services/storage.ts';
+import { StorageService, isServerApiAvailable, setServerApiAvailable } from '../services/storage.ts';
 import { getProductionAppUrl } from '../utils/appUrl.ts';
 
 interface RegisterUserModalProps {
@@ -436,16 +436,22 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
                     const nextState = !showAllUsersList;
                     setShowAllUsersList(nextState);
                     if (nextState) {
-                      try {
-                        const resp = await fetch('/api/auth/users');
-                        if (resp.ok) {
-                          const json = await resp.json();
-                          if (Array.isArray(json.users)) {
-                            setAllUsersList(json.users);
-                            return;
+                      if (isServerApiAvailable()) {
+                        try {
+                          const resp = await fetch('/api/auth/users');
+                          if (resp.ok) {
+                            const json = await resp.json();
+                            if (Array.isArray(json.users)) {
+                              setAllUsersList(json.users);
+                              return;
+                            }
+                          } else if (resp.status === 404) {
+                            setServerApiAvailable(false);
                           }
+                        } catch {
+                          setServerApiAvailable(false);
                         }
-                      } catch {}
+                      }
                       setAllUsersList(StorageService.getUsers());
                     }
                   }}

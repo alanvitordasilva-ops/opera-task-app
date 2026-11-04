@@ -8,6 +8,7 @@
  */
 
 import { SupabaseService } from './supabaseService.ts';
+import { isServerApiAvailable, setServerApiAvailable } from './storage.ts';
 
 export type SyncEntity =
   | 'tasks'
@@ -294,7 +295,7 @@ class RealtimeServiceImpl {
   }
 
   public async fetchServerState(): Promise<boolean> {
-    if (typeof window === 'undefined') return false;
+    if (typeof window === 'undefined' || !isServerApiAvailable()) return false;
     try {
       const res = await fetch('/api/sync/state');
       if (res.ok) {
@@ -306,8 +307,11 @@ class RealtimeServiceImpl {
           });
           return true;
         }
+      } else if (res.status === 404) {
+        setServerApiAvailable(false);
       }
     } catch (e) {
+      setServerApiAvailable(false);
       console.warn('Falha ao sincronizar estado com o servidor:', e);
     }
     return false;

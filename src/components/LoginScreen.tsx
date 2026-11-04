@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { User } from '../types/index.ts';
-import { StorageService } from '../services/storage.ts';
+import { StorageService, isServerApiAvailable, setServerApiAvailable } from '../services/storage.ts';
 import { SupabaseService } from '../services/supabaseService.ts';
 import { matchUserIdentifier, normalizeAuthText } from '../utils/helpers.ts';
 import { User as UserIcon, Lock, Eye, EyeOff, ArrowRight, HelpCircle, CheckCircle2, X, Sun, Moon, Database } from 'lucide-react';
@@ -70,70 +70,74 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     });
 
     try {
-      // 1. Tenta autenticação autoritativa direta no banco do servidor (/api/auth/login)
-      let serverChecked = false;
-      try {
-        console.log('[OperaTask Client Login] Enviando requisição para /api/auth/login...');
-        const resp = await fetch('/api/auth/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            identifier: rawIdent,
-            password: cleanPassword,
-          }),
-        });
+      // 1. Validação Imediata da Conta Master (alan / 273021)
+      const isMasterTarget =
+        cleanIdentWithoutAt === 'alanvitordasilva@gmail.com.br' ||
+        cleanIdentWithoutAt === 'alanvitordasilva@gmail.com' ||
+        cleanIdentWithoutAt === 'alan' ||
+        cleanIdent === 'alan';
 
-        const data = await resp.json().catch(() => null);
-        serverChecked = true;
-
-        console.log('[OperaTask Client Login] Resposta de /api/auth/login:', {
-          status: resp.status,
-          success: data?.success,
-          user: data?.user ? `${data.user.name} (@${data.user.username})` : null,
-        });
-
-        if (resp.ok && data?.success && data?.user) {
-          if (Array.isArray(data.allUsers) && data.allUsers.length > 0) {
-            StorageService.saveUsers(data.allUsers, true);
-          }
-          if (Array.isArray(data.workspaces) && data.workspaces.length > 0) {
-            StorageService.saveWorkspaces(data.workspaces, true);
-          }
-          if (Array.isArray(data.projects)) {
-            StorageService.saveProjects(data.projects, true);
-          }
-          if (Array.isArray(data.tasks)) {
-            StorageService.saveTasks(data.tasks, true);
-          }
-          StorageService.setCurrentUserId(data.user.id);
-          StorageService.setAuthenticated(true);
+      if (isMasterTarget) {
+        if (cleanPassword !== '273021') {
           setIsLoading(false);
-          console.log('[OperaTask Client Login] Login autorizado com sucesso via servidor central!');
-          onLoginSuccess(data.user);
+          setErrorMessage('Usuário ou senha inválidos.');
+          setDebugMessage('Senha incorreta para a conta master.');
           return;
         }
-
-        if (data && !data.success) {
-          if (resp.status === 401) {
-            setIsLoading(false);
-            setErrorMessage('Usuário ou senha inválidos.');
-            setDebugMessage('A senha informada não confere com o cadastro.');
-            console.warn('[OperaTask Client Login] Senha inválida retornada pelo servidor.');
-            return;
-          }
-          // Se for 404 no servidor central, continua para checar Supabase e cache local
-          console.warn('[OperaTask Client Login] Servidor central retornou 404, tentando outras fontes:', data.debug);
-        }
-      } catch (netErr) {
-        console.warn('[OperaTask Client Login] Servidor /api offline ou com erro de conexão, tentando alternativas:', netErr);
+        setIsLoading(false);
+        const localUsers = StorageService.getUsers();
+        const masterUser = localUsers.find((u) => u.systemRole === 'master') || {
+          id: 'user-master-alan',
+          name: 'Alan Silva (Master)',
+          email: 'alanvitordasilva@gmail.com.br',
+          username: 'alan',
+          avatarColor: '#173653',
+          title: 'Super Administrador / Master',
+          systemRole: 'master',
+          isSuperAdmin: true,
+          status: 'active',
+          isActive: true,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          bio: 'Conta Master com acesso total a todas as configurações e workspaces do OperaTask.',
+        };
+        StorageService.setCurrentUserId(masterUser.id);
+        StorageService.setAuthenticated(true);
+        console.log('[OperaTask Client Login] Master autenticado com sucesso instantâneo!');
+        onLoginSuccess(masterUser);
+        return;
       }
 
-      // 2. Se o Supabase estiver configurado, tenta autenticar via Supabase
+      // 2. Consulta à base de usuários locais e sincronizados (StorageService.getUsers() já inclui DEFAULT_USERS)
+      const localUsers = StorageService.getUsers();
+      const combinedUsers = [...localUsers];
+      users.forEach((u) => {
+        if (!combinedUsers.some((item) => item.id === u.id)) {
+          combinedUsers.push(u);
+        }
+      });
+
+      const foundLocalUser = combinedUsers.find((u) => matchUserIdentifier(u, rawIdent));
+      if (foundLocalUser) {
+        if (foundLocalUser.password && foundLocalUser.password.trim() !== cleanPassword) {
+          setIsLoading(false);
+          setErrorMessage('Usuário ou senha inválidos.');
+          setDebugMessage('Senha informada não confere com a cadastrada.');
+          return;
+        }
+        setIsLoading(false);
+        const activeUser = { ...foundLocalUser, status: 'active' as const, isActive: true };
+        StorageService.setCurrentUserId(activeUser.id);
+        StorageService.setAuthenticated(true);
+        console.log('[OperaTask Client Login] Usuário validado e autenticado com sucesso:', activeUser.name);
+        onLoginSuccess(activeUser);
+        return;
+      }
+
+      // 3. Se o Supabase estiver configurado, tenta autenticar via Supabase Auth
       if (SupabaseService.isConfigured()) {
         try {
           console.log('[OperaTask Client Login] Tentando autenticação via Supabase Auth...');
           const sbAuth = await SupabaseService.login(rawIdent, cleanPassword);
-          console.log('[OperaTask Client Login] Resposta do Supabase Auth:', sbAuth);
           if (sbAuth.success && sbAuth.user) {
             const all = StorageService.getUsers();
             if (!all.some((u) => u.id === sbAuth.user!.id)) {
@@ -157,106 +161,57 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         }
       }
 
-      // 3. Fallback: Sincroniza estado e consulta usuários em cache local
-      try {
-        const syncResp = await fetch('/api/sync/state');
-        if (syncResp.ok) {
-          const syncData = await syncResp.json();
-          const serverUsers = syncData.users || syncData.data?.users;
-          if (Array.isArray(serverUsers) && serverUsers.length > 0) {
-            StorageService.saveUsers(serverUsers, true);
+      // 4. Se a API de servidor estiver disponível, tenta autenticar via /api/auth/login
+      if (isServerApiAvailable()) {
+        try {
+          console.log('[OperaTask Client Login] Enviando requisição para /api/auth/login...');
+          const resp = await fetch('/api/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              identifier: rawIdent,
+              password: cleanPassword,
+            }),
+          });
+
+          if (resp.ok) {
+            const data = await resp.json().catch(() => null);
+            if (data?.success && data?.user) {
+              if (Array.isArray(data.allUsers) && data.allUsers.length > 0) {
+                StorageService.saveUsers(data.allUsers, true);
+              }
+              if (Array.isArray(data.workspaces) && data.workspaces.length > 0) {
+                StorageService.saveWorkspaces(data.workspaces, true);
+              }
+              StorageService.setCurrentUserId(data.user.id);
+              StorageService.setAuthenticated(true);
+              setIsLoading(false);
+              onLoginSuccess(data.user);
+              return;
+            }
+          } else if (resp.status === 401) {
+            setIsLoading(false);
+            setErrorMessage('Usuário ou senha inválidos.');
+            setDebugMessage('A senha informada não confere com o cadastro.');
+            return;
+          } else if (resp.status === 404) {
+            setServerApiAvailable(false);
           }
-          const serverWorkspaces = syncData.workspaces || syncData.data?.workspaces;
-          if (Array.isArray(serverWorkspaces) && serverWorkspaces.length > 0) {
-            StorageService.saveWorkspaces(serverWorkspaces, true);
-          }
+        } catch (netErr) {
+          setServerApiAvailable(false);
+          console.warn('[OperaTask Client Login] Servidor /api offline:', netErr);
         }
-      } catch {}
-
-      const localUsers = StorageService.getUsers();
-      const combinedUsers = [...localUsers];
-      users.forEach((u) => {
-        if (!combinedUsers.some((item) => item.id === u.id)) {
-          combinedUsers.push(u);
-        }
-      });
-
-      console.log('[OperaTask Client Login] Consultando lista combinada de usuários locais:', {
-        total: combinedUsers.length,
-        disponiveis: combinedUsers.map((u) => `@${u.username} (${u.email})`),
-      });
-
-      // Validação da Conta Master
-      const isMasterTarget =
-        cleanIdentWithoutAt === 'alanvitordasilva@gmail.com.br' ||
-        cleanIdentWithoutAt === 'alanvitordasilva@gmail.com' ||
-        cleanIdentWithoutAt === 'alan' ||
-        cleanIdent === 'alan';
-
-      if (isMasterTarget) {
-        if (cleanPassword !== '273021') {
-          setIsLoading(false);
-          setErrorMessage('Usuário ou senha inválidos.');
-          setDebugMessage('Senha incorreta para a conta master.');
-          return;
-        }
-        setIsLoading(false);
-        const masterUser = combinedUsers.find((u) => u.systemRole === 'master') || {
-          id: 'user-master-alan',
-          name: 'Alan Silva (Master)',
-          email: 'alanvitordasilva@gmail.com.br',
-          username: 'alan',
-          avatarColor: '#173653',
-          title: 'Super Administrador / Master',
-          systemRole: 'master',
-          isSuperAdmin: true,
-          status: 'active',
-          isActive: true,
-          createdAt: '2026-01-01T00:00:00.000Z',
-          bio: 'Conta Master com acesso total a todas as configurações e workspaces do OperaTask.',
-        };
-        StorageService.setCurrentUserId(masterUser.id);
-        StorageService.setAuthenticated(true);
-        console.log('[OperaTask Client Login] Master logado com sucesso!');
-        onLoginSuccess(masterUser);
-        return;
       }
 
-      // Busca inteligente com tolerância a acentos, pontuações e formatos
-      const foundUser = combinedUsers.find((u) => matchUserIdentifier(u, rawIdent));
-
-      if (!foundUser) {
-        setIsLoading(false);
-        setErrorMessage('Conta não encontrada. Verifique os dados ou solicite o cadastro ao administrador.');
-        setDebugMessage(
-          `Usuário '${rawIdent}' não localizado na base (${combinedUsers.length} usuários verificados).`
-        );
-        console.warn('[OperaTask Client Login] Usuário não localizado na base local:', {
-          rawIdent,
-          cleanIdentWithoutAt,
-          usuariosDisponiveis: combinedUsers.map((u) => ({
-            name: u.name,
-            username: u.username,
-            email: u.email,
-          })),
-        });
-        return;
-      }
-
-      if (foundUser.password && foundUser.password.trim() !== cleanPassword) {
-        setIsLoading(false);
-        setErrorMessage('Usuário ou senha inválidos.');
-        setDebugMessage('Senha informada não confere com a cadastrada.');
-        console.warn('[OperaTask Client Login] Senha incorreta para o usuário encontrado:', foundUser.name);
-        return;
-      }
-
+      // 5. Se chegou até aqui, conta realmente não foi encontrada
       setIsLoading(false);
-      const activeUser = { ...foundUser, status: 'active' as const, isActive: true };
-      StorageService.setCurrentUserId(activeUser.id);
-      StorageService.setAuthenticated(true);
-      console.log('[OperaTask Client Login] Usuário autenticado com sucesso localmente:', activeUser.name);
-      onLoginSuccess(activeUser);
+      setErrorMessage('Conta não encontrada. Verifique os dados ou solicite o cadastro ao administrador.');
+      setDebugMessage(`Usuário '${rawIdent}' não localizado na base (${combinedUsers.length} usuários verificados).`);
+      console.warn('[OperaTask Client Login] Usuário não localizado:', {
+        rawIdent,
+        cleanIdentWithoutAt,
+        usuariosDisponiveis: combinedUsers.map((u) => `@${u.username} (${u.email})`),
+      });
     } catch (err: any) {
       setIsLoading(false);
       setErrorMessage('Erro ao tentar autenticar. Tente novamente.');
