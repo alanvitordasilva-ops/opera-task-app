@@ -64,6 +64,19 @@
       "status": "active",
       "isActive": true,
       "createdAt": "2026-11-04T11:35:08.304Z"
+    },
+    {
+      "id": "user-davi-tantan",
+      "name": "Davi",
+      "username": "davi.tantan.com.br",
+      "email": "davi@tantan.com.br",
+      "password": "123456",
+      "avatarColor": "#34B1AC",
+      "title": "Produção",
+      "tipo": "producao",
+      "status": "active",
+      "isActive": true,
+      "createdAt": "2026-11-05T12:00:00.000Z"
     }
   ],
   "workspaces": [
@@ -94,6 +107,11 @@
           "userId": "user-1793792108304-72mo",
           "role": "membro",
           "joinedAt": "2026-11-04T11:35:08.304Z"
+        },
+        {
+          "userId": "user-davi-tantan",
+          "role": "production",
+          "joinedAt": "2026-11-05T12:00:00.000Z"
         }
       ],
       "createdAt": "2026-01-01T00:00:00.000Z"

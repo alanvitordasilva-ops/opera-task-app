@@ -318,10 +318,12 @@ export function matchUserIdentifier(user: Partial<User>, searchInput: string): b
   const normEmail = normalizeAuthText(user.email || '');
   const emailPrefix = normEmail.split('@')[0] || '';
   const emailSlug = emailPrefix.replace(/[^a-z0-9]/g, '');
+  const emailDotForm = normEmail.replace('@', '.');
 
   const normName = normalizeAuthText(user.name || '');
   const nameParts = normName.split(' ');
   const firstName = nameParts[0] || '';
+  const nameSlug = normName.replace(/[^a-z0-9]/g, '');
 
   // 1. Username exato ou sem @ ou sem pontuação
   if (normUser && (normUser === normSearch || normUserWithoutAt === searchWithoutAt)) return true;
@@ -331,12 +333,30 @@ export function matchUserIdentifier(user: Partial<User>, searchInput: string): b
   if (normEmail && normEmail === normSearch) return true;
   if (emailPrefix && (emailPrefix === searchWithoutAt || emailSlug === searchSlug)) return true;
 
-  // 3. E-mail com domínio padrão da plataforma
-  if (!normSearch.includes('@') && normEmail === `${searchWithoutAt}@operatask.app`) return true;
+  // 3. Email com ponto em vez de @ (Ex: usuário digita "Davi.tantan.com.br" para o e-mail "davi@tantan.com.br")
+  if (normEmail && (emailDotForm === normSearch || emailDotForm === searchWithoutAt)) return true;
 
-  // 4. Nome completo ou primeiro nome (ex: "Carlos" acha "Carlos Silva")
-  if (normName && normName === normSearch) return true;
-  if (firstName && firstName.length >= 3 && firstName === searchWithoutAt) return true;
+  // 4. Se a busca contém um ponto e parece um e-mail sem @ (Ex: "davi.tantan.com.br" -> primeiro ponto vira @: "davi@tantan.com.br")
+  if (!normSearch.includes('@') && normSearch.includes('.')) {
+    const searchAsEmail = normSearch.replace(/\./, '@');
+    if (normEmail && (normEmail === searchAsEmail || normEmail.startsWith(searchAsEmail))) return true;
+  }
+
+  // 5. E-mail com domínio padrão da plataforma
+  if (!normSearch.includes('@') && normEmail === `${searchWithoutAt}@operatask.app`) return true;
+  if (normEmail && normEmail.split('@')[0] === searchWithoutAt) return true;
+
+  // 6. Prefixo antes do primeiro ponto ou domínio (Ex: "davi.tantan.com.br" -> prefixo "davi" acha usuário "davi")
+  const searchPrefix = searchWithoutAt.split('.')[0] || '';
+  if (searchPrefix && searchPrefix.length >= 3) {
+    if (normUser && (normUser === searchPrefix || normUserWithoutAt === searchPrefix || userSlug === searchPrefix)) return true;
+    if (emailPrefix && (emailPrefix === searchPrefix || emailSlug === searchPrefix)) return true;
+    if (firstName && firstName === searchPrefix) return true;
+  }
+
+  // 7. Nome completo ou primeiro nome (ex: "Carlos" acha "Carlos Silva", "Davi" acha "Davi")
+  if (normName && (normName === normSearch || nameSlug === searchSlug)) return true;
+  if (firstName && firstName.length >= 3 && (firstName === searchWithoutAt || firstName === searchPrefix)) return true;
 
   return false;
 }

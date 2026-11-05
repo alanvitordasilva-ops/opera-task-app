@@ -82,6 +82,19 @@ export const INITIAL_USERS: ServerUser[] = [
     isActive: true,
     createdAt: '2026-11-04T11:35:08.304Z',
   },
+  {
+    id: 'user-davi-tantan',
+    name: 'Davi',
+    username: 'davi.tantan.com.br',
+    email: 'davi@tantan.com.br',
+    password: 'password123',
+    avatarColor: '#34B1AC',
+    title: 'Produção',
+    tipo: 'producao',
+    status: 'active',
+    isActive: true,
+    createdAt: '2026-11-05T12:00:00.000Z',
+  },
 ];
 
 export const INITIAL_WORKSPACES = [
@@ -98,6 +111,7 @@ export const INITIAL_WORKSPACES = [
       { userId: 'user-1793787546280-fcia', role: 'producao', joinedAt: '2026-11-04T10:19:06.280Z' },
       { userId: 'user-1793788666090-6lfr', role: 'producao', joinedAt: '2026-11-04T10:37:46.090Z' },
       { userId: 'user-1793792108304-72mo', role: 'member', joinedAt: '2026-11-04T11:35:08.304Z' },
+      { userId: 'user-davi-tantan', role: 'producao', joinedAt: '2026-11-05T12:00:00.000Z' },
     ],
     createdAt: '2026-01-01T00:00:00.000Z',
   },
