@@ -198,12 +198,28 @@ class RealtimeServiceImpl {
         .channel('operatask-live-sync')
         .on(
           'postgres_changes',
-          { event: '*', schema: 'public', table: 'operatask_tasks' },
+          { event: '*', schema: 'public', table: 'cards' },
           (payload: any) => {
-            // Se veio de outro cliente
-            this.notifyEntityListeners('tasks', payload.new || payload.old, {
-              action: `supabase_${payload.eventType}`,
-            });
+            const rowData = payload.new || payload.old;
+            if (rowData) {
+              const mapped = SupabaseService.mapRowToTask(rowData);
+              this.notifyEntityListeners('tasks', mapped, {
+                action: `supabase_${payload.eventType}`,
+              });
+            }
+          }
+        )
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'tasks' },
+          (payload: any) => {
+            const rowData = payload.new || payload.old;
+            if (rowData) {
+              const mapped = SupabaseService.mapRowToTask(rowData);
+              this.notifyEntityListeners('tasks', mapped, {
+                action: `supabase_${payload.eventType}`,
+              });
+            }
           }
         )
         .subscribe();

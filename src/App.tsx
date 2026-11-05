@@ -13,6 +13,7 @@ import {
   Notification,
 } from './types/index.ts';
 import { StorageService } from './services/storage.ts';
+import { SupabaseService } from './services/supabaseService.ts';
 import { RealtimeService } from './services/realtimeService.ts';
 import {
   isTaskOverdue,
@@ -128,6 +129,17 @@ export default function App() {
 
     StorageService.setAuthenticated(true);
     setIsAuthenticated(true);
+
+    // Carregar tarefas da nuvem do Supabase para o Workspace ativo
+    if (SupabaseService.isConfigured()) {
+      const activeWsId = allowedWorkspaces[0]?.id || 'ws-principal';
+      StorageService.fetchTasksCloud(activeWsId).then((res) => {
+        if (res.success && Array.isArray(res.tasks)) {
+          setTasks(res.tasks);
+        }
+      });
+    }
+
     showToast({
       type: 'success',
       message: `Bem-vindo(a) ao OperaTask, ${user.name}! Acesso liberado.`,
@@ -220,9 +232,21 @@ export default function App() {
     StorageService.saveTheme(theme);
   }, [theme]);
 
-  // Sincronização autoritativa inicial com o banco de dados remoto
+  // Sincronização autoritativa inicial com o banco de dados remoto (Supabase / Servidor)
   useEffect(() => {
     const fetchLatestServerState = async () => {
+      // 1. Se o Supabase estiver configurado, busca tarefas da nuvem de forma assíncrona
+      if (SupabaseService.isConfigured()) {
+        try {
+          const cloudRes = await StorageService.fetchTasksCloud(currentWorkspace.id);
+          if (cloudRes.success && cloudRes.tasks.length > 0) {
+            setTasks(cloudRes.tasks);
+          }
+        } catch (e) {
+          console.warn('[OperaTask] Aviso ao carregar tarefas do Supabase:', e);
+        }
+      }
+
       await StorageService.syncWithServer();
       const freshUsers = StorageService.getUsers();
       const freshWorkspaces = StorageService.getWorkspaces();
@@ -233,7 +257,9 @@ export default function App() {
       setUsers(freshUsers);
       setWorkspaces(freshWorkspaces);
       setProjects(freshProjects);
-      setTasks(freshTasks);
+      if (!SupabaseService.isConfigured()) {
+        setTasks(freshTasks);
+      }
       setTags(freshTags);
 
       const current = freshUsers.find((u) => u.id === currentUser.id);
@@ -255,6 +281,17 @@ export default function App() {
     };
     fetchLatestServerState();
   }, []);
+
+  // Recarregar tarefas da nuvem do Supabase ao trocar de Workspace
+  useEffect(() => {
+    if (SupabaseService.isConfigured() && currentWorkspace.id) {
+      StorageService.fetchTasksCloud(currentWorkspace.id).then((res) => {
+        if (res.success && Array.isArray(res.tasks)) {
+          setTasks(res.tasks);
+        }
+      });
+    }
+  }, [currentWorkspace.id]);
 
   // Auto-save de estado
   useEffect(() => {
@@ -591,7 +628,7 @@ export default function App() {
     setNotifications((prev) => [newNotif, ...prev]);
   };
 
-  // Ações de Tarefa
+  // Ações de Tarefa (Conectadas Assincronamente à Nuvem do Supabase)
   const handleSaveTask = (taskData: Partial<Task> & { id?: string }) => {
     const projId = taskData.projectId || activeProject?.id || workspaceProjects[0]?.id || 'proj-1';
     const targetProject = projects.find((p) => p.id === projId);
@@ -599,7 +636,7 @@ export default function App() {
     const isCompleted = targetProject?.columns.find((c) => c.id === colId)?.isCompletedColumn || false;
 
     if (taskData.id) {
-      // Edição de tarefa existente
+      // Edição de tarefa existente (U do CRUD Supabase)
       const existingTask = tasks.find((t) => t.id === taskData.id);
       if (existingTask) {
         const wasDone = isTaskInDoneColumn(existingTask, targetProject?.columns);
@@ -613,6 +650,14 @@ export default function App() {
           }
         }
       }
+
+      const updatedFields: Partial<Task> = {
+        ...taskData,
+        columnId: colId,
+        isCompleted,
+        completedAt: isCompleted && !existingTask?.isCompleted ? new Date().toISOString() : existingTask?.completedAt,
+        updatedAt: new Date().toISOString(),
+      };
 
       setTasks((prev) =>
         prev.map((t) => {
@@ -636,17 +681,16 @@ export default function App() {
 
           return {
             ...t,
-            ...taskData,
-            columnId: colId,
-            isCompleted,
-            completedAt: isCompleted && !t.isCompleted ? new Date().toISOString() : t.completedAt,
-            updatedAt: new Date().toISOString(),
+            ...updatedFields,
           };
         })
       );
+
+      // Persistência assíncrona na nuvem do Supabase
+      StorageService.updateTaskAsync(taskData.id, updatedFields);
       recordActivity('atualizou os detalhes da tarefa', taskData.title, projId, taskData.id);
     } else {
-      // Criação de nova tarefa
+      // Criação de nova tarefa (C do CRUD Supabase)
       const newTaskId = `task-${Date.now()}`;
       const newTask: Task = {
         id: newTaskId,
@@ -677,6 +721,9 @@ export default function App() {
       };
 
       setTasks((prev) => [newTask, ...prev]);
+
+      // Criação assíncrona na nuvem do Supabase
+      StorageService.createTaskAsync(newTask);
       recordActivity('criou a nova tarefa', newTask.title, projId, newTaskId);
 
       // Notificar membros atribuídos
@@ -712,34 +759,43 @@ export default function App() {
       return;
     }
 
+    const targetCol = project?.columns.find((c) => c.id === targetColumnId);
+    const isCompleted = targetCol?.isCompletedColumn || false;
+    const completedAt = isCompleted && !targetTask.isCompleted ? new Date().toISOString() : targetTask.completedAt;
+
+    const updatedActivities = [
+      {
+        id: `act-${Date.now()}`,
+        userId: currentUser.id,
+        action: `moveu para "${targetCol?.title || 'outra coluna'}"`,
+        timestamp: new Date().toISOString(),
+      },
+      ...(targetTask.activities || []),
+    ];
+
     setTasks((prev) =>
       prev.map((t) => {
         if (t.id !== taskId) return t;
-        const targetCol = project?.columns.find((c) => c.id === targetColumnId);
-        const isCompleted = targetCol?.isCompletedColumn || false;
-
-        const updatedActivities = [
-          {
-            id: `act-${Date.now()}`,
-            userId: currentUser.id,
-            action: `moveu para "${targetCol?.title || 'outra coluna'}"`,
-            timestamp: new Date().toISOString(),
-          },
-          ...(t.activities || []),
-        ];
-
-        recordActivity(`moveu a tarefa para "${targetCol?.title}"`, t.title, t.projectId, t.id);
-
         return {
           ...t,
           columnId: targetColumnId,
           isCompleted,
-          completedAt: isCompleted && !t.isCompleted ? new Date().toISOString() : t.completedAt,
+          completedAt,
           activities: updatedActivities,
           updatedAt: new Date().toISOString(),
         };
       })
     );
+
+    // Atualização assíncrona na nuvem do Supabase
+    StorageService.updateTaskAsync(taskId, {
+      columnId: targetColumnId,
+      isCompleted,
+      completedAt,
+      activities: updatedActivities,
+    });
+
+    recordActivity(`moveu a tarefa para "${targetCol?.title}"`, targetTask.title, targetTask.projectId, targetTask.id);
   };
 
   const handleReorderTasks = (
@@ -803,6 +859,14 @@ export default function App() {
       });
     });
 
+    // Atualização assíncrona de reordenações no Supabase
+    updates.forEach((u) => {
+      StorageService.updateTaskAsync(u.id, {
+        columnId: u.columnId,
+        order: u.order,
+      });
+    });
+
     if (meta && meta.targetColumnId !== meta.prevColumnId) {
       const task = tasks.find((t) => t.id === meta.taskId);
       const project = projects.find((p) => p.id === task?.projectId);
@@ -833,23 +897,32 @@ export default function App() {
       return;
     }
 
+    const nextDone = !targetTask.isCompleted;
+    // Encontra coluna de conclusão ou primeira coluna
+    const completedCol = project?.columns.find((c) => c.isCompletedColumn) || project?.columns[project.columns.length - 1];
+    const initialCol = project?.columns[0];
+    const nextColId = nextDone ? completedCol?.id || targetTask.columnId : initialCol?.id || targetTask.columnId;
+    const completedAt = nextDone ? new Date().toISOString() : null;
+
     setTasks((prev) =>
       prev.map((t) => {
         if (t.id !== taskId) return t;
-        const nextDone = !t.isCompleted;
-        // Encontra coluna de conclusão ou primeira coluna
-        const completedCol = project?.columns.find((c) => c.isCompletedColumn) || project?.columns[project.columns.length - 1];
-        const initialCol = project?.columns[0];
-
         return {
           ...t,
           isCompleted: nextDone,
-          columnId: nextDone ? completedCol?.id || t.columnId : initialCol?.id || t.columnId,
-          completedAt: nextDone ? new Date().toISOString() : null,
+          columnId: nextColId,
+          completedAt,
           updatedAt: new Date().toISOString(),
         };
       })
     );
+
+    // Atualização assíncrona no Supabase
+    StorageService.updateTaskAsync(taskId, {
+      isCompleted: nextDone,
+      columnId: nextColId,
+      completedAt,
+    });
   };
 
   const handleDeleteTask = (taskId: string) => {
@@ -868,6 +941,9 @@ export default function App() {
     }
 
     setTasks((prev) => prev.filter((t) => t.id !== taskId));
+
+    // Exclusão assíncrona na nuvem do Supabase (D do CRUD)
+    StorageService.deleteTaskAsync(taskId);
     recordActivity('excluiu a tarefa', taskToDelete.title, taskToDelete.projectId);
     showToast({
       type: 'info',
@@ -920,6 +996,9 @@ export default function App() {
     };
 
     setTasks((prev) => [newTask, ...prev]);
+
+    // Criação assíncrona na nuvem do Supabase
+    StorageService.createTaskAsync(newTask);
     recordActivity('duplicou a tarefa', newTask.title, originalTask.projectId, newTaskId);
 
     showToast({
@@ -948,18 +1027,26 @@ export default function App() {
       return;
     }
 
+    const archivedAt = new Date().toISOString();
     setTasks((prev) =>
       prev.map((t) =>
         t.id === taskId
           ? {
               ...t,
               isArchived: true,
-              archivedAt: new Date().toISOString(),
+              archivedAt,
               updatedAt: new Date().toISOString(),
             }
           : t
       )
     );
+
+    // Atualização assíncrona no Supabase
+    StorageService.updateTaskAsync(taskId, {
+      isArchived: true,
+      archivedAt,
+    });
+
     recordActivity('arquivou o card', taskToArchive.title, taskToArchive.projectId, taskToArchive.id);
 
     showToast({
@@ -974,6 +1061,7 @@ export default function App() {
     const taskToRestore = tasks.find((t) => t.id === taskId);
     if (!taskToRestore) return;
 
+    const nextColumnId = targetColumnId || taskToRestore.columnId;
     setTasks((prev) =>
       prev.map((t) => {
         if (t.id !== taskId) return t;
@@ -981,11 +1069,19 @@ export default function App() {
           ...t,
           isArchived: false,
           archivedAt: undefined,
-          columnId: targetColumnId || t.columnId,
+          columnId: nextColumnId,
           updatedAt: new Date().toISOString(),
         };
       })
     );
+
+    // Atualização assíncrona no Supabase
+    StorageService.updateTaskAsync(taskId, {
+      isArchived: false,
+      archivedAt: undefined,
+      columnId: nextColumnId,
+    });
+
     recordActivity('restaurou o card para o quadro', taskToRestore.title, taskToRestore.projectId, taskToRestore.id);
 
     showToast({
@@ -997,6 +1093,10 @@ export default function App() {
   const handlePermanentDeleteTask = (taskId: string) => {
     const taskToDelete = tasks.find((t) => t.id === taskId);
     setTasks((prev) => prev.filter((t) => t.id !== taskId));
+
+    // Exclusão assíncrona no Supabase
+    StorageService.deleteTaskAsync(taskId);
+
     if (taskToDelete) {
       recordActivity('excluiu permanentemente o card', taskToDelete.title, taskToDelete.projectId);
     }

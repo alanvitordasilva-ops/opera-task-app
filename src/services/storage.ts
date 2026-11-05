@@ -893,6 +893,106 @@ export const StorageService = {
     handleSaveMutation(STORAGE_KEYS.TASKS, tasks, immediate);
   },
 
+  // ========================================================================
+  // OPERAÇÕES ASSÍNCRONAS CONECTADAS DIRETAMENTE AO SUPABASE (CLOUD-FIRST)
+  // ========================================================================
+
+  /**
+   * Buscar tarefas da nuvem do Supabase de forma assíncrona com fallback local
+   */
+  async fetchTasksCloud(workspaceId?: string, projectId?: string): Promise<{ success: boolean; tasks: Task[]; fromCloud: boolean }> {
+    if (SupabaseService.isConfigured()) {
+      try {
+        const res = await SupabaseService.fetchTasks(workspaceId, projectId);
+        if (res.success && Array.isArray(res.tasks)) {
+          // Atualiza o cache local mantendo o estado sincronizado
+          const localTasks = this.getTasks();
+          // Se buscou filtrado por workspace, mescla
+          let merged: Task[];
+          if (workspaceId) {
+            const others = localTasks.filter((t) => t.workspaceId !== workspaceId);
+            merged = [...others, ...res.tasks];
+          } else {
+            merged = res.tasks;
+          }
+          this.saveTasks(merged, true);
+          return { success: true, tasks: res.tasks, fromCloud: true };
+        }
+      } catch (err) {
+        console.warn('[StorageService] Falha ao carregar tarefas do Supabase:', err);
+      }
+    }
+    // Fallback: retorna dados locais
+    const tasks = this.getTasks();
+    const filtered = workspaceId ? tasks.filter((t) => t.workspaceId === workspaceId) : tasks;
+    return { success: false, tasks: filtered, fromCloud: false };
+  },
+
+  /**
+   * Criar tarefa diretamente no Supabase e refletir no armazenamento local
+   */
+  async createTaskAsync(task: Task): Promise<{ success: boolean; task: Task }> {
+    // 1. Atualiza estado local imediatamente
+    const current = this.getTasks();
+    const nextList = [task, ...current.filter((t) => t.id !== task.id)];
+    this.saveTasks(nextList, true);
+
+    // 2. Persiste diretamente no Supabase se configurado
+    if (SupabaseService.isConfigured()) {
+      try {
+        const cloudRes = await SupabaseService.createTask(task);
+        if (cloudRes.success && cloudRes.task) {
+          const updatedList = nextList.map((t) => (t.id === task.id ? cloudRes.task! : t));
+          this.saveTasks(updatedList, true);
+          return { success: true, task: cloudRes.task };
+        }
+      } catch (e) {
+        console.warn('[StorageService] Erro ao criar tarefa no Supabase:', e);
+      }
+    }
+    return { success: true, task };
+  },
+
+  /**
+   * Atualizar tarefa diretamente no Supabase e refletir no armazenamento local
+   */
+  async updateTaskAsync(taskId: string, updates: Partial<Task>): Promise<{ success: boolean }> {
+    // 1. Atualiza estado local imediatamente
+    const current = this.getTasks();
+    const updatedList = current.map((t) => (t.id === taskId ? { ...t, ...updates, updatedAt: new Date().toISOString() } : t));
+    this.saveTasks(updatedList, true);
+
+    // 2. Persiste diretamente no Supabase se configurado
+    if (SupabaseService.isConfigured()) {
+      try {
+        await SupabaseService.updateTask(taskId, updates);
+      } catch (e) {
+        console.warn('[StorageService] Erro ao atualizar tarefa no Supabase:', e);
+      }
+    }
+    return { success: true };
+  },
+
+  /**
+   * Excluir tarefa diretamente no Supabase e refletir no armazenamento local
+   */
+  async deleteTaskAsync(taskId: string): Promise<{ success: boolean }> {
+    // 1. Remove do estado local
+    const current = this.getTasks();
+    const filtered = current.filter((t) => t.id !== taskId);
+    this.saveTasks(filtered, true);
+
+    // 2. Exclui diretamente no Supabase se configurado
+    if (SupabaseService.isConfigured()) {
+      try {
+        await SupabaseService.deleteTask(taskId);
+      } catch (e) {
+        console.warn('[StorageService] Erro ao excluir tarefa no Supabase:', e);
+      }
+    }
+    return { success: true };
+  },
+
   getTags(): Tag[] {
     try {
       const data = localStorage.getItem(STORAGE_KEYS.TAGS);

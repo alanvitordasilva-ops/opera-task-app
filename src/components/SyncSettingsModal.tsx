@@ -232,7 +232,7 @@ export const SyncSettingsModal: React.FC<SyncSettingsModalProps> = ({
             </div>
 
             <p className="text-xs text-slate-600 dark:text-slate-300">
-              Conecte seu projeto Supabase para sincronização em nuvem automática e colaboração em tempo real entre múltiplos dispositivos.
+              Conecte seu projeto Supabase para gerenciamento completo e síncrono das tarefas na nuvem. Pode configurar aqui ou definir as variáveis <code className="px-1 py-0.5 rounded bg-slate-200 dark:bg-slate-700 font-mono text-[10px]">NEXT_PUBLIC_SUPABASE_URL</code> e <code className="px-1 py-0.5 rounded bg-slate-200 dark:bg-slate-700 font-mono text-[10px]">NEXT_PUBLIC_SUPABASE_ANON_KEY</code>.
             </p>
 
             <div className="space-y-3">

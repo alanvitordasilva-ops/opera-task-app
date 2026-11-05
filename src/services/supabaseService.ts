@@ -19,12 +19,29 @@ export class SupabaseService {
   private static client: SupabaseClient | null = null;
   private static cachedConfig: SupabaseConfig | null = null;
 
-  // Obter configurações do Supabase (do localStorage ou variáveis de ambiente)
+  // Obter configurações do Supabase (do localStorage ou variáveis de ambiente NEXT_PUBLIC_* / VITE_*)
   static getConfig(): SupabaseConfig {
     if (this.cachedConfig) return this.cachedConfig;
 
-    const envUrl = ((import.meta as any).env?.VITE_SUPABASE_URL || '').trim();
-    const envKey = ((import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '').trim();
+    const env = (import.meta as any).env || {};
+    const proc = typeof process !== 'undefined' ? process.env || {} : {};
+
+    // Prioridade máxima para NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY
+    const envUrl = (
+      env.NEXT_PUBLIC_SUPABASE_URL ||
+      proc.NEXT_PUBLIC_SUPABASE_URL ||
+      env.VITE_SUPABASE_URL ||
+      proc.VITE_SUPABASE_URL ||
+      ''
+    ).trim();
+
+    const envKey = (
+      env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+      proc.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+      env.VITE_SUPABASE_ANON_KEY ||
+      proc.VITE_SUPABASE_ANON_KEY ||
+      ''
+    ).trim();
 
     try {
       const stored = localStorage.getItem(SUPABASE_CONFIG_KEY);
@@ -473,64 +490,271 @@ export class SupabaseService {
     }
   }
 
-  // Sincronizar card individual em tempo real
-  static async syncTask(task: Task): Promise<boolean> {
+  // ==========================================================================
+  // Mapeadores entre Modelo da Aplicação (Task) e Tabelas Supabase (cards / tasks)
+  // ==========================================================================
+  static mapRowToTask(row: any): Task {
+    const parseJsonField = (val: any, fallback: any) => {
+      if (Array.isArray(val)) return val;
+      if (typeof val === 'string') {
+        try { return JSON.parse(val); } catch { return fallback; }
+      }
+      return fallback;
+    };
+
+    return {
+      id: String(row.id),
+      workspaceId: row.workspace_id || 'ws-principal',
+      projectId: row.project_id || 'proj-1',
+      columnId: row.column_id || 'col-1',
+      title: row.title || 'Sem título',
+      description: row.description || '',
+      priority: row.priority || 'medium',
+      assigneeIds: parseJsonField(row.assignee_ids, []),
+      dueDate: row.due_date || '',
+      tags: parseJsonField(row.tags, []),
+      checklist: parseJsonField(row.checklist, []),
+      comments: parseJsonField(row.comments, []),
+      activities: parseJsonField(row.activities, []),
+      attachments: parseJsonField(row.attachments, []),
+      fichaTecnica: row.ficha_tecnica ? (typeof row.ficha_tecnica === 'string' ? JSON.parse(row.ficha_tecnica) : row.ficha_tecnica) : null,
+      productionRecords: parseJsonField(row.production_records, []),
+      isCompleted: Boolean(row.is_completed),
+      completedAt: row.completed_at || null,
+      isArchived: Boolean(row.is_archived),
+      archivedAt: row.archived_at || null,
+      order: typeof row.order_index === 'number' ? row.order_index : (row.order ?? 0),
+      frameColor: row.frame_color || '',
+      createdAt: row.created_at || new Date().toISOString(),
+      updatedAt: row.updated_at || new Date().toISOString(),
+    };
+  }
+
+  static mapTaskToRow(task: Partial<Task>): any {
+    const row: any = {};
+    if (task.id !== undefined) row.id = task.id;
+    if (task.workspaceId !== undefined) row.workspace_id = task.workspaceId;
+    if (task.projectId !== undefined) row.project_id = task.projectId;
+    if (task.columnId !== undefined) row.column_id = task.columnId;
+    if (task.title !== undefined) row.title = task.title;
+    if (task.description !== undefined) row.description = task.description;
+    if (task.priority !== undefined) row.priority = task.priority;
+    if (task.assigneeIds !== undefined) row.assignee_ids = task.assigneeIds;
+    if (task.dueDate !== undefined) row.due_date = task.dueDate;
+    if (task.tags !== undefined) row.tags = task.tags;
+    if (task.checklist !== undefined) row.checklist = task.checklist;
+    if (task.comments !== undefined) row.comments = task.comments;
+    if (task.activities !== undefined) row.activities = task.activities;
+    if (task.attachments !== undefined) row.attachments = task.attachments;
+    if (task.fichaTecnica !== undefined) row.ficha_tecnica = task.fichaTecnica;
+    if (task.productionRecords !== undefined) row.production_records = task.productionRecords;
+    if (task.isCompleted !== undefined) row.is_completed = Boolean(task.isCompleted);
+    if (task.completedAt !== undefined) row.completed_at = task.completedAt;
+    if (task.isArchived !== undefined) row.is_archived = Boolean(task.isArchived);
+    if (task.archivedAt !== undefined) row.archived_at = task.archivedAt;
+    if (task.order !== undefined) row.order_index = task.order;
+    if (task.frameColor !== undefined) row.frame_color = task.frameColor;
+    if (task.createdAt !== undefined) row.created_at = task.createdAt;
+    row.updated_at = task.updatedAt || new Date().toISOString();
+    return row;
+  }
+
+  // ==========================================================================
+  // CRUD COMPLETO E ASSÍNCRONO DE TAREFAS NO SUPABASE
+  // ==========================================================================
+
+  /**
+   * Listar tarefas diretamente da nuvem do Supabase (R do CRUD)
+   */
+  static async fetchTasks(workspaceId?: string, projectId?: string): Promise<{ success: boolean; tasks: Task[]; error?: string }> {
     const client = this.getClient();
-    if (!client) return false;
+    if (!client) {
+      return { success: false, tasks: [], error: 'Supabase não está configurado ou habilitado.' };
+    }
 
     try {
-      const payload = {
-        id: task.id,
-        workspace_id: task.workspaceId,
-        project_id: task.projectId,
-        column_id: task.columnId,
-        title: task.title,
-        description: task.description || '',
-        priority: task.priority,
-        assignee_ids: task.assigneeIds || [],
-        due_date: task.dueDate,
-        tags: task.tags || [],
-        checklist: task.checklist || [],
-        comments: task.comments || [],
-        activities: task.activities || [],
-        attachments: task.attachments || [],
-        is_completed: Boolean(task.isCompleted),
-        completed_at: task.completedAt || null,
-        is_archived: Boolean(task.isArchived),
-        archived_at: task.archivedAt || null,
-        order_index: task.order || 0,
-        created_at: task.createdAt,
-        updated_at: task.updatedAt || new Date().toISOString(),
-      };
+      // 1. Tenta buscar na tabela 'cards'
+      let query = client.from('cards').select('*');
+      if (workspaceId) {
+        query = query.eq('workspace_id', workspaceId);
+      }
+      if (projectId && projectId !== 'all') {
+        query = query.eq('project_id', projectId);
+      }
+      query = query.order('order_index', { ascending: true });
 
-      try {
-        await client.from('cards').upsert(payload);
-      } catch {}
-      try {
-        await client.from('tasks').upsert(payload);
-      } catch {}
-      return true;
-    } catch {
-      return false;
+      let { data, error } = await query;
+
+      // Se a tabela 'cards' não existir ou der erro de tabela, tenta a tabela 'tasks'
+      if (error && (error.code === '42P01' || error.message?.includes('does not exist'))) {
+        let taskQuery = client.from('tasks').select('*');
+        if (workspaceId) {
+          taskQuery = taskQuery.eq('workspace_id', workspaceId);
+        }
+        if (projectId && projectId !== 'all') {
+          taskQuery = taskQuery.eq('project_id', projectId);
+        }
+        taskQuery = taskQuery.order('order_index', { ascending: true });
+        const fallbackRes = await taskQuery;
+        data = fallbackRes.data;
+        error = fallbackRes.error;
+      }
+
+      if (error) {
+        console.warn('[Supabase CRUD] Erro ao listar tarefas:', error.message);
+        return { success: false, tasks: [], error: error.message };
+      }
+
+      const tasks = Array.isArray(data) ? data.map(this.mapRowToTask) : [];
+      return { success: true, tasks };
+    } catch (err: any) {
+      console.error('[Supabase CRUD] Exceção ao listar tarefas:', err);
+      return { success: false, tasks: [], error: err.message };
     }
   }
 
-  // Excluir card no Supabase
-  static async deleteTask(taskId: string): Promise<boolean> {
+  /**
+   * Criar uma nova tarefa no Supabase (C do CRUD)
+   */
+  static async createTask(task: Task): Promise<{ success: boolean; task?: Task; error?: string }> {
     const client = this.getClient();
-    if (!client) return false;
+    if (!client) {
+      return { success: false, error: 'Supabase não está configurado.' };
+    }
 
     try {
-      try {
-        await client.from('cards').delete().eq('id', taskId);
-      } catch {}
-      try {
-        await client.from('tasks').delete().eq('id', taskId);
-      } catch {}
-      return true;
-    } catch {
-      return false;
+      const row = this.mapTaskToRow(task);
+
+      // Upsert na tabela 'cards'
+      let { data, error } = await client.from('cards').upsert(row).select().maybeSingle();
+
+      // Fallback para 'tasks' se 'cards' não existir
+      if (error && (error.code === '42P01' || error.message?.includes('does not exist'))) {
+        const fallback = await client.from('tasks').upsert(row).select().maybeSingle();
+        data = fallback.data;
+        error = fallback.error;
+      } else {
+        // Tenta espelhar de forma silenciosa para 'tasks'
+        Promise.resolve(client.from('tasks').upsert(row)).catch(() => {});
+      }
+
+      if (error) {
+        console.warn('[Supabase CRUD] Erro ao criar tarefa:', error.message);
+        return { success: false, error: error.message };
+      }
+
+      const created = data ? this.mapRowToTask(data) : task;
+      return { success: true, task: created };
+    } catch (err: any) {
+      console.error('[Supabase CRUD] Exceção ao criar tarefa:', err);
+      return { success: false, error: err.message };
     }
+  }
+
+  /**
+   * Atualizar uma tarefa existente no Supabase (U do CRUD)
+   */
+  static async updateTask(taskId: string, updates: Partial<Task>): Promise<{ success: boolean; task?: Task; error?: string }> {
+    const client = this.getClient();
+    if (!client) {
+      return { success: false, error: 'Supabase não está configurado.' };
+    }
+
+    try {
+      const rowUpdates = this.mapTaskToRow(updates);
+      delete rowUpdates.id; // Garante que o ID não seja alterado
+
+      let { data, error } = await client
+        .from('cards')
+        .update(rowUpdates)
+        .eq('id', taskId)
+        .select()
+        .maybeSingle();
+
+      if (error && (error.code === '42P01' || error.message?.includes('does not exist'))) {
+        const fallback = await client
+          .from('tasks')
+          .update(rowUpdates)
+          .eq('id', taskId)
+          .select()
+          .maybeSingle();
+        data = fallback.data;
+        error = fallback.error;
+      } else {
+        Promise.resolve(client.from('tasks').update(rowUpdates).eq('id', taskId)).catch(() => {});
+      }
+
+      if (error) {
+        console.warn('[Supabase CRUD] Erro ao atualizar tarefa:', error.message);
+        return { success: false, error: error.message };
+      }
+
+      const updated = data ? this.mapRowToTask(data) : undefined;
+      return { success: true, task: updated };
+    } catch (err: any) {
+      console.error('[Supabase CRUD] Exceção ao atualizar tarefa:', err);
+      return { success: false, error: err.message };
+    }
+  }
+
+  /**
+   * Apagar uma tarefa no Supabase (D do CRUD)
+   */
+  static async deleteTask(taskId: string): Promise<{ success: boolean; error?: string }> {
+    const client = this.getClient();
+    if (!client) return { success: false, error: 'Supabase não está configurado.' };
+
+    try {
+      let { error } = await client.from('cards').delete().eq('id', taskId);
+
+      if (error && (error.code === '42P01' || error.message?.includes('does not exist'))) {
+        const fallback = await client.from('tasks').delete().eq('id', taskId);
+        error = fallback.error;
+      } else {
+        Promise.resolve(client.from('tasks').delete().eq('id', taskId)).catch(() => {});
+      }
+
+      if (error) {
+        console.warn('[Supabase CRUD] Erro ao excluir tarefa:', error.message);
+        return { success: false, error: error.message };
+      }
+
+      return { success: true };
+    } catch (err: any) {
+      console.error('[Supabase CRUD] Exceção ao excluir tarefa:', err);
+      return { success: false, error: err.message };
+    }
+  }
+
+  /**
+   * Buscar uma tarefa individual por ID no Supabase
+   */
+  static async getTaskById(taskId: string): Promise<{ success: boolean; task?: Task; error?: string }> {
+    const client = this.getClient();
+    if (!client) return { success: false, error: 'Supabase não está configurado.' };
+
+    try {
+      let { data, error } = await client.from('cards').select('*').eq('id', taskId).maybeSingle();
+      if (error && (error.code === '42P01' || error.message?.includes('does not exist'))) {
+        const fallback = await client.from('tasks').select('*').eq('id', taskId).maybeSingle();
+        data = fallback.data;
+        error = fallback.error;
+      }
+
+      if (error) return { success: false, error: error.message };
+      if (!data) return { success: false, error: 'Tarefa não encontrada.' };
+      return { success: true, task: this.mapRowToTask(data) };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  /**
+   * Sincronizar card individual em tempo real (compatibilidade)
+   */
+  static async syncTask(task: Task): Promise<boolean> {
+    const res = await this.createTask(task);
+    return res.success;
   }
 
   // Gerar SQL completo para criação de tabelas no Supabase SQL Editor
