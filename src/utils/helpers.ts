@@ -48,7 +48,23 @@ export const PRIORITY_CONFIG: Record<
     darkText: 'dark:text-zinc-100',
     dotColor: 'bg-emerald-500',
   },
+  none: {
+    label: 'Sem prioridade',
+    color: '#94a3b8',
+    bgLight: 'bg-zinc-100',
+    textLight: 'text-zinc-500',
+    darkBg: 'dark:bg-zinc-800',
+    darkText: 'dark:text-zinc-400',
+    dotColor: 'bg-zinc-400',
+  },
 };
+
+export function getPriorityInfo(priority?: Priority | null | string) {
+  if (!priority || priority === 'none' || !(priority in PRIORITY_CONFIG)) {
+    return PRIORITY_CONFIG.none;
+  }
+  return PRIORITY_CONFIG[priority as Priority];
+}
 
 export const ROLE_CONFIG: Record<
   WorkspaceRole,
@@ -346,12 +362,31 @@ export interface ParsedDueDate {
   timePart: string; // HH:MM
   dateTime: Date;
   hasSpecificTime: boolean;
+  hasSpecificDate: boolean;
 }
 
 export function parseTaskDueDate(dueDateString?: string): ParsedDueDate | null {
   if (!dueDateString || typeof dueDateString !== 'string') return null;
 
   const trimmed = dueDateString.trim();
+  if (!trimmed) return null;
+
+  // Se vier apenas horário, ex: "T14:30" ou "14:30"
+  if (trimmed.startsWith('T') || /^\d{1,2}:\d{2}$/.test(trimmed)) {
+    const rawTime = trimmed.replace(/^T/, '').slice(0, 5);
+    const [h, m] = rawTime.split(':');
+    const timePart = `${h.padStart(2, '0')}:${m}`;
+    const now = new Date();
+    const dateTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), parseInt(h, 10), parseInt(m, 10), 0, 0);
+    return {
+      datePart: '',
+      timePart,
+      dateTime,
+      hasSpecificTime: true,
+      hasSpecificDate: false,
+    };
+  }
+
   const parts = trimmed.split('T');
   const datePart = parts[0];
   if (!datePart || datePart.length < 10) return null;
@@ -363,7 +398,7 @@ export function parseTaskDueDate(dueDateString?: string): ParsedDueDate | null {
 
   if (isNaN(year) || isNaN(month) || isNaN(day)) return null;
 
-  let timePart = '23:59';
+  let timePart = '';
   let hasSpecificTime = false;
 
   if (parts.length > 1 && parts[1]) {
@@ -375,21 +410,25 @@ export function parseTaskDueDate(dueDateString?: string): ParsedDueDate | null {
     }
   }
 
-  const [hours, minutes] = timePart.split(':').map(Number);
-  const dateTime = new Date(year, month - 1, day, hours, minutes, 0, 0);
+  // Se não foi definido horário específico, consideramos o fim do dia (23:59:59) para conferência de atraso
+  const hours = hasSpecificTime ? parseInt(timePart.split(':')[0], 10) : 23;
+  const minutes = hasSpecificTime ? parseInt(timePart.split(':')[1], 10) : 59;
+  const seconds = hasSpecificTime ? 0 : 59;
+  const dateTime = new Date(year, month - 1, day, hours, minutes, seconds, 0);
 
   return {
     datePart,
     timePart,
     dateTime,
     hasSpecificTime,
+    hasSpecificDate: true,
   };
 }
 
 export function isTaskOverdue(task: Task): boolean {
   if (task.isCompleted || !task.dueDate) return false;
   const parsed = parseTaskDueDate(task.dueDate);
-  if (!parsed) return false;
+  if (!parsed || !parsed.hasSpecificDate) return false;
 
   const now = new Date();
   return parsed.dateTime.getTime() < now.getTime();
@@ -398,7 +437,7 @@ export function isTaskOverdue(task: Task): boolean {
 export function isTaskDueToday(task: Task): boolean {
   if (!task.dueDate) return false;
   const parsed = parseTaskDueDate(task.dueDate);
-  if (!parsed) return false;
+  if (!parsed || !parsed.hasSpecificDate) return false;
 
   const now = new Date();
   return (
@@ -411,7 +450,7 @@ export function isTaskDueToday(task: Task): boolean {
 export function isTaskDueSoon(task: Task, days: number = 7): boolean {
   if (task.isCompleted || !task.dueDate) return false;
   const parsed = parseTaskDueDate(task.dueDate);
-  if (!parsed) return false;
+  if (!parsed || !parsed.hasSpecificDate) return false;
 
   const now = new Date();
   const maxDate = new Date();
@@ -439,17 +478,21 @@ export function formatDueDatePTBR(dueDateString?: string): {
   fullText: string;
   formattedDate: string;
   timeText: string;
+  hasDate: boolean;
+  hasTime: boolean;
   isOverdue: boolean;
   isToday: boolean;
   isTomorrow: boolean;
   isYesterday: boolean;
 } {
-  if (!dueDateString) {
+  if (!dueDateString || !dueDateString.trim()) {
     return {
-      text: 'Sem data',
+      text: 'Definir data',
       fullText: 'Sem data de execução',
       formattedDate: '',
-      timeText: '',
+      timeText: 'Definir hora',
+      hasDate: false,
+      hasTime: false,
       isOverdue: false,
       isToday: false,
       isTomorrow: false,
@@ -460,10 +503,28 @@ export function formatDueDatePTBR(dueDateString?: string): {
   const parsed = parseTaskDueDate(dueDateString);
   if (!parsed) {
     return {
-      text: dueDateString,
-      fullText: dueDateString,
-      formattedDate: dueDateString,
-      timeText: '',
+      text: 'Definir data',
+      fullText: 'Sem data de execução',
+      formattedDate: '',
+      timeText: 'Definir hora',
+      hasDate: false,
+      hasTime: false,
+      isOverdue: false,
+      isToday: false,
+      isTomorrow: false,
+      isYesterday: false,
+    };
+  }
+
+  // Apenas horário sem data
+  if (!parsed.hasSpecificDate && parsed.hasSpecificTime) {
+    return {
+      text: `Às ${parsed.timePart}`,
+      fullText: `Horário definido: ${parsed.timePart}`,
+      formattedDate: '',
+      timeText: parsed.timePart,
+      hasDate: false,
+      hasTime: true,
       isOverdue: false,
       isToday: false,
       isTomorrow: false,
@@ -485,13 +546,8 @@ export function formatDueDatePTBR(dueDateString?: string): {
   const dayStr = String(parsed.dateTime.getDate()).padStart(2, '0');
   const monthStr = String(parsed.dateTime.getMonth() + 1).padStart(2, '0');
   const yearStr = String(parsed.dateTime.getFullYear());
-  const timeStr = parsed.timePart; // "HH:MM"
-
-  // Formato completo requerido: DD/MM/AAAA às HH:MM (ex: 29/10/2026 às 14:30)
-  const fullText = `${dayStr}/${monthStr}/${yearStr} às ${timeStr}`;
   const formattedDate = `${dayStr}/${monthStr}/${yearStr}`;
 
-  // Formato compacto para cards (ex: 29/10 • 14:30 ou Hoje • 14:30)
   let datePrefix = `${dayStr}/${monthStr}`;
   if (parsed.dateTime.getFullYear() !== now.getFullYear()) {
     datePrefix = `${dayStr}/${monthStr}/${yearStr.slice(2)}`;
@@ -505,13 +561,20 @@ export function formatDueDatePTBR(dueDateString?: string): {
     datePrefix = 'Ontem';
   }
 
-  const text = `${datePrefix} • ${timeStr}${isOverdue ? ' (Atrasada)' : ''}`;
+  const timeSuffix = parsed.hasSpecificTime ? ` • ${parsed.timePart}` : '';
+  const text = `${datePrefix}${timeSuffix}${isOverdue ? ' (Atrasada)' : ''}`;
+
+  const fullText = parsed.hasSpecificTime
+    ? `${dayStr}/${monthStr}/${yearStr} às ${parsed.timePart}${isOverdue ? ' (Atrasada)' : ''}`
+    : `${dayStr}/${monthStr}/${yearStr}${isOverdue ? ' (Atrasada)' : ''}`;
 
   return {
     text,
-    fullText: isOverdue ? `${fullText} (Atrasada)` : fullText,
+    fullText,
     formattedDate,
-    timeText: timeStr,
+    timeText: parsed.hasSpecificTime ? parsed.timePart : 'Definir hora',
+    hasDate: true,
+    hasTime: parsed.hasSpecificTime,
     isOverdue,
     isToday,
     isTomorrow,

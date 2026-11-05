@@ -519,8 +519,11 @@ export default function App() {
       }
 
       // Filtro de prioridade
-      if (priorityFilter !== 'all' && task.priority !== priorityFilter) {
-        return false;
+      if (priorityFilter !== 'all') {
+        const taskPriority = task.priority || 'none';
+        if (taskPriority !== priorityFilter) {
+          return false;
+        }
       }
 
       // Filtro de tag
@@ -699,9 +702,9 @@ export default function App() {
         columnId: colId,
         title: taskData.title || 'Nova Tarefa',
         description: taskData.description || '',
-        priority: taskData.priority || 'medium',
+        priority: taskData.priority && taskData.priority !== 'none' ? taskData.priority : 'none',
         assigneeIds: taskData.assigneeIds || [currentUser.id],
-        dueDate: taskData.dueDate || `${new Date().toISOString().split('T')[0]}T18:00`,
+        dueDate: taskData.dueDate || '',
         tags: taskData.tags || [],
         checklist: taskData.checklist || [],
         comments: [],

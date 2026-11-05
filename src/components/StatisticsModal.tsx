@@ -31,6 +31,7 @@ export const StatisticsModal: React.FC<StatisticsModalProps> = ({
   const highTasks = tasks.filter((t) => t.priority === 'high').length;
   const medTasks = tasks.filter((t) => t.priority === 'medium').length;
   const lowTasks = tasks.filter((t) => t.priority === 'low').length;
+  const noneTasks = tasks.filter((t) => !t.priority || t.priority === 'none').length;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs transition-opacity animate-in fade-in duration-200">
@@ -156,12 +157,25 @@ export const StatisticsModal: React.FC<StatisticsModalProps> = ({
             <div className="space-y-2.5">
               <div>
                 <div className="flex justify-between text-xs mb-1">
-                  <span className="text-slate-600 dark:text-slate-300 font-medium">Alta Prioridade</span>
-                  <span className="font-bold text-red-600 dark:text-red-400">{highTasks}</span>
+                  <span className="text-slate-600 dark:text-slate-300 font-medium">Urgente</span>
+                  <span className="font-bold text-red-600 dark:text-red-400">{urgentTasks}</span>
                 </div>
                 <div className="w-full h-2 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
                   <div
-                    className="h-full bg-red-500 transition-all duration-300"
+                    className="h-full bg-red-600 transition-all duration-300"
+                    style={{ width: totalTasks > 0 ? `${(urgentTasks / totalTasks) * 100}%` : '0%' }}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <div className="flex justify-between text-xs mb-1">
+                  <span className="text-slate-600 dark:text-slate-300 font-medium">Alta Prioridade</span>
+                  <span className="font-bold text-orange-600 dark:text-orange-400">{highTasks}</span>
+                </div>
+                <div className="w-full h-2 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-orange-500 transition-all duration-300"
                     style={{ width: totalTasks > 0 ? `${(highTasks / totalTasks) * 100}%` : '0%' }}
                   />
                 </div>
@@ -170,11 +184,11 @@ export const StatisticsModal: React.FC<StatisticsModalProps> = ({
               <div>
                 <div className="flex justify-between text-xs mb-1">
                   <span className="text-slate-600 dark:text-slate-300 font-medium">Média Prioridade</span>
-                  <span className="font-bold text-amber-600 dark:text-amber-400">{medTasks}</span>
+                  <span className="font-bold text-blue-600 dark:text-blue-400">{medTasks}</span>
                 </div>
                 <div className="w-full h-2 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
                   <div
-                    className="h-full bg-amber-500 transition-all duration-300"
+                    className="h-full bg-blue-500 transition-all duration-300"
                     style={{ width: totalTasks > 0 ? `${(medTasks / totalTasks) * 100}%` : '0%' }}
                   />
                 </div>
@@ -189,6 +203,19 @@ export const StatisticsModal: React.FC<StatisticsModalProps> = ({
                   <div
                     className="h-full bg-emerald-500 transition-all duration-300"
                     style={{ width: totalTasks > 0 ? `${(lowTasks / totalTasks) * 100}%` : '0%' }}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <div className="flex justify-between text-xs mb-1">
+                  <span className="text-slate-600 dark:text-slate-300 font-medium">Sem Prioridade</span>
+                  <span className="font-bold text-slate-500 dark:text-slate-400">{noneTasks}</span>
+                </div>
+                <div className="w-full h-2 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-slate-400 dark:bg-slate-500 transition-all duration-300"
+                    style={{ width: totalTasks > 0 ? `${(noneTasks / totalTasks) * 100}%` : '0%' }}
                   />
                 </div>
               </div>

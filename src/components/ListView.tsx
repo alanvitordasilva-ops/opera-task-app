@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import {
   PRIORITY_CONFIG,
+  getPriorityInfo,
   formatDueDatePTBR,
   parseTaskDueDate,
   calculateChecklistProgress,
@@ -165,7 +166,7 @@ export const ListView: React.FC<ListViewProps> = ({
           const project = getProject(task.projectId);
           const projectBorderColor = project?.color || '#2563eb';
           const cardBorderColor = task.frameColor || projectBorderColor;
-          const priorityInfo = PRIORITY_CONFIG[task.priority];
+          const priorityInfo = getPriorityInfo(task.priority);
           const dueInfo = formatDueDatePTBR(task.dueDate);
           const checklistInfo = calculateChecklistProgress(task.checklist);
           const isCardInDone = isTaskInDoneColumn(task, project?.columns);
@@ -377,7 +378,11 @@ export const ListView: React.FC<ListViewProps> = ({
                   Prioridade:
                 </span>
                 <span
-                  className={`inline-flex items-center gap-1.5 text-[9px] font-bold px-2 py-0.5 rounded-md ${priorityInfo.bgLight} ${priorityInfo.textLight} ${priorityInfo.darkBg} ${priorityInfo.darkText} border border-zinc-200/90 dark:border-zinc-700/80 shadow-2xs`}
+                  className={`inline-flex items-center gap-1.5 text-[9px] font-bold px-2 py-0.5 rounded-md ${
+                    task.priority && task.priority !== 'none'
+                      ? `${priorityInfo.bgLight} ${priorityInfo.textLight} ${priorityInfo.darkBg} ${priorityInfo.darkText} border border-zinc-200/90 dark:border-zinc-700/80`
+                      : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-400 dark:text-zinc-500 border border-zinc-200/90 dark:border-zinc-700/80'
+                  } shadow-2xs`}
                   title={`Prioridade: ${priorityInfo.label}`}
                 >
                   <span
@@ -398,7 +403,9 @@ export const ListView: React.FC<ListViewProps> = ({
                 </span>
                 <div
                   className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-[11px] font-semibold transition-colors ${
-                    dueInfo.isOverdue
+                    !dueInfo.hasDate && !dueInfo.hasTime
+                      ? 'bg-zinc-50 dark:bg-zinc-800/50 text-zinc-400 dark:text-zinc-500 border-zinc-200/80 dark:border-zinc-700/60'
+                      : dueInfo.isOverdue
                       ? 'bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800/60'
                       : dueInfo.isToday
                       ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800/60'
@@ -407,7 +414,9 @@ export const ListView: React.FC<ListViewProps> = ({
                 >
                   <Calendar
                     className={`w-3.5 h-3.5 shrink-0 ${
-                      dueInfo.isOverdue
+                      !dueInfo.hasDate && !dueInfo.hasTime
+                        ? 'text-zinc-400 dark:text-zinc-500'
+                        : dueInfo.isOverdue
                         ? 'text-red-600 dark:text-red-400'
                         : dueInfo.isToday
                         ? 'text-amber-600 dark:text-amber-400'

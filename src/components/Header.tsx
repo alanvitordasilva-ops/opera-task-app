@@ -335,6 +335,7 @@ export const Header: React.FC<HeaderProps> = ({
                 className="px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-medium"
               >
                 <option value="all">Todas</option>
+                <option value="none">Sem prioridade</option>
                 <option value="urgent">Urgente</option>
                 <option value="high">Alta</option>
                 <option value="medium">Média</option>

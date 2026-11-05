@@ -1,4 +1,4 @@
-export type Priority = 'low' | 'medium' | 'high' | 'urgent';
+export type Priority = 'low' | 'medium' | 'high' | 'urgent' | 'none';
 
 export type ProfileTipo =
   | 'master'

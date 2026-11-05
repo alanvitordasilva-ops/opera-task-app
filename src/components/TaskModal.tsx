@@ -107,11 +107,11 @@ export const TaskModal: React.FC<TaskModalProps> = ({
 }) => {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [priority, setPriority] = useState<Priority>('medium');
+  const [priority, setPriority] = useState<Priority>('none');
   const [projectId, setProjectId] = useState<string>('');
   const [columnId, setColumnId] = useState<string>('');
   const [dueDateDate, setDueDateDate] = useState<string>('');
-  const [dueDateTime, setDueDateTime] = useState<string>('18:00');
+  const [dueDateTime, setDueDateTime] = useState<string>('');
   const [assigneeIds, setAssigneeIds] = useState<string[]>([]);
   const [deleteConfirmState, setDeleteConfirmState] = useState<{
     isOpen: boolean;
@@ -121,6 +121,16 @@ export const TaskModal: React.FC<TaskModalProps> = ({
   } | null>(null);
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [frameColor, setFrameColor] = useState<string | undefined>(undefined);
+
+  // Helper para computar data e hora sem forçar padrões
+  const computeFinalDueDate = (dateStr: string, timeStr: string): string => {
+    const d = dateStr ? dateStr.trim() : '';
+    const t = timeStr ? timeStr.trim() : '';
+    if (d && t) return `${d}T${t}`;
+    if (d) return d;
+    if (t) return `T${t}`;
+    return '';
+  };
 
   // Checklist
   const [checklist, setChecklist] = useState<ChecklistItem[]>([]);
@@ -175,21 +185,20 @@ export const TaskModal: React.FC<TaskModalProps> = ({
     if (taskToEdit) {
       setTitle(taskToEdit.title);
       setDescription(taskToEdit.description || '');
-      setPriority(taskToEdit.priority);
+      setPriority(taskToEdit.priority || 'none');
       setProjectId(taskToEdit.projectId);
       setColumnId(taskToEdit.columnId);
 
       const parsed = parseTaskDueDate(taskToEdit.dueDate);
       if (parsed) {
-        setDueDateDate(parsed.datePart);
-        setDueDateTime(parsed.timePart);
+        setDueDateDate(parsed.datePart || '');
+        setDueDateTime(parsed.hasSpecificTime ? parsed.timePart : '');
       } else if (taskToEdit.dueDate) {
-        setDueDateDate(taskToEdit.dueDate.split('T')[0]);
-        setDueDateTime('23:59');
+        setDueDateDate(taskToEdit.dueDate.split('T')[0] || '');
+        setDueDateTime('');
       } else {
-        const today = new Date().toISOString().split('T')[0];
-        setDueDateDate(today);
-        setDueDateTime('18:00');
+        setDueDateDate('');
+        setDueDateTime('');
       }
 
       setAssigneeIds(taskToEdit.assigneeIds || []);
@@ -207,12 +216,11 @@ export const TaskModal: React.FC<TaskModalProps> = ({
 
       setTitle('');
       setDescription('');
-      setPriority('medium');
+      setPriority('none');
       setProjectId(activeProj?.id || '');
       setColumnId(defaultColumnId || activeProj?.columns[0]?.id || '');
-      const today = new Date().toISOString().split('T')[0];
-      setDueDateDate(today);
-      setDueDateTime('18:00');
+      setDueDateDate('');
+      setDueDateTime('');
       setAssigneeIds([currentUser.id]);
       setSelectedTagIds([]);
       setChecklist([]);
@@ -253,9 +261,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
       const selectedTags = tags.filter((t) => selectedTagIds.includes(t.id));
       const targetCol = currentProject?.columns.find((c) => c.id === columnId);
       const isCompleted = targetCol?.isCompletedColumn || false;
-      const finalDueDate = dueDateDate
-        ? `${dueDateDate}T${dueDateTime.trim() || '23:59'}`
-        : '';
+      const finalDueDate = computeFinalDueDate(dueDateDate, dueDateTime);
 
       const effectiveProjectId = isCompletedBlocked && taskToEdit ? taskToEdit.projectId : (projectId || projects[0]?.id || '');
       const effectiveColumnId = isCompletedBlocked && taskToEdit ? taskToEdit.columnId : (columnId || currentProject?.columns[0]?.id || '');
@@ -313,9 +319,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
     const targetCol = currentProject?.columns.find((c) => c.id === effectiveColumnId);
     const isCompleted = targetCol?.isCompletedColumn || false;
 
-    const finalDueDate = dueDateDate
-      ? `${dueDateDate}T${dueDateTime.trim() || '23:59'}`
-      : '';
+    const finalDueDate = computeFinalDueDate(dueDateDate, dueDateTime);
 
     onSaveTask({
       ...(taskToEdit ? { id: taskToEdit.id } : {}),
@@ -346,9 +350,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
       const selectedTags = tags.filter((t) => selectedTagIds.includes(t.id));
       const targetCol = currentProject?.columns.find((c) => c.id === columnId);
       const isCompleted = targetCol?.isCompletedColumn || false;
-      const finalDueDate = dueDateDate
-        ? `${dueDateDate}T${dueDateTime.trim() || '23:59'}`
-        : '';
+      const finalDueDate = computeFinalDueDate(dueDateDate, dueDateTime);
 
       onSaveTask({
         id: taskToEdit.id,
@@ -377,9 +379,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
       const selectedTags = tags.filter((t) => selectedTagIds.includes(t.id));
       const targetCol = currentProject?.columns.find((c) => c.id === columnId);
       const isCompleted = targetCol?.isCompletedColumn || false;
-      const finalDueDate = dueDateDate
-        ? `${dueDateDate}T${dueDateTime.trim() || '23:59'}`
-        : '';
+      const finalDueDate = computeFinalDueDate(dueDateDate, dueDateTime);
 
       onSaveTask({
         id: taskToEdit.id,
@@ -452,9 +452,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
 
     if (taskToEdit) {
       const selectedTags = tags.filter((t) => selectedTagIds.includes(t.id));
-      const finalDueDate = dueDateDate
-        ? `${dueDateDate}T${dueDateTime.trim() || '23:59'}`
-        : '';
+      const finalDueDate = computeFinalDueDate(dueDateDate, dueDateTime);
 
       onSaveTask({
         id: taskToEdit.id,
@@ -1340,13 +1338,42 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                 </div>
               </div>
 
-              {/* Prioridade (4 níveis com Urgente) */}
+              {/* Prioridade (Sem prioridade, Baixa, Média, Alta, Urgente) */}
               <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2 flex items-center gap-1">
-                  <Flag className="w-3 h-3" />
-                  Nível de Prioridade
-                </label>
-                <div className="grid grid-cols-2 gap-1.5">
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                    <Flag className="w-3 h-3" />
+                    <span>Nível de Prioridade</span>
+                  </label>
+                  {priority && priority !== 'none' ? (
+                    <button
+                      type="button"
+                      onClick={() => setPriority('none')}
+                      className="text-[11px] text-slate-400 hover:text-red-500 transition-colors flex items-center gap-1 cursor-pointer"
+                      title="Limpar prioridade (deixar sem prioridade)"
+                    >
+                      <X className="w-3 h-3" />
+                      <span>Limpar prioridade</span>
+                    </button>
+                  ) : (
+                    <span className="text-[10px] text-slate-400 italic font-normal">
+                      Sem prioridade
+                    </span>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setPriority('none')}
+                    className={`flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg border text-xs font-medium transition-all cursor-pointer ${
+                      priority === 'none' || !priority
+                        ? 'border-slate-900 bg-slate-900 text-white dark:border-white dark:bg-white dark:text-slate-900 font-bold shadow-xs'
+                        : 'border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    <span className="w-2 h-2 rounded-full bg-slate-400" />
+                    <span>Sem prioridade</span>
+                  </button>
                   {(['low', 'medium', 'high', 'urgent'] as Priority[]).map((p) => {
                     const cfg = PRIORITY_CONFIG[p];
                     const isSelected = priority === p;
@@ -1354,11 +1381,11 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                       <button
                         key={p}
                         type="button"
-                        onClick={() => setPriority(p)}
-                        className={`flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg border text-xs font-medium transition-all ${
+                        onClick={() => setPriority(isSelected ? 'none' : p)}
+                        className={`flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg border text-xs font-medium transition-all cursor-pointer ${
                           isSelected
                             ? 'border-slate-900 bg-slate-900 text-white dark:border-white dark:bg-white dark:text-slate-900 font-bold shadow-xs'
-                            : 'border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100'
+                            : 'border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
                         }`}
                       >
                         <span className={`w-2 h-2 rounded-full ${cfg.dotColor}`} />
@@ -1392,35 +1419,72 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                     <Calendar className="w-3.5 h-3.5 text-blue-500" />
                     <span>Data e Horário</span>
                   </label>
-                  {dueDateDate && (
-                    <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono font-medium">
-                      {formatDueDatePTBR(`${dueDateDate}T${dueDateTime || '23:59'}`).fullText}
+                  {(dueDateDate || dueDateTime) ? (
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono font-medium">
+                        {formatDueDatePTBR(computeFinalDueDate(dueDateDate, dueDateTime)).fullText}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDueDateDate('');
+                          setDueDateTime('');
+                        }}
+                        className="text-[11px] text-slate-400 hover:text-red-500 transition-colors flex items-center gap-1 cursor-pointer"
+                        title="Limpar data e horário (voltar a ficar vazio)"
+                      >
+                        <X className="w-3 h-3" />
+                        <span>Limpar prazo</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <span className="text-[10px] text-slate-400 italic font-normal">
+                      Definir data e hora (opcional)
                     </span>
                   )}
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
                   {/* Seletor de Data */}
-                  <div className="sm:col-span-7">
+                  <div className="sm:col-span-7 relative">
                     <input
                       type="date"
                       value={dueDateDate}
                       onChange={(e) => setDueDateDate(e.target.value)}
+                      placeholder="Definir data"
                       className="w-full px-3 py-2 text-xs font-medium rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-blue-500"
                     />
+                    {dueDateDate && (
+                      <button
+                        type="button"
+                        onClick={() => setDueDateDate('')}
+                        title="Limpar data"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-red-500 rounded transition-colors cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
 
                   {/* Seletor de Horário */}
-                  <div className="sm:col-span-5">
-                    <div className="relative flex items-center">
-                      <input
-                        type="time"
-                        value={dueDateTime}
-                        onChange={(e) => setDueDateTime(e.target.value)}
-                        placeholder="23:59"
-                        className="w-full px-3 py-2 text-xs font-medium rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-mono focus:ring-2 focus:ring-blue-500"
-                      />
-                    </div>
+                  <div className="sm:col-span-5 relative">
+                    <input
+                      type="time"
+                      value={dueDateTime}
+                      onChange={(e) => setDueDateTime(e.target.value)}
+                      placeholder="Definir hora"
+                      className="w-full px-3 py-2 text-xs font-medium rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-mono focus:ring-2 focus:ring-blue-500"
+                    />
+                    {dueDateTime && (
+                      <button
+                        type="button"
+                        onClick={() => setDueDateTime('')}
+                        title="Limpar hora"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-red-500 rounded transition-colors cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -1432,13 +1496,13 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                     { label: '12:00', value: '12:00' },
                     { label: '15:00', value: '15:00' },
                     { label: '18:00', value: '18:00' },
-                    { label: '23:59 (Fim do dia)', value: '23:59' },
+                    { label: '23:59', value: '23:59' },
                   ].map((preset) => (
                     <button
                       key={preset.value}
                       type="button"
-                      onClick={() => setDueDateTime(preset.value)}
-                      className={`px-2 py-0.5 rounded-md text-[10px] font-medium transition-all ${
+                      onClick={() => setDueDateTime(dueDateTime === preset.value ? '' : preset.value)}
+                      className={`px-2 py-0.5 rounded-md text-[10px] font-medium transition-all cursor-pointer ${
                         dueDateTime === preset.value
                           ? 'bg-blue-600 text-white font-semibold shadow-2xs'
                           : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'
@@ -1447,13 +1511,23 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                       {preset.label}
                     </button>
                   ))}
+                  {dueDateTime && (
+                    <button
+                      type="button"
+                      onClick={() => setDueDateTime('')}
+                      className="px-2 py-0.5 rounded-md text-[10px] font-medium text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 cursor-pointer"
+                    >
+                      Limpar hora
+                    </button>
+                  )}
                 </div>
 
                 {/* Feedback dinâmico de status da data/hora */}
-                {dueDateDate && (
+                {(dueDateDate || dueDateTime) && (
                   <div className="mt-2 text-[11px]">
                     {(() => {
-                      const info = formatDueDatePTBR(`${dueDateDate}T${dueDateTime || '23:59'}`);
+                      const finalStr = computeFinalDueDate(dueDateDate, dueDateTime);
+                      const info = formatDueDatePTBR(finalStr);
                       if (info.isOverdue) {
                         return (
                           <div className="inline-flex items-center gap-1.5 text-red-600 dark:text-red-400 font-semibold bg-red-50 dark:bg-red-950/40 px-2 py-1 rounded-lg border border-red-200/60 dark:border-red-900/60">
@@ -1466,7 +1540,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                         return (
                           <div className="inline-flex items-center gap-1.5 text-amber-600 dark:text-amber-400 font-medium bg-amber-50 dark:bg-amber-950/40 px-2 py-1 rounded-lg border border-amber-200/60 dark:border-amber-900/60">
                             <Clock className="w-3.5 h-3.5 shrink-0" />
-                            <span>Execução para hoje às {dueDateTime || '23:59'}</span>
+                            <span>Execução para hoje {dueDateTime ? `às ${dueDateTime}` : '(dia inteiro)'}</span>
                           </div>
                         );
                       }

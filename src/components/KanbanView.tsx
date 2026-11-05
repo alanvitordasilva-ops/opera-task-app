@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import {
   PRIORITY_CONFIG,
+  getPriorityInfo,
   formatDueDatePTBR,
   calculateChecklistProgress,
   getInitials,
@@ -442,7 +443,7 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
             {/* Lista de Cards da Coluna com Rolagem Interna e Reordenação Suave */}
             <div className="space-y-2.5 min-h-[120px] flex-1 overflow-y-auto overflow-x-hidden px-1 py-1 scroll-smooth overscroll-contain touch-pan-y custom-scrollbar">
               {columnTasks.map((task, taskIndex) => {
-                const priorityInfo = PRIORITY_CONFIG[task.priority];
+                const priorityInfo = getPriorityInfo(task.priority);
                 const dueInfo = formatDueDatePTBR(task.dueDate);
                 const checklistInfo = calculateChecklistProgress(task.checklist);
                 const isDragging = draggedTaskId === task.id;
@@ -496,7 +497,11 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                       <div className="flex items-center gap-1.5 flex-wrap">
                         {/* Prioridade: formato padronizado com fundo neutro idêntico em todos os cards */}
                         <span
-                          className={`inline-flex items-center gap-1.5 text-[9px] font-bold px-2 py-0.5 rounded-md ${priorityInfo.bgLight} ${priorityInfo.textLight} ${priorityInfo.darkBg} ${priorityInfo.darkText} border border-zinc-200/90 dark:border-zinc-700/80 shadow-2xs`}
+                          className={`inline-flex items-center gap-1.5 text-[9px] font-bold px-2 py-0.5 rounded-md ${
+                            task.priority && task.priority !== 'none'
+                              ? `${priorityInfo.bgLight} ${priorityInfo.textLight} ${priorityInfo.darkBg} ${priorityInfo.darkText} border border-zinc-200/90 dark:border-zinc-700/80`
+                              : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-400 dark:text-zinc-500 border border-zinc-200/90 dark:border-zinc-700/80'
+                          } shadow-2xs`}
                           title={`Prioridade: ${priorityInfo.label}`}
                         >
                           <span
@@ -893,7 +898,9 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                         {/* Data e Horário em badge padronizado */}
                         <div
                           className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border text-[10px] font-semibold transition-colors ${
-                            dueInfo.isOverdue
+                            !dueInfo.hasDate && !dueInfo.hasTime
+                              ? 'bg-zinc-50 dark:bg-zinc-800/50 text-zinc-400 dark:text-zinc-500 border-zinc-200/80 dark:border-zinc-700/60'
+                              : dueInfo.isOverdue
                               ? 'bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800/60'
                               : dueInfo.isToday
                               ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800/60'
@@ -903,7 +910,9 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                         >
                           <Calendar
                             className={`w-3 h-3 shrink-0 ${
-                              dueInfo.isOverdue
+                              !dueInfo.hasDate && !dueInfo.hasTime
+                                ? 'text-zinc-400 dark:text-zinc-500'
+                                : dueInfo.isOverdue
                                 ? 'text-red-600 dark:text-red-400'
                                 : dueInfo.isToday
                                 ? 'text-amber-600 dark:text-amber-400'
