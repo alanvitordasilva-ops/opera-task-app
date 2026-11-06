@@ -22,6 +22,7 @@ import { WorkspaceRole, User, Workspace } from '../types/index.ts';
 import { StorageService, isServerApiAvailable, setServerApiAvailable } from '../services/storage.ts';
 import { getProductionAppUrl } from '../utils/appUrl.ts';
 import { generateUserAccessMessage, formatUserProfileRole, OFFICIAL_APP_ACCESS_URL } from '../utils/userAccessMessage.ts';
+import { isUserMaster } from '../utils/helpers.ts';
 
 interface RegisterUserModalProps {
   isOpen: boolean;
@@ -29,6 +30,7 @@ interface RegisterUserModalProps {
   workspaces?: Workspace[];
   workspaceId?: string;
   onUserCreated?: (newUser: User, role: WorkspaceRole, workspaceId: string) => void;
+  currentUser?: User;
 }
 
 const ROLE_OPTIONS: { role: WorkspaceRole; label: string; desc: string; badgeColor: string }[] = [
@@ -76,7 +78,21 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
   workspaces,
   workspaceId,
   onUserCreated,
+  currentUser,
 }) => {
+  const activeUser = currentUser || StorageService.getCurrentUser();
+  const isMaster = isUserMaster(activeUser);
+
+  const visibleRoleOptions = useMemo(() => {
+    return ROLE_OPTIONS.filter((item) => {
+      // A opção "Dono" e "Master" só podem ser vistas e selecionadas pelo Master
+      if (item.role === 'dono' || item.role === 'master') {
+        return isMaster;
+      }
+      return true;
+    });
+  }, [isMaster]);
+
   const availableWorkspaces = useMemo(() => {
     if (workspaces && workspaces.length > 0) return workspaces;
     return StorageService.getWorkspaces();
@@ -206,6 +222,11 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
 
     if (password !== confirmPassword) {
       setErrorMessage('A confirmação de senha não confere com a senha digitada.');
+      return;
+    }
+
+    if ((role === 'dono' || role === 'master') && !isMaster) {
+      setErrorMessage('Apenas a conta Master tem permissão para cadastrar ou atribuir o perfil Dono.');
       return;
     }
 
@@ -700,7 +721,7 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
                   <span>Tipo de Membro (Nível de Acesso) *</span>
                 </label>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  {ROLE_OPTIONS.map((item) => (
+                  {visibleRoleOptions.map((item) => (
                     <button
                       key={item.role}
                       type="button"

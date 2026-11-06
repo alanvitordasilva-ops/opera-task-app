@@ -8,7 +8,7 @@
  */
 
 import { SupabaseService } from './supabaseService.ts';
-import { isServerApiAvailable, setServerApiAvailable } from './storage.ts';
+import { StorageService, isServerApiAvailable, setServerApiAvailable } from './storage.ts';
 
 export type SyncEntity =
   | 'tasks'
@@ -70,6 +70,33 @@ class RealtimeServiceImpl {
 
     // 5. Carregar estado compartilhado do servidor imediatamente
     this.fetchServerState();
+
+    // 6. Resincronização automática ao focar a aba ou retornar do background no celular (Android / iOS)
+    window.addEventListener('focus', () => {
+      this.resyncOnActive();
+    });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        this.resyncOnActive();
+      }
+    });
+  }
+
+  public async resyncOnActive() {
+    try {
+      if (SupabaseService.isConfigured()) {
+        const curWsId = StorageService.getCurrentWorkspace()?.id;
+        if (curWsId) {
+          const cloudRes = await StorageService.fetchTasksCloud(curWsId);
+          if (cloudRes.success && Array.isArray(cloudRes.tasks) && cloudRes.tasks.length > 0) {
+            this.notifyEntityListeners('tasks', cloudRes.tasks, { action: 'cloud_resync' });
+          }
+        }
+      }
+      this.fetchServerState();
+    } catch (e) {
+      console.warn('Erro ao re-sincronizar no foco:', e);
+    }
   }
 
   private setStatus(status: 'connected' | 'reconnecting' | 'offline') {
@@ -183,7 +210,7 @@ class RealtimeServiceImpl {
   }
 
   // ==========================================
-  // TIER 3: Supabase Realtime
+  // TIER 3: Supabase Realtime (Multiplataforma: Android, iOS, Computador)
   // ==========================================
   public setupSupabaseRealtime() {
     try {
@@ -191,40 +218,76 @@ class RealtimeServiceImpl {
       if (!client) return;
 
       if (this.supabaseChannel) {
-        client.removeChannel(this.supabaseChannel);
+        try {
+          client.removeChannel(this.supabaseChannel);
+        } catch {}
       }
 
       this.supabaseChannel = client
-        .channel('operatask-live-sync')
+        .channel('operatask-live-sync', {
+          config: {
+            broadcast: { ack: false, self: false },
+          },
+        })
+        .on(
+          'broadcast',
+          { event: 'entity_sync' },
+          (eventData: any) => {
+            if (eventData && eventData.payload) {
+              this.handleIncomingMessage(eventData.payload, 'broadcast');
+            }
+          }
+        )
         .on(
           'postgres_changes',
           { event: '*', schema: 'public', table: 'cards' },
           (payload: any) => {
-            const rowData = payload.new || payload.old;
-            if (rowData) {
-              const mapped = SupabaseService.mapRowToTask(rowData);
-              this.notifyEntityListeners('tasks', mapped, {
-                action: `supabase_${payload.eventType}`,
-              });
-            }
+            this.handleSupabaseDbChange(payload);
           }
         )
         .on(
           'postgres_changes',
           { event: '*', schema: 'public', table: 'tasks' },
           (payload: any) => {
-            const rowData = payload.new || payload.old;
-            if (rowData) {
-              const mapped = SupabaseService.mapRowToTask(rowData);
-              this.notifyEntityListeners('tasks', mapped, {
-                action: `supabase_${payload.eventType}`,
-              });
-            }
+            this.handleSupabaseDbChange(payload);
           }
         )
-        .subscribe();
+        .subscribe((status: string) => {
+          if (status === 'SUBSCRIBED') {
+            this.setStatus('connected');
+          }
+        });
     } catch (e) {
       console.warn('Erro ao conectar Supabase Realtime:', e);
+    }
+  }
+
+  private handleSupabaseDbChange(payload: any) {
+    try {
+      const eventType = payload.eventType; // INSERT, UPDATE, DELETE
+      const rowData = payload.new || payload.old;
+      if (!rowData) return;
+
+      const currentTasks: any[] = StorageService.getTasks();
+      const mapped = SupabaseService.mapRowToTask(rowData);
+
+      let nextTasks: any[];
+      if (eventType === 'DELETE') {
+        nextTasks = currentTasks.filter((t: any) => t.id !== mapped.id);
+      } else {
+        const exists = currentTasks.some((t: any) => t.id === mapped.id);
+        if (exists) {
+          nextTasks = currentTasks.map((t: any) => (t.id === mapped.id ? { ...t, ...mapped } : t));
+        } else {
+          nextTasks = [mapped, ...currentTasks];
+        }
+      }
+      this.notifyEntityListeners('tasks', nextTasks, {
+        action: `supabase_${eventType.toLowerCase()}`,
+        targetId: mapped.id,
+      });
+    } catch (e) {
+      console.warn('Erro ao processar alteração postgres_changes:', e);
     }
   }
 
@@ -365,6 +428,19 @@ class RealtimeServiceImpl {
         this.ws.send(JSON.stringify(message));
       } catch (e) {
         console.warn('Falha no envio WebSocket:', e);
+      }
+    }
+
+    // 3. Supabase Realtime Broadcast (multiplataforma: Android, iOS, Computador)
+    if (this.supabaseChannel) {
+      try {
+        this.supabaseChannel.send({
+          type: 'broadcast',
+          event: 'entity_sync',
+          payload: message,
+        });
+      } catch (e) {
+        console.warn('Falha no broadcast Supabase:', e);
       }
     }
   }

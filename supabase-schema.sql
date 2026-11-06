@@ -76,6 +76,9 @@ CREATE TABLE IF NOT EXISTS public.cards (
   comments JSONB DEFAULT '[]'::jsonb,
   activities JSONB DEFAULT '[]'::jsonb,
   attachments JSONB DEFAULT '[]'::jsonb,
+  ficha_tecnica JSONB DEFAULT NULL,
+  production_records JSONB DEFAULT '[]'::jsonb,
+  frame_color TEXT,
   is_completed BOOLEAN DEFAULT FALSE,
   completed_at TIMESTAMPTZ,
   is_archived BOOLEAN DEFAULT FALSE,
@@ -97,7 +100,7 @@ CREATE TABLE IF NOT EXISTS public.tasks (
   column_id TEXT,
   title TEXT NOT NULL,
   description TEXT,
-  priority TEXT DEFAULT 'medium',
+  priority TEXT DEFAULT 'none',
   assignee_ids JSONB DEFAULT '[]'::jsonb,
   due_date TEXT,
   tags JSONB DEFAULT '[]'::jsonb,
@@ -105,6 +108,9 @@ CREATE TABLE IF NOT EXISTS public.tasks (
   comments JSONB DEFAULT '[]'::jsonb,
   activities JSONB DEFAULT '[]'::jsonb,
   attachments JSONB DEFAULT '[]'::jsonb,
+  ficha_tecnica JSONB DEFAULT NULL,
+  production_records JSONB DEFAULT '[]'::jsonb,
+  frame_color TEXT,
   is_completed BOOLEAN DEFAULT FALSE,
   completed_at TIMESTAMPTZ,
   is_archived BOOLEAN DEFAULT FALSE,
@@ -113,6 +119,37 @@ CREATE TABLE IF NOT EXISTS public.tasks (
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Tabela de Fichas Técnicas
+CREATE TABLE IF NOT EXISTS public.fichas_tecnicas (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  workspace_id TEXT,
+  project_id TEXT,
+  card_id TEXT,
+  codigo TEXT,
+  descricao TEXT,
+  unidade_medida TEXT,
+  setor_producao TEXT,
+  tempo_estimado_minutos NUMERIC,
+  materiais JSONB DEFAULT '[]'::jsonb,
+  etapas JSONB DEFAULT '[]'::jsonb,
+  instrucoes_seguranca TEXT,
+  controle_qualidade TEXT,
+  custo_total_estimado NUMERIC,
+  historico_revisoes JSONB DEFAULT '[]'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Garantir colunas caso as tabelas já existam
+ALTER TABLE public.cards ADD COLUMN IF NOT EXISTS ficha_tecnica JSONB DEFAULT NULL;
+ALTER TABLE public.cards ADD COLUMN IF NOT EXISTS production_records JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE public.cards ADD COLUMN IF NOT EXISTS frame_color TEXT;
+
+ALTER TABLE public.tasks ADD COLUMN IF NOT EXISTS ficha_tecnica JSONB DEFAULT NULL;
+ALTER TABLE public.tasks ADD COLUMN IF NOT EXISTS production_records JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE public.tasks ADD COLUMN IF NOT EXISTS frame_color TEXT;
 
 -- Tabela de Tags
 CREATE TABLE IF NOT EXISTS public.tags (

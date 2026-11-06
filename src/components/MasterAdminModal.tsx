@@ -868,6 +868,42 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
                   <div>Poderes: <strong>Acesso total e irrestrito (bypass de todas as restrições)</strong></div>
                 </div>
               </div>
+
+              {/* Ações Administrativas Críticas do Master */}
+              <div className="p-5 rounded-2xl bg-red-50/40 dark:bg-red-950/20 border border-red-200 dark:border-red-900/50 space-y-3">
+                <div className="flex items-center gap-2 text-xs font-bold text-red-900 dark:text-red-300">
+                  <AlertTriangle className="w-4 h-4 text-red-600 dark:text-red-400" />
+                  <span>Governança Master: Zerar Membros Cadastrados</span>
+                </div>
+                <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+                  Remove todos os usuários/membros cadastrados no sistema, mantendo <strong>somente a conta Master</strong>. Toda a estrutura de Workspaces, Quadros, Colunas, Fichas Técnicas e Cards é 100% preservada.
+                </p>
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const confirmed = window.confirm(
+                        'Tem certeza que deseja zerar todos os membros cadastrados?\n\n' +
+                        '• Apenas a conta Master (Alan Silva) permanecerá.\n' +
+                        '• Todos os workspaces, quadros, colunas e cards serão mantidos intactos.\n\n' +
+                        'Deseja prosseguir?'
+                      );
+                      if (!confirmed) return;
+                      const res = StorageService.resetMembersToMasterOnly();
+                      onUpdateUsers(res.users);
+                      onUpdateWorkspaces(res.workspaces);
+                      onShowToast({
+                        type: 'success',
+                        message: 'Membros cadastrados foram zerados! Apenas a conta Master permanece ativa.',
+                      });
+                    }}
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold text-white bg-red-600 hover:bg-red-700 active:scale-98 shadow-sm transition-all cursor-pointer"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>Zerar Membros Cadastrados (Manter Apenas Master)</span>
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </div>
@@ -1186,8 +1222,8 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
                       <option value="membro">Membro</option>
                       <option value="administrador">Administrador</option>
                       <option value="visualizador">Visualizador</option>
-                      <option value="dono">Dono</option>
-                      <option value="master">Master (Super Admin)</option>
+                      {isUserMaster(currentUser) && <option value="dono">Dono</option>}
+                      {isUserMaster(currentUser) && <option value="master">Master (Super Admin)</option>}
                     </select>
                   </div>
 

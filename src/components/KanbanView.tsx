@@ -85,7 +85,36 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
   const [activeDropColumnId, setActiveDropColumnId] = useState<string | null>(null);
   const [openMenuTaskId, setOpenMenuTaskId] = useState<string | null>(null);
-  const [selectedMobileColumn, setSelectedMobileColumn] = useState<string | 'all'>('all');
+  const [selectedMobileColumn, setSelectedMobileColumn] = useState<string | 'all'>(() => {
+    try {
+      return sessionStorage.getItem(`operatask_mobile_col_${project.id}`) || 'all';
+    } catch {
+      return 'all';
+    }
+  });
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(`operatask_mobile_col_${project.id}`, selectedMobileColumn);
+    } catch {}
+  }, [selectedMobileColumn, project.id]);
+
+  const boardScrollRef = React.useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    try {
+      const savedX = sessionStorage.getItem(`operatask_board_scroll_${project.id}`);
+      if (savedX && boardScrollRef.current) {
+        boardScrollRef.current.scrollLeft = parseFloat(savedX);
+      }
+    } catch {}
+  }, [project.id]);
+
+  const handleBoardScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    try {
+      sessionStorage.setItem(`operatask_board_scroll_${project.id}`, String(e.currentTarget.scrollLeft));
+    } catch {}
+  };
   const [deleteConfirmState, setDeleteConfirmState] = useState<{
     isOpen: boolean;
     type: 'task' | 'column';
@@ -368,7 +397,11 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
       </div>
 
       {/* Linha das Colunas Kanban - Com suporte a touch swipe snap no celular */}
-      <div className="flex gap-4 sm:gap-5 pb-8 overflow-x-auto min-h-[calc(100vh-220px)] items-start select-none snap-x snap-mandatory scroll-smooth">
+      <div
+        ref={boardScrollRef}
+        onScroll={handleBoardScroll}
+        className="flex gap-4 sm:gap-5 pb-8 overflow-x-auto min-h-[calc(100vh-220px)] items-start select-none snap-x snap-mandatory scroll-smooth"
+      >
       {columns
         .filter((col) => selectedMobileColumn === 'all' || col.id === selectedMobileColumn)
         .map((col) => {
@@ -441,7 +474,25 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
             </div>
 
             {/* Lista de Cards da Coluna com Rolagem Interna e Reordenação Suave */}
-            <div className="space-y-2.5 min-h-[120px] flex-1 overflow-y-auto overflow-x-hidden px-1 py-1 scroll-smooth overscroll-contain touch-pan-y custom-scrollbar">
+            <div
+              onScroll={(e) => {
+                try {
+                  sessionStorage.setItem(`operatask_col_scroll_${col.id}`, String(e.currentTarget.scrollTop));
+                } catch {}
+              }}
+              ref={(el) => {
+                if (el) {
+                  try {
+                    const savedY = sessionStorage.getItem(`operatask_col_scroll_${col.id}`);
+                    if (savedY && !el.dataset.restored) {
+                      el.scrollTop = parseFloat(savedY);
+                      el.dataset.restored = 'true';
+                    }
+                  } catch {}
+                }
+              }}
+              className="space-y-2.5 min-h-[120px] flex-1 overflow-y-auto overflow-x-hidden px-1 py-1 scroll-smooth overscroll-contain touch-pan-y custom-scrollbar"
+            >
               {columnTasks.map((task, taskIndex) => {
                 const priorityInfo = getPriorityInfo(task.priority);
                 const dueInfo = formatDueDatePTBR(task.dueDate);

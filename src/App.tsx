@@ -167,11 +167,26 @@ export default function App() {
   };
 
   // Navegação e Filtros
-  const [selectedProjectId, setSelectedProjectId] = useState<string>('all');
+  const [selectedProjectId, setSelectedProjectId] = useState<string>(() => {
+    try {
+      return localStorage.getItem('operatask_nav_project_id') || 'all';
+    } catch {
+      return 'all';
+    }
+  });
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [priorityFilter, setPriorityFilter] = useState<Priority | 'all'>('all');
   const [assigneeFilter, setAssigneeFilter] = useState<string | 'all'>('all');
   const [selectedTagId, setSelectedTagId] = useState<string | 'all'>('all');
+
+  // Persistir projeto ativo na navegação
+  useEffect(() => {
+    try {
+      if (selectedProjectId) {
+        localStorage.setItem('operatask_nav_project_id', selectedProjectId);
+      }
+    } catch {}
+  }, [selectedProjectId]);
 
   // Modais
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
@@ -341,6 +356,11 @@ export default function App() {
           if (JSON.stringify(prev) === JSON.stringify(incomingTasks)) return prev;
           return incomingTasks;
         });
+        setTaskToEdit((currentOpen) => {
+          if (!currentOpen) return null;
+          const fresh = incomingTasks.find((t) => t.id === currentOpen.id);
+          return fresh || currentOpen;
+        });
       }
     });
 
@@ -395,6 +415,31 @@ export default function App() {
       unsubUsers();
     };
   }, []);
+
+  // Manter card aberto após recarregar a página (F5)
+  useEffect(() => {
+    try {
+      if (isTaskModalOpen && taskToEdit?.id) {
+        sessionStorage.setItem('operatask_nav_open_task_id', taskToEdit.id);
+      } else if (!isTaskModalOpen) {
+        sessionStorage.removeItem('operatask_nav_open_task_id');
+      }
+    } catch {}
+  }, [isTaskModalOpen, taskToEdit]);
+
+  // Restaurar card aberto após F5 ou reabertura do app
+  useEffect(() => {
+    try {
+      const savedTaskId = sessionStorage.getItem('operatask_nav_open_task_id');
+      if (savedTaskId && tasks.length > 0 && !isTaskModalOpen) {
+        const found = tasks.find((t) => t.id === savedTaskId);
+        if (found) {
+          setTaskToEdit(found);
+          setIsTaskModalOpen(true);
+        }
+      }
+    } catch {}
+  }, [tasks]);
 
   // Membros do workspace atual
   const workspaceMembers = useMemo(() => {
@@ -1829,6 +1874,7 @@ export default function App() {
         onClose={() => setIsRegisterUserOpen(false)}
         workspaces={userVisibleWorkspaces}
         workspaceId={currentWorkspace.id}
+        currentUser={currentUser}
         onUserCreated={(newUser) => {
           const freshUsers = StorageService.getUsers();
           setUsers(freshUsers);
