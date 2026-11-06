@@ -61,6 +61,7 @@ export const ProjectModal: React.FC<ProjectModalProps> = ({
   const [newColColor, setNewColColor] = useState(COLOR_PALETTE[1]);
 
   useEffect(() => {
+    if (!isOpen) return;
     if (projectToEdit) {
       setName(projectToEdit.name);
       setDescription(projectToEdit.description || '');

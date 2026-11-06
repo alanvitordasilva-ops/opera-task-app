@@ -88,12 +88,13 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
   });
 
   useEffect(() => {
-    if (workspaceId && !selectedWorkspaceIds.includes(workspaceId)) {
-      setSelectedWorkspaceIds((prev) => (prev.length === 0 ? [workspaceId] : prev));
-    } else if (availableWorkspaces.length > 0 && selectedWorkspaceIds.length === 0) {
-      setSelectedWorkspaceIds([availableWorkspaces[0].id]);
+    if (!isOpen) return;
+    if (workspaceId) {
+      setSelectedWorkspaceIds((prev) => (prev.length === 0 || !prev.includes(workspaceId) ? [workspaceId] : prev));
+    } else if (availableWorkspaces.length > 0) {
+      setSelectedWorkspaceIds((prev) => (prev.length === 0 ? [availableWorkspaces[0].id] : prev));
     }
-  }, [workspaceId, availableWorkspaces]);
+  }, [isOpen, workspaceId]);
 
   const [name, setName] = useState('');
   const [username, setUsername] = useState('');

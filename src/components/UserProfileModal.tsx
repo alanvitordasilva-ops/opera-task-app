@@ -109,7 +109,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
       setErrors({});
       setResetEmailSent(false);
     }
-  }, [isOpen, currentUser]);
+  }, [isOpen, currentUser.id]);
 
   if (!isOpen) return null;
 

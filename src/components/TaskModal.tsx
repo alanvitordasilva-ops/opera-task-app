@@ -182,6 +182,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
   const isCompletedBlocked = isTaskCompleted && !canModifyCompleted;
 
   useEffect(() => {
+    if (!isOpen) return;
     if (taskToEdit) {
       setTitle(taskToEdit.title);
       setDescription(taskToEdit.description || '');

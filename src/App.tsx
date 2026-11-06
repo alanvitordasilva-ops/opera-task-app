@@ -264,7 +264,7 @@ export default function App() {
 
       const current = freshUsers.find((u) => u.id === currentUser.id);
       if (current) {
-        setCurrentUser(current);
+        setCurrentUser((prev) => (JSON.stringify(prev) === JSON.stringify(current) ? prev : current));
       }
       const isMast = isUserMaster(current || currentUser);
       const allowedWs = isMast
@@ -276,7 +276,7 @@ export default function App() {
           );
       const curWs = allowedWs.find((w) => w.id === currentWorkspace.id) || allowedWs[0];
       if (curWs) {
-        setCurrentWorkspace(curWs);
+        setCurrentWorkspace((prev) => (JSON.stringify(prev) === JSON.stringify(curWs) ? prev : curWs));
       }
     };
     fetchLatestServerState();
@@ -300,7 +300,7 @@ export default function App() {
 
   useEffect(() => {
     StorageService.setCurrentUserId(currentUser.id);
-  }, [currentUser]);
+  }, [currentUser.id]);
 
   useEffect(() => {
     StorageService.saveWorkspaces(workspaces);
@@ -308,7 +308,7 @@ export default function App() {
 
   useEffect(() => {
     StorageService.setCurrentWorkspaceId(currentWorkspace.id);
-  }, [currentWorkspace]);
+  }, [currentWorkspace.id]);
 
   useEffect(() => {
     StorageService.saveProjects(projects);
@@ -361,10 +361,13 @@ export default function App() {
           if (JSON.stringify(prev) === JSON.stringify(incomingWorkspaces)) return prev;
           return incomingWorkspaces;
         });
-        const updatedCurrent = incomingWorkspaces.find((w) => w.id === currentWorkspace.id);
-        if (updatedCurrent) {
-          setCurrentWorkspace(updatedCurrent);
-        }
+        setCurrentWorkspace((prev) => {
+          const updatedCurrent = incomingWorkspaces.find((w) => w.id === prev.id);
+          if (updatedCurrent && JSON.stringify(prev) !== JSON.stringify(updatedCurrent)) {
+            return updatedCurrent;
+          }
+          return prev;
+        });
       }
     });
 
@@ -375,10 +378,13 @@ export default function App() {
           if (JSON.stringify(prev) === JSON.stringify(incomingUsers)) return prev;
           return incomingUsers;
         });
-        const updatedSelf = incomingUsers.find((u) => u.id === currentUser.id);
-        if (updatedSelf) {
-          setCurrentUser(updatedSelf);
-        }
+        setCurrentUser((prev) => {
+          const updatedSelf = incomingUsers.find((u) => u.id === prev.id);
+          if (updatedSelf && JSON.stringify(prev) !== JSON.stringify(updatedSelf)) {
+            return updatedSelf;
+          }
+          return prev;
+        });
       }
     });
 
@@ -388,7 +394,7 @@ export default function App() {
       unsubWorkspaces();
       unsubUsers();
     };
-  }, [currentWorkspace.id, currentUser.id]);
+  }, []);
 
   // Membros do workspace atual
   const workspaceMembers = useMemo(() => {
@@ -439,7 +445,11 @@ export default function App() {
     return workspaces.filter(
       (w) => w.ownerId === currentUser.id || w.members.some((m) => m.userId === currentUser.id)
     );
-  }, [workspaces, currentUser, isMaster]);
+  }, [workspaces, currentUser.id, isMaster]);
+
+  const userVisibleWorkspaceIds = useMemo(() => {
+    return userVisibleWorkspaces.map((w) => w.id).join(',');
+  }, [userVisibleWorkspaces]);
 
   // Redireciona caso o workspace atual não esteja mais na lista visível
   useEffect(() => {
@@ -448,7 +458,7 @@ export default function App() {
       setCurrentWorkspace(fallback);
       StorageService.setCurrentWorkspaceId(fallback.id);
     }
-  }, [userVisibleWorkspaces, currentWorkspace.id]);
+  }, [userVisibleWorkspaceIds, currentWorkspace.id]);
 
   const canViewDashboard = canAccessDashboard(currentUserRole, isMaster);
 
