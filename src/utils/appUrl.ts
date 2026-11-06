@@ -4,7 +4,7 @@
  * sempre apontem para o ambiente de produção público acessível por smartphones.
  */
 
-export const PRODUCTION_APP_URL = 'https://ais-pre-v3pyk2r5zyjj6fe7ngn3pp-898367602402.us-east1.run.app';
+export const PRODUCTION_APP_URL = 'https://opera-task-app.vercel.app';
 
 export function getProductionAppUrl(): string {
   if (typeof window === 'undefined') return PRODUCTION_APP_URL;

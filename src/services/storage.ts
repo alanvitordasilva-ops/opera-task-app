@@ -1252,8 +1252,9 @@ export const StorageService = {
   }): Promise<{ success: boolean; user?: User; error?: string }> {
     const cleanName = params.name.trim();
     const rawUsername = (params.username || params.usernameOrEmail || '').trim().toLowerCase();
-    const cleanUsername = rawUsername.replace(/\s+/g, '.').replace(/[^a-z0-9._-]/g, '').replace(/^@/, '');
-    const cleanEmail = (params.email || (cleanUsername ? `${cleanUsername}@operatask.app` : '')).trim().toLowerCase();
+    // Preserva o caractere @ obrigatório para o login, mantendo caracteres válidos de login/email
+    const cleanUsername = rawUsername.replace(/\s+/g, '').replace(/[^a-z0-9._@+-]/g, '');
+    const cleanEmail = (params.email || (cleanUsername.includes('@') ? cleanUsername : `${cleanUsername}@operatask.app`)).trim().toLowerCase();
     const cleanPassword = params.password?.trim() || '';
 
     const targetWorkspaceIds: string[] = Array.isArray(params.workspaceIds) && params.workspaceIds.length > 0
@@ -1267,6 +1268,15 @@ export const StorageService = {
     }
     if (!cleanUsername) {
       return { success: false, error: 'O nome de usuário para login é obrigatório.' };
+    }
+    if (!cleanUsername.includes('@')) {
+      return {
+        success: false,
+        error: 'O nome de usuário (login) deve conter obrigatoriamente o caractere @ (ex: usuario@operatask.app ou seu e-mail).',
+      };
+    }
+    if (cleanUsername.length < 5) {
+      return { success: false, error: 'O nome de usuário deve conter pelo menos 5 caracteres (incluindo o @).' };
     }
     if (targetWorkspaceIds.length === 0) {
       return { success: false, error: 'A seleção de pelo menos um Workspace é obrigatória.' };

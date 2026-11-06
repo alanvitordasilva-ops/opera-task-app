@@ -21,6 +21,7 @@ import {
 import { WorkspaceRole, User, Workspace } from '../types/index.ts';
 import { StorageService, isServerApiAvailable, setServerApiAvailable } from '../services/storage.ts';
 import { getProductionAppUrl } from '../utils/appUrl.ts';
+import { generateUserAccessMessage, formatUserProfileRole, OFFICIAL_APP_ACCESS_URL } from '../utils/userAccessMessage.ts';
 
 interface RegisterUserModalProps {
   isOpen: boolean;
@@ -162,9 +163,9 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
     setErrorMessage(null);
 
     const cleanName = name.trim();
-    // Normaliza nome de usuário: minúsculas, sem espaços (substitui espaços por ponto)
-    const cleanUsername = username.trim().toLowerCase().replace(/\s+/g, '.').replace(/[^a-z0-9._-]/g, '').replace(/^@/, '');
-    const cleanEmail = email.trim().toLowerCase();
+    // Normaliza login mantendo o caractere @ obrigatório
+    const cleanUsername = username.trim().toLowerCase().replace(/\s+/g, '');
+    const cleanEmail = email.trim().toLowerCase() || cleanUsername;
 
     if (!cleanName) {
       setErrorMessage('Por favor, informe o nome completo do usuário.');
@@ -176,8 +177,15 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
       return;
     }
 
-    if (cleanUsername.length < 3) {
-      setErrorMessage('O nome de usuário deve conter pelo menos 3 caracteres.');
+    if (!cleanUsername.includes('@')) {
+      setErrorMessage(
+        'O nome de usuário (login) deve conter obrigatoriamente o caractere @ (pode ser um e-mail fictício, ex: usuario@operatask.app ou seu e-mail corporativo).'
+      );
+      return;
+    }
+
+    if (cleanUsername.length < 5) {
+      setErrorMessage('O nome de usuário deve conter pelo menos 5 caracteres (incluindo o @).');
       return;
     }
 
@@ -207,7 +215,7 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
       const result = await StorageService.registerUser({
         name: cleanName,
         username: cleanUsername,
-        email: cleanEmail || `${cleanUsername}@operatask.app`,
+        email: cleanEmail,
         password,
         role,
         workspaceIds: selectedWorkspaceIds,
@@ -221,8 +229,6 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
         return;
       }
 
-      const currentOrigin = getProductionAppUrl();
-
       const targetWorkspaces = availableWorkspaces.filter((w) => selectedWorkspaceIds.includes(w.id));
       const targetWsNames = targetWorkspaces.map((w) => w.name);
       const combinedWsName = targetWsNames.join(', ') || 'Workspaces Vinculados';
@@ -233,7 +239,7 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
         role,
         workspaceName: combinedWsName,
         workspaceNames: targetWsNames,
-        accessLink: currentOrigin,
+        accessLink: OFFICIAL_APP_ACCESS_URL,
       });
 
       if (onUserCreated) {
@@ -247,12 +253,15 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
 
   const getShareText = () => {
     if (!createdResult) return '';
-    const roleLabel =
-      ROLE_OPTIONS.find((r) => r.role === createdResult.role)?.label || 'Membro';
-
     const loginUser = createdResult.user.username || createdResult.user.email;
-
-    return `*Acesso ao OperaTask*\n\nOlá, ${createdResult.user.name}! Sua conta foi criada e está 100% ativa para acesso imediato.\n\n🔗 *Link do App:* ${createdResult.accessLink}\n👤 *Nome de Usuário (Login):* ${loginUser}\n📧 *E-mail:* ${createdResult.user.email}\n🔑 *Senha:* ${createdResult.rawPassword}\n🏢 *Workspace:* ${createdResult.workspaceName}\n🛡️ *Perfil:* ${roleLabel}\n\nAcesse pelo navegador ou aplicativo e faça login para começar!`;
+    return generateUserAccessMessage({
+      name: createdResult.user.name,
+      login: loginUser,
+      password: createdResult.rawPassword,
+      workspaceName: createdResult.workspaceName,
+      role: createdResult.role,
+      customLink: OFFICIAL_APP_ACCESS_URL,
+    });
   };
 
   const handleCopyCredentials = () => {
@@ -340,63 +349,31 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
                 </p>
               </div>
 
-              {/* Caixa de Credenciais Prontas para Envio */}
+              {/* Caixa da Mensagem Oficial de Acesso */}
               <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-3">
                 <div className="flex items-center justify-between pb-2 border-b border-slate-200/80 dark:border-slate-700/80 text-xs font-bold text-slate-700 dark:text-slate-300">
-                  <span>Credenciais de Acesso</span>
-                  <span className="text-[11px] font-semibold text-[#34B1AC]">OperaTask</span>
+                  <span className="flex items-center gap-1.5">
+                    <span>Mensagem Oficial de Acesso</span>
+                  </span>
+                  <span className="text-[11px] font-semibold text-[#34B1AC]">Modelo Obrigatório</span>
                 </div>
 
-                <div className="grid grid-cols-1 gap-2 text-xs">
-                  <div className="flex justify-between items-center py-1">
-                    <span className="text-slate-500 dark:text-slate-400">Nome:</span>
-                    <span className="font-bold text-slate-900 dark:text-slate-100">
-                      {createdResult.user.name}
-                    </span>
-                  </div>
-                  <div className="flex justify-between items-center py-1">
-                    <span className="text-slate-500 dark:text-slate-400">Nome de Usuário (Login):</span>
-                    <span className="font-mono font-bold text-[#173653] dark:text-[#34B1AC] bg-white dark:bg-slate-700 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-600">
+                <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono text-slate-800 dark:text-slate-200 whitespace-pre-wrap leading-relaxed select-all">
+                  {getShareText()}
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-200/80 dark:border-slate-700/80 text-xs">
+                  <div>
+                    <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">Login com @</span>
+                    <span className="font-mono font-bold text-[#173653] dark:text-[#34B1AC]">
                       {createdResult.user.username || createdResult.user.email}
                     </span>
                   </div>
-                  <div className="flex justify-between items-center py-1">
-                    <span className="text-slate-500 dark:text-slate-400">E-mail Cadastrado:</span>
-                    <span className="font-mono text-slate-700 dark:text-slate-300">
-                      {createdResult.user.email}
-                    </span>
-                  </div>
-                  <div className="flex justify-between items-center py-1">
-                    <span className="text-slate-500 dark:text-slate-400">Senha:</span>
-                    <span className="font-mono font-bold text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-700 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-600">
-                      {createdResult.rawPassword}
-                    </span>
-                  </div>
-                  <div className="flex justify-between items-center py-1">
-                    <span className="text-slate-500 dark:text-slate-400">Workspace Vinculado:</span>
-                    <span className="font-bold text-[#173653] dark:text-teal-400">
-                      {createdResult.workspaceName}
-                    </span>
-                  </div>
-                  <div className="flex justify-between items-center py-1">
-                    <span className="text-slate-500 dark:text-slate-400">Função:</span>
+                  <div>
+                    <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">Perfil</span>
                     <span className="font-semibold text-slate-800 dark:text-slate-200">
-                      {ROLE_OPTIONS.find((r) => r.role === createdResult.role)?.label}
+                      {formatUserProfileRole(createdResult.role)}
                     </span>
-                  </div>
-                  <div className="flex justify-between items-center py-1">
-                    <span className="text-slate-500 dark:text-slate-400">Status da Conta:</span>
-                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300 flex items-center gap-1.5 border border-emerald-200 dark:border-emerald-800">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                      Ativo (Acesso Liberado)
-                    </span>
-                  </div>
-                  <div className="flex flex-col gap-1 pt-1">
-                    <span className="text-slate-500 dark:text-slate-400">Link de Acesso ao App:</span>
-                    <div className="p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-[11px] font-mono text-slate-700 dark:text-slate-300 break-all select-all flex items-center justify-between gap-2">
-                      <span className="truncate">{createdResult.accessLink}</span>
-                      <ExternalLink className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                    </div>
                   </div>
                 </div>
               </div>
@@ -420,12 +397,12 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
                   {copiedLink ? (
                     <>
                       <Check className="w-4 h-4" />
-                      <span>Link e Dados Copiados!</span>
+                      <span>Mensagem de Acesso Copiada!</span>
                     </>
                   ) : (
                     <>
                       <Copy className="w-4 h-4" />
-                      <span>Copiar Link de Acesso e Credenciais</span>
+                      <span>Copiar Mensagem de Acesso</span>
                     </>
                   )}
                 </button>
@@ -524,10 +501,12 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
                     value={name}
                     onChange={(e) => {
                       setName(e.target.value);
-                      // Sugere automaticamente o nome de usuário se ainda estiver vazio
+                      // Sugere automaticamente o login com @ se ainda estiver vazio
                       if (!username && e.target.value) {
-                        const suggested = e.target.value.trim().toLowerCase().split(' ')[0];
-                        setUsername(suggested);
+                        const firstWord = e.target.value.trim().toLowerCase().split(' ')[0].replace(/[^a-z0-9]/g, '');
+                        if (firstWord) {
+                          setUsername(`${firstWord}@operatask.app`);
+                        }
                       }
                     }}
                     placeholder="Ex: Carlos Silva, Maria Santos..."
@@ -536,12 +515,17 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
                 </div>
               </div>
 
-              {/* 2. Nome de Usuário (Login) */}
+              {/* 2. Nome de Usuário (Login) com @ obrigatório */}
               <div className="space-y-1.5">
                 <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 flex items-center justify-between">
-                  <span>Nome de Usuário (Login de Acesso) *</span>
+                  <span className="flex items-center gap-1.5">
+                    <span>Nome de Usuário (Login) *</span>
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300 border border-amber-300 dark:border-amber-700 normal-case">
+                      Obrigatório conter @
+                    </span>
+                  </span>
                   <span className="text-[10px] text-teal-600 dark:text-teal-400 font-semibold normal-case">
-                    Usado para entrar no app
+                    Definido pelo gestor
                   </span>
                 </label>
                 <div className="relative">
@@ -550,13 +534,13 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
                     type="text"
                     required
                     value={username}
-                    onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/\s+/g, '.'))}
-                    placeholder="Ex: carlos ou carlos.silva"
+                    onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/\s+/g, ''))}
+                    placeholder="Ex: usuario@operatask.app ou seu e-mail"
                     className="w-full pl-10 pr-4 py-2.5 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#34B1AC] focus:outline-hidden transition-all font-mono"
                   />
                 </div>
-                <p className="text-[11px] text-slate-400">
-                  O usuário poderá digitar exatamente este nome de usuário na tela de login.
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  O login deve conter obrigatoriamente o caractere <strong>@</strong> (pode ser um e-mail fictício usado apenas para cadastro na plataforma, ex: <code>carlos@operatask.app</code>).
                 </p>
               </div>
 

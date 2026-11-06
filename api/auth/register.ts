@@ -24,12 +24,19 @@ export default async function handler(req: any, res: any) {
   const { name, username, email, password, role, workspaceId, workspaceIds, avatarColor } = body;
 
   const cleanName = (name || '').trim();
-  const cleanUsername = (username || '').trim().toLowerCase().replace(/^@/, '');
-  const cleanEmail = (email || `${cleanUsername}@operatask.app`).trim().toLowerCase();
+  const rawUsername = (username || '').trim().toLowerCase();
+  const cleanUsername = rawUsername.replace(/\s+/g, '');
+  const cleanEmail = (email || (cleanUsername.includes('@') ? cleanUsername : `${cleanUsername}@operatask.app`)).trim().toLowerCase();
   const cleanPass = (password || '').trim();
 
   if (!cleanName || !cleanUsername) {
     return res.status(400).json({ success: false, error: 'Dados incompletos' });
+  }
+  if (!cleanUsername.includes('@')) {
+    return res.status(400).json({
+      success: false,
+      error: 'O nome de usuário (login) deve conter obrigatoriamente o caractere @',
+    });
   }
 
   const existing = store.users.find((u) => u.username.toLowerCase() === cleanUsername || u.email.toLowerCase() === cleanEmail);

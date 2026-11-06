@@ -3,6 +3,7 @@ import { User, Workspace, Project, Task, SystemRole, WorkspaceRole } from '../ty
 import { UserAvatar } from './UserAvatar.tsx';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
 import { ColorPicker } from './ColorPicker.tsx';
+import { generateUserAccessMessage, formatUserProfileRole, OFFICIAL_APP_ACCESS_URL } from '../utils/userAccessMessage.ts';
 import {
   X,
   Crown,
@@ -185,17 +186,27 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
     e.preventDefault();
     const cleanName = newUserName.trim();
     const rawUsername = (newUserUsername || newUserName).trim().toLowerCase();
-    const cleanUsername = rawUsername.replace(/\s+/g, '.').replace(/[^a-z0-9._-]/g, '').replace(/^@/, '');
-    const cleanEmail = (newUserEmail || (cleanUsername ? `${cleanUsername}@operatask.app` : '')).trim().toLowerCase();
+    const cleanUsername = rawUsername.replace(/\s+/g, '');
+    const cleanEmail = (newUserEmail || cleanUsername).trim().toLowerCase();
     const cleanPassword = newUserPassword.trim();
-    const targetWsId = newUserWorkspaceIds[0] || workspaces[0]?.id || 'ws-principal';
 
     if (!cleanName) {
       onShowToast({ type: 'error', message: 'Preencha o nome completo do novo usuário.' });
       return;
     }
-    if (!cleanUsername || cleanUsername.length < 3) {
-      onShowToast({ type: 'error', message: 'Defina um nome de usuário (Login) com pelo menos 3 caracteres.' });
+    if (!cleanUsername) {
+      onShowToast({ type: 'error', message: 'Defina um nome de usuário (Login) para o acesso.' });
+      return;
+    }
+    if (!cleanUsername.includes('@')) {
+      onShowToast({
+        type: 'error',
+        message: 'O nome de usuário (login) deve conter obrigatoriamente o caractere @ (pode ser e-mail fictício, ex: usuario@operatask.app).',
+      });
+      return;
+    }
+    if (cleanUsername.length < 5) {
+      onShowToast({ type: 'error', message: 'O nome de usuário deve conter pelo menos 5 caracteres (incluindo o @).' });
       return;
     }
     if (newUserWorkspaceIds.length === 0) {
@@ -249,7 +260,7 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
         rawPassword: cleanPassword,
         role: newUserWorkspaceRole,
         workspaceName: combinedWsNames,
-        accessLink: getProductionAppUrl(),
+        accessLink: OFFICIAL_APP_ACCESS_URL,
       });
 
       setIsSubmittingNewUser(false);
@@ -265,7 +276,15 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
 
   const getShareText = () => {
     if (!createdResult) return '';
-    return `*Acesso ao OperaTask*\n\nOlá, ${createdResult.user.name}! Sua conta foi criada no sistema e já está 100% liberada para acesso imediato.\n\n🔗 *Link do App:* ${createdResult.accessLink}\n👤 *Nome de Usuário (Login):* ${createdResult.user.username || createdResult.user.email}\n📧 *E-mail:* ${createdResult.user.email}\n🔑 *Senha:* ${createdResult.rawPassword}\n🏢 *Workspace:* ${createdResult.workspaceName}\n\nAcesse pelo navegador ou celular e faça login para começar!`;
+    const loginUser = createdResult.user.username || createdResult.user.email;
+    return generateUserAccessMessage({
+      name: createdResult.user.name,
+      login: loginUser,
+      password: createdResult.rawPassword,
+      workspaceName: createdResult.workspaceName,
+      role: createdResult.role,
+      customLink: OFFICIAL_APP_ACCESS_URL,
+    });
   };
 
   const handleCopyCredentials = () => {
@@ -938,34 +957,25 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
                   </div>
                 </div>
 
-                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 space-y-2.5 text-xs">
-                  <div>
-                    <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">Link Oficial de Produção</span>
-                    <a
-                      href={createdResult.accessLink}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="font-mono text-teal-600 dark:text-teal-400 break-all flex items-center gap-1 hover:underline"
-                    >
-                      {createdResult.accessLink}
-                      <ExternalLink className="w-3 h-3 inline" />
-                    </a>
+                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 space-y-3 text-xs">
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-200/80 dark:border-slate-700/80 font-bold text-slate-700 dark:text-slate-300">
+                    <span>Mensagem Oficial de Acesso</span>
+                    <span className="text-[11px] font-semibold text-[#34B1AC]">Modelo Obrigatório</span>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono text-slate-800 dark:text-slate-200 whitespace-pre-wrap leading-relaxed select-all">
+                    {getShareText()}
                   </div>
 
                   <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-200 dark:border-slate-700">
                     <div>
-                      <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">Nome de Usuário (Login)</span>
+                      <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">Login com @</span>
                       <span className="font-mono font-bold text-slate-900 dark:text-slate-100">{createdResult.user.username || createdResult.user.email}</span>
                     </div>
                     <div>
-                      <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">Senha</span>
-                      <span className="font-mono font-bold text-slate-900 dark:text-slate-100">{createdResult.rawPassword}</span>
+                      <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">Perfil</span>
+                      <span className="font-semibold text-slate-800 dark:text-slate-200">{formatUserProfileRole(createdResult.role)}</span>
                     </div>
-                  </div>
-
-                  <div className="pt-2 border-t border-slate-200 dark:border-slate-700">
-                    <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">Workspace Vinculado</span>
-                    <span className="font-semibold text-slate-800 dark:text-slate-200">{createdResult.workspaceName}</span>
                   </div>
                 </div>
 
@@ -976,7 +986,7 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
                     className="flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs font-bold bg-[#173653] hover:bg-[#1f476d] text-white transition-all shadow-xs cursor-pointer"
                   >
                     {copiedCredentials ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
-                    <span>{copiedCredentials ? 'Copiado!' : 'Copiar Dados de Acesso'}</span>
+                    <span>{copiedCredentials ? 'Mensagem Copiada!' : 'Copiar Mensagem de Acesso'}</span>
                   </button>
 
                   <button
@@ -1026,9 +1036,11 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
                     value={newUserName}
                     onChange={(e) => {
                       setNewUserName(e.target.value);
-                      if (!newUserUsername) {
-                        const sug = e.target.value.toLowerCase().trim().replace(/\s+/g, '.').replace(/[^a-z0-9._-]/g, '');
-                        setNewUserUsername(sug);
+                      if (!newUserUsername && e.target.value) {
+                        const firstWord = e.target.value.toLowerCase().trim().split(' ')[0].replace(/[^a-z0-9]/g, '');
+                        if (firstWord) {
+                          setNewUserUsername(`${firstWord}@operatask.app`);
+                        }
                       }
                     }}
                     placeholder="Ex: Carlos Silva"
@@ -1038,17 +1050,25 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
-                    <label className="block font-bold text-slate-700 dark:text-slate-200 mb-1">
-                      Nome de Usuário (Login) *
+                    <label className="block font-bold text-slate-700 dark:text-slate-200 mb-1 flex items-center justify-between">
+                      <span className="flex items-center gap-1.5">
+                        <span>Nome de Usuário (Login) *</span>
+                        <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300 border border-amber-300 dark:border-amber-700">
+                          Com @
+                        </span>
+                      </span>
                     </label>
                     <input
                       type="text"
                       required
                       value={newUserUsername}
                       onChange={(e) => setNewUserUsername(e.target.value.toLowerCase().replace(/\s+/g, ''))}
-                      placeholder="Ex: carlos.silva"
-                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#34B1AC]"
+                      placeholder="Ex: usuario@operatask.app ou seu e-mail"
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#34B1AC] font-mono"
                     />
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      Obrigatório conter o caractere <strong>@</strong>.
+                    </p>
                   </div>
 
                   <div>
