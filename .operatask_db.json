@@ -104,8 +104,13 @@
           "joinedAt": "2026-11-04T10:19:06.280Z"
         },
         {
+          "userId": "user-1793788666090-6lfr",
+          "role": "production",
+          "joinedAt": "2026-11-04T10:37:46.090Z"
+        },
+        {
           "userId": "user-1793792108304-72mo",
-          "role": "membro",
+          "role": "member",
           "joinedAt": "2026-11-04T11:35:08.304Z"
         },
         {

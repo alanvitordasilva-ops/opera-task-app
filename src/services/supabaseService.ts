@@ -27,20 +27,21 @@ export class SupabaseService {
     const env = (import.meta as any).env || {};
     const proc = typeof process !== 'undefined' ? process.env || {} : {};
 
-    // Prioridade máxima para NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY
+    // Prioridade máxima para as variáveis públicas padrão:
+    // process.env.NEXT_PUBLIC_SUPABASE_URL e process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
     const envUrl = (
-      env.NEXT_PUBLIC_SUPABASE_URL ||
       proc.NEXT_PUBLIC_SUPABASE_URL ||
-      env.VITE_SUPABASE_URL ||
+      env.NEXT_PUBLIC_SUPABASE_URL ||
       proc.VITE_SUPABASE_URL ||
+      env.VITE_SUPABASE_URL ||
       ''
     ).trim();
 
     const envKey = (
-      env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
       proc.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-      env.VITE_SUPABASE_ANON_KEY ||
+      env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
       proc.VITE_SUPABASE_ANON_KEY ||
+      env.VITE_SUPABASE_ANON_KEY ||
       ''
     ).trim();
 

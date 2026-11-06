@@ -1,4 +1,5 @@
 import { getServerStore, ServerUser } from '../_store.js';
+import { adminRegisterOrSyncUser } from '../_supabaseAdmin.js';
 
 export default async function handler(req: any, res: any) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -36,8 +37,32 @@ export default async function handler(req: any, res: any) {
     return res.status(400).json({ success: false, error: 'Usuário ou e-mail já cadastrado' });
   }
 
+  const targetWsIds: string[] = Array.isArray(workspaceIds) && workspaceIds.length > 0
+    ? workspaceIds
+    : workspaceId ? [workspaceId] : ['ws-principal'];
+
+  // 1. Executa criação administrativa no Supabase se SUPABASE_SERVICE_ROLE_KEY estiver definida
+  let supabaseUserId: string | undefined;
+  try {
+    const adminResult = await adminRegisterOrSyncUser({
+      id: body.id,
+      name: cleanName,
+      username: cleanUsername,
+      email: cleanEmail,
+      password: cleanPass,
+      role: role || 'producao',
+      workspaceIds: targetWsIds,
+      avatarColor: avatarColor || '#34B1AC',
+    });
+    if (adminResult?.success && adminResult.userId) {
+      supabaseUserId = adminResult.userId;
+    }
+  } catch (sbErr) {
+    console.warn('[OperaTask Register] Supabase Admin aviso:', sbErr);
+  }
+
   const newUser: ServerUser = {
-    id: body.id || `user-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+    id: supabaseUserId || body.id || `user-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
     name: cleanName,
     username: cleanUsername,
     email: cleanEmail,
@@ -52,10 +77,6 @@ export default async function handler(req: any, res: any) {
   store.users.push(newUser);
 
   // Vincula aos workspaces
-  const targetWsIds: string[] = Array.isArray(workspaceIds) && workspaceIds.length > 0
-    ? workspaceIds
-    : workspaceId ? [workspaceId] : ['ws-principal'];
-
   targetWsIds.forEach((wsId) => {
     const ws = store.workspaces.find((w) => w.id === wsId);
     if (ws) {
@@ -76,3 +97,4 @@ export default async function handler(req: any, res: any) {
     workspaces: store.workspaces,
   });
 }
+
