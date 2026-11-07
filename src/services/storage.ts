@@ -499,6 +499,30 @@ function handleSaveMutation(entityKey: string, data: any, immediate: boolean = f
   }
 }
 
+// Migração única para zerar membros cadastrados mantendo exclusivamente a conta Master (Alan Silva)
+if (typeof window !== 'undefined') {
+  try {
+    const migrationKey = 'operatask_v5_members_zeroed_to_master';
+    if (!localStorage.getItem(migrationKey)) {
+      localStorage.setItem(migrationKey, 'true');
+      localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify([MASTER_USER]));
+      const wsData = localStorage.getItem(STORAGE_KEYS.WORKSPACES);
+      if (wsData) {
+        const parsedWs: Workspace[] = JSON.parse(wsData);
+        const cleanedWs = parsedWs.map((w) => ({
+          ...w,
+          ownerId: MASTER_USER.id,
+          members: [{ userId: MASTER_USER.id, role: 'owner' as const, joinedAt: '2026-01-01T00:00:00.000Z' }],
+        }));
+        localStorage.setItem(STORAGE_KEYS.WORKSPACES, JSON.stringify(cleanedWs));
+      }
+      localStorage.setItem(STORAGE_KEYS.CURRENT_USER_ID, MASTER_USER.id);
+    }
+  } catch (e) {
+    console.warn('[OperaTask] Migração de membros:', e);
+  }
+}
+
 export const StorageService = {
   // Listener do status de salvamento (usado pelo indicador visual)
   subscribeToSaveStatus(callback: (status: SaveStatus) => void): () => void {
@@ -683,7 +707,18 @@ export const StorageService = {
       let list: User[] = data ? JSON.parse(data) : DEFAULT_USERS;
 
       // Filtra e remove contas de demonstração antigas
-      const mockIds = ['user-beatriz', 'user-lucas', 'user-mariana', 'user-rafael', 'user-alan'];
+      const mockIds = [
+        'user-beatriz',
+        'user-lucas',
+        'user-mariana',
+        'user-rafael',
+        'user-alan',
+        'user-1793786775388-zb8a',
+        'user-1793787546280-fcia',
+        'user-1793788666090-6lfr',
+        'user-1793792108304-72mo',
+        'user-davi-tantan',
+      ];
       list = list.filter((u) => !mockIds.includes(u.id) && !u.email.endsWith('@taskflow.dev'));
 
       // Garante que TODOS os DEFAULT_USERS estejam presentes na lista
@@ -732,6 +767,64 @@ export const StorageService = {
   saveUsers(users: User[], immediate = false): void {
     localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(users));
     handleSaveMutation(STORAGE_KEYS.USERS, users, immediate);
+  },
+
+  /**
+   * Zera todos os membros cadastrados no sistema, mantendo exclusivamente a conta Master (Alan Silva).
+   * Não apaga a estrutura de Workspaces, Quadros, Colunas, Fichas Técnicas ou Cards.
+   */
+  resetMembersToMasterOnly(): { users: User[]; workspaces: Workspace[] } {
+    // 1. Zera a lista de usuários para conter unicamente a conta Master
+    const masterOnlyUsers: User[] = [MASTER_USER];
+    localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(masterOnlyUsers));
+    handleSaveMutation(STORAGE_KEYS.USERS, masterOnlyUsers, true);
+
+    // 2. Limpa membros dos workspaces mantendo a estrutura dos workspaces e apenas o Master como membro/owner
+    const currentWorkspaces = this.getWorkspaces();
+    const updatedWorkspaces = currentWorkspaces.map((w) => ({
+      ...w,
+      ownerId: MASTER_USER.id,
+      members: [{ userId: MASTER_USER.id, role: 'owner' as const, joinedAt: '2026-01-01T00:00:00.000Z' }],
+    }));
+    this.saveWorkspaces(updatedWorkspaces, true);
+
+    // 3. Atualiza projetos para que os memberIds contenham apenas o Master
+    const currentProjects = this.getProjects();
+    const updatedProjects = currentProjects.map((p) => ({
+      ...p,
+      memberIds: [MASTER_USER.id],
+    }));
+    this.saveProjects(updatedProjects, true);
+
+    // 4. Se Supabase estiver conectado, limpa membros não-master nas tabelas
+    if (SupabaseService.isConfigured()) {
+      try {
+        const client = SupabaseService.getClient();
+        if (client) {
+          Promise.resolve(
+            client
+              .from('profiles')
+              .delete()
+              .neq('tipo', 'master')
+              .not('email', 'in', '("alanvitordasilva@gmail.com.br","alanvitordasilva@gmail.com")')
+          ).catch(() => {});
+          Promise.resolve(
+            client
+              .from('workspace_members')
+              .delete()
+              .neq('user_id', MASTER_USER.id)
+          ).catch(() => {});
+        }
+      } catch (err) {
+        console.warn('[OperaTask] Limpeza de membros no Supabase:', err);
+      }
+    }
+
+    // 5. Broadcast em tempo real para sincronizar todas as telas conectadas
+    RealtimeService.broadcast('users', masterOnlyUsers, { action: 'reset_members' });
+    RealtimeService.broadcast('workspaces', updatedWorkspaces, { action: 'reset_members' });
+
+    return { users: masterOnlyUsers, workspaces: updatedWorkspaces };
   },
 
   getCurrentUser(): User {
