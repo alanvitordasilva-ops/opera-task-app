@@ -1,14 +1,16 @@
 import React, { useState } from 'react';
-import { User, Workspace, Project, Task, SystemRole, WorkspaceRole } from '../types/index.ts';
+import { User, Workspace, Project, Task, SystemRole, WorkspaceRole, ClientCompany } from '../types/index.ts';
 import { UserAvatar } from './UserAvatar.tsx';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
 import { ColorPicker } from './ColorPicker.tsx';
+import { MasterClientsTab } from './MasterClientsTab.tsx';
 import { generateUserAccessMessage, formatUserProfileRole, OFFICIAL_APP_ACCESS_URL } from '../utils/userAccessMessage.ts';
 import {
   X,
   Crown,
   Users,
   Building,
+  Building2,
   Folder,
   Layers,
   Database,
@@ -43,11 +45,14 @@ interface MasterAdminModalProps {
   workspaces: Workspace[];
   projects: Project[];
   tasks: Task[];
+  clients?: ClientCompany[];
   onUpdateUsers: (users: User[]) => void;
   onUpdateWorkspaces: (workspaces: Workspace[]) => void;
   onUpdateProjects: (projects: Project[]) => void;
   onUpdateTasks: (tasks: Task[]) => void;
+  onUpdateClients?: (clients: ClientCompany[]) => void;
   onSelectWorkspace: (workspaceId: string) => void;
+  onEnterSupportMode?: (client: ClientCompany) => void;
   onShowToast: (params: { type: 'success' | 'info' | 'error'; message: string }) => void;
 }
 
@@ -59,14 +64,18 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
   workspaces,
   projects,
   tasks,
+  clients: propClients,
   onUpdateUsers,
   onUpdateWorkspaces,
   onUpdateProjects,
   onUpdateTasks,
+  onUpdateClients,
   onSelectWorkspace,
+  onEnterSupportMode,
   onShowToast,
 }) => {
-  const [activeTab, setActiveTab] = useState<'usuarios' | 'workspaces' | 'quadros' | 'sistema'>('usuarios');
+  const [activeTab, setActiveTab] = useState<'clientes' | 'usuarios' | 'workspaces' | 'quadros' | 'sistema'>('clientes');
+  const clientsList = propClients || StorageService.getClients();
 
   // Filtros de busca
   const [userSearch, setUserSearch] = useState('');
@@ -441,6 +450,23 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
 
         {/* Abas de Navegação do Painel Master */}
         <div className="flex items-center px-6 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/90 shrink-0 gap-2 overflow-x-auto">
+          {/* Aba 1: Clientes & Empresas (Macro) */}
+          <button
+            type="button"
+            onClick={() => setActiveTab('clientes')}
+            className={`flex items-center gap-2 py-3.5 px-3.5 text-xs font-bold border-b-2 transition-all cursor-pointer whitespace-nowrap ${
+              activeTab === 'clientes'
+                ? 'border-[#34B1AC] text-[#173653] dark:text-[#34B1AC]'
+                : 'border-transparent text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+            }`}
+          >
+            <Building2 className="w-4 h-4 text-[#34B1AC]" />
+            <span>Gestão de Clientes ({clientsList.length})</span>
+            <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-amber-400 text-slate-950 font-black uppercase">
+              Macro
+            </span>
+          </button>
+
           <button
             type="button"
             onClick={() => setActiveTab('usuarios')}
@@ -496,6 +522,40 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
 
         {/* Conteúdo Dinâmico */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          {/* ================= ABA 0: CLIENTES & EMPRESAS (MACRO SAAS) ================= */}
+          {activeTab === 'clientes' && (
+            <MasterClientsTab
+              clients={clientsList}
+              workspaces={workspaces}
+              users={users}
+              projects={projects}
+              tasks={tasks}
+              currentUser={currentUser}
+              onUpdateClients={(updated) => {
+                if (onUpdateClients) {
+                  onUpdateClients(updated);
+                } else {
+                  StorageService.saveClients(updated);
+                }
+              }}
+              onUpdateWorkspaces={onUpdateWorkspaces}
+              onUpdateUsers={onUpdateUsers}
+              onSelectWorkspace={(wsId) => {
+                onSelectWorkspace(wsId);
+                onClose();
+              }}
+              onEnterSupportMode={(client) => {
+                if (onEnterSupportMode) {
+                  onEnterSupportMode(client);
+                } else {
+                  onSelectWorkspace(client.primaryWorkspaceId);
+                }
+                onClose();
+              }}
+              onShowToast={onShowToast}
+            />
+          )}
+
           {/* ================= ABA 1: USUÁRIOS ================= */}
           {activeTab === 'usuarios' && (
             <div className="space-y-4">

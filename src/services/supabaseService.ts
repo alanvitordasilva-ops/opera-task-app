@@ -372,6 +372,132 @@ export class SupabaseService {
   }
 
   // ==========================================================================
+  // Workspaces CRUD no Supabase
+  // ==========================================================================
+  static async fetchWorkspaces(): Promise<{ success: boolean; workspaces: Workspace[]; error?: string }> {
+    const client = this.getClient();
+    if (!client) {
+      return { success: false, workspaces: [], error: 'Supabase não conectado' };
+    }
+
+    try {
+      const { data: wsRows, error: wsErr } = await client
+        .from('workspaces')
+        .select('*')
+        .order('created_at', { ascending: true });
+
+      if (wsErr) {
+        if (!wsErr.message?.includes('does not exist')) {
+          console.warn('[SupabaseService] Erro ao buscar workspaces:', wsErr);
+        }
+        return { success: false, workspaces: [], error: wsErr.message };
+      }
+
+      if (!wsRows || wsRows.length === 0) {
+        return { success: true, workspaces: [] };
+      }
+
+      // Busca membros vinculados
+      let memberRows: any[] = [];
+      try {
+        const { data: mData } = await client.from('workspace_members').select('*');
+        if (mData) memberRows = mData;
+      } catch (e) {
+        console.warn('[SupabaseService] Erro ao buscar membros de workspaces:', e);
+      }
+
+      const workspaces: Workspace[] = wsRows.map((row: any) => {
+        const rowMembers = memberRows
+          .filter((m: any) => m.workspace_id === row.id)
+          .map((m: any) => ({
+            userId: m.user_id,
+            role: m.role || 'membro',
+            joinedAt: m.joined_at || row.created_at || new Date().toISOString(),
+          }));
+
+        // Se a tabela workspace_members ainda não tiver linhas, assegura o owner como membro 'owner'
+        const members = rowMembers.length > 0 ? rowMembers : [
+          { userId: row.owner_id, role: 'owner' as const, joinedAt: row.created_at || new Date().toISOString() }
+        ];
+
+        return {
+          id: String(row.id),
+          name: row.name || 'Workspace',
+          slug: row.slug || (row.name ? row.name.toLowerCase().replace(/\s+/g, '-') : 'workspace'),
+          description: row.description || '',
+          logoColor: row.logo_color || '#173653',
+          ownerId: row.owner_id,
+          members,
+          createdAt: row.created_at || new Date().toISOString(),
+        };
+      });
+
+      return { success: true, workspaces };
+    } catch (err: any) {
+      console.warn('[SupabaseService] Erro geral ao buscar workspaces:', err);
+      return { success: false, workspaces: [], error: err.message };
+    }
+  }
+
+  static async createWorkspace(workspace: Workspace): Promise<{ success: boolean; workspace?: Workspace; error?: string }> {
+    const client = this.getClient();
+    if (!client) {
+      return { success: false, error: 'Supabase não conectado' };
+    }
+
+    try {
+      const wsPayload = {
+        id: workspace.id,
+        name: workspace.name,
+        slug: workspace.slug || workspace.name.toLowerCase().replace(/\s+/g, '-'),
+        description: workspace.description || '',
+        logo_color: workspace.logoColor || '#173653',
+        owner_id: workspace.ownerId,
+        created_at: workspace.createdAt || new Date().toISOString(),
+      };
+
+      const { error: wsError } = await client.from('workspaces').upsert(wsPayload);
+      if (wsError) {
+        console.error('[SupabaseService] Erro ao persistir workspace:', wsError);
+        return { success: false, error: wsError.message };
+      }
+
+      // Insere o criador/membros
+      if (Array.isArray(workspace.members) && workspace.members.length > 0) {
+        const memPayload = workspace.members.map((m) => ({
+          workspace_id: workspace.id,
+          user_id: m.userId,
+          role: m.role || 'owner',
+          joined_at: m.joinedAt || new Date().toISOString(),
+        }));
+        const { error: mError } = await client.from('workspace_members').upsert(memPayload);
+        if (mError) {
+          console.warn('[SupabaseService] Erro ao persistir workspace_members:', mError);
+        }
+      }
+
+      return { success: true, workspace };
+    } catch (err: any) {
+      console.error('[SupabaseService] Falha ao criar workspace no Supabase:', err);
+      return { success: false, error: err.message };
+    }
+  }
+
+  static async deleteWorkspace(workspaceId: string): Promise<{ success: boolean; error?: string }> {
+    const client = this.getClient();
+    if (!client) return { success: false, error: 'Supabase não conectado' };
+
+    try {
+      await client.from('workspaces').delete().eq('id', workspaceId);
+      await client.from('workspace_members').delete().eq('workspace_id', workspaceId);
+      return { success: true };
+    } catch (err: any) {
+      console.warn('[SupabaseService] Erro ao excluir workspace no Supabase:', err);
+      return { success: false, error: err.message };
+    }
+  }
+
+  // ==========================================================================
   // Sincronizar todos os dados para o Supabase (Push)
   // ==========================================================================
   static async syncAllToCloud(data: {

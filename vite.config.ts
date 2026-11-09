@@ -67,6 +67,7 @@ const INITIAL_SERVER_DATA = {
   activities: [],
   notifications: [],
   fichas_tecnicas: [],
+  clients: [],
 };
 
 function readDb(): Record<string, any> {
@@ -202,6 +203,7 @@ function operataskRealtimePlugin() {
                 tasks: sharedCache.tasks || [],
                 tags: sharedCache.tags || [],
                 activities: sharedCache.activities || [],
+                clients: sharedCache.clients || [],
               })
             );
             return;
@@ -224,6 +226,7 @@ function operataskRealtimePlugin() {
               if (Array.isArray(body.activities)) sharedCache.activities = body.activities;
               if (Array.isArray(body.fichas_tecnicas)) sharedCache.fichas_tecnicas = body.fichas_tecnicas;
               if (Array.isArray(body.notifications)) sharedCache.notifications = body.notifications;
+              if (Array.isArray(body.clients)) sharedCache.clients = body.clients;
 
               writeDb(sharedCache);
               broadcastWs({ type: 'INITIAL_STATE', payload: sharedCache });

@@ -17,7 +17,8 @@ export type SyncEntity =
   | 'fichas_tecnicas'
   | 'users'
   | 'tags'
-  | 'activities';
+  | 'activities'
+  | 'clients';
 
 export interface SyncMessage<T = any> {
   type: 'SYNC_UPDATE' | 'INITIAL_STATE' | 'PING' | 'PONG';
@@ -91,6 +92,10 @@ class RealtimeServiceImpl {
           if (cloudRes.success && Array.isArray(cloudRes.tasks) && cloudRes.tasks.length > 0) {
             this.notifyEntityListeners('tasks', cloudRes.tasks, { action: 'cloud_resync' });
           }
+        }
+        const wsRes = await StorageService.fetchWorkspacesCloud();
+        if (wsRes.success && Array.isArray(wsRes.workspaces) && wsRes.workspaces.length > 0) {
+          this.notifyEntityListeners('workspaces', wsRes.workspaces, { action: 'cloud_resync' });
         }
       }
       this.fetchServerState();
@@ -252,6 +257,20 @@ class RealtimeServiceImpl {
             this.handleSupabaseDbChange(payload);
           }
         )
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'workspaces' },
+          async () => {
+            if (SupabaseService.isConfigured()) {
+              const cloudRes = await StorageService.fetchWorkspacesCloud();
+              if (cloudRes.success && Array.isArray(cloudRes.workspaces)) {
+                this.notifyEntityListeners('workspaces', cloudRes.workspaces, {
+                  action: 'supabase_workspaces_changed',
+                });
+              }
+            }
+          }
+        )
         .subscribe((status: string) => {
           if (status === 'SUBSCRIBED') {
             this.setStatus('connected');
@@ -353,6 +372,7 @@ class RealtimeServiceImpl {
       fichas_tecnicas: 'operatask_clean_v1_fichas_tecnicas',
       tags: 'operatask_clean_v1_tags',
       activities: 'operatask_clean_v1_activities',
+      clients: 'operatask_clean_v1_clients',
     };
     const storageKey = entityToKey[entity];
     if (storageKey && typeof window !== 'undefined' && data) {

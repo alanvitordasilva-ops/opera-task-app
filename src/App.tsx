@@ -11,6 +11,8 @@ import {
   Priority,
   WorkspaceActivity,
   Notification,
+  ClientCompany,
+  SupportModeState,
 } from './types/index.ts';
 import { StorageService } from './services/storage.ts';
 import { SupabaseService } from './services/supabaseService.ts';
@@ -49,7 +51,7 @@ import { LoginScreen } from './components/LoginScreen.tsx';
 import { WelcomeEmptyState } from './components/WelcomeEmptyState.tsx';
 import { UserProfileModal } from './components/UserProfileModal.tsx';
 import { MasterAdminModal } from './components/MasterAdminModal.tsx';
-import { AlertTriangle, X, CheckCircle2, Info } from 'lucide-react';
+import { AlertTriangle, X, CheckCircle2, Info, Headphones, LogOut, ShieldAlert } from 'lucide-react';
 
 export default function App() {
   // Estado Persistido
@@ -69,6 +71,8 @@ export default function App() {
     StorageService.getNotifications()
   );
   const [theme, setTheme] = useState<'light' | 'dark'>(() => StorageService.getTheme());
+  const [clients, setClients] = useState<ClientCompany[]>(() => StorageService.getClients());
+  const [supportMode, setSupportMode] = useState<SupportModeState | null>(() => StorageService.getSupportMode());
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     const saved = StorageService.getViewMode() as ViewMode;
     return ['kanban', 'list', 'my_tasks', 'dashboard', 'activity_feed'].includes(saved)
@@ -250,8 +254,17 @@ export default function App() {
   // Sincronização autoritativa inicial com o banco de dados remoto (Supabase / Servidor)
   useEffect(() => {
     const fetchLatestServerState = async () => {
-      // 1. Se o Supabase estiver configurado, busca tarefas da nuvem de forma assíncrona
+      // 1. Se o Supabase estiver configurado, busca Workspaces e Tarefas da nuvem de forma assíncrona
       if (SupabaseService.isConfigured()) {
+        try {
+          const cloudWs = await StorageService.fetchWorkspacesCloud();
+          if (cloudWs.success && cloudWs.workspaces.length > 0) {
+            setWorkspaces(cloudWs.workspaces);
+          }
+        } catch (e) {
+          console.warn('[OperaTask] Aviso ao carregar workspaces do Supabase:', e);
+        }
+
         try {
           const cloudRes = await StorageService.fetchTasksCloud(currentWorkspace.id);
           if (cloudRes.success && cloudRes.tasks.length > 0) {
@@ -408,11 +421,19 @@ export default function App() {
       }
     });
 
+    // Sincronização de Clientes & Empresas
+    const unsubClients = RealtimeService.subscribe('clients', (incomingClients: ClientCompany[]) => {
+      if (Array.isArray(incomingClients)) {
+        setClients(incomingClients);
+      }
+    });
+
     return () => {
       unsubTasks();
       unsubProjects();
       unsubWorkspaces();
       unsubUsers();
+      unsubClients();
     };
   }, []);
 
@@ -504,6 +525,19 @@ export default function App() {
       StorageService.setCurrentWorkspaceId(fallback.id);
     }
   }, [userVisibleWorkspaceIds, currentWorkspace.id]);
+
+  // Verificação de Empresa Suspensa para Usuários Não-Master
+  const isCurrentWorkspaceSuspended = useMemo(() => {
+    if (isMaster) return false;
+    if (currentWorkspace.clientStatus === 'suspended') return true;
+    const client = clients.find(
+      (c) =>
+        c.primaryWorkspaceId === currentWorkspace.id ||
+        (Array.isArray(c.workspaceIds) && c.workspaceIds.includes(currentWorkspace.id)) ||
+        c.id === currentWorkspace.companyId
+    );
+    return client?.status === 'suspended';
+  }, [isMaster, currentWorkspace, clients]);
 
   const canViewDashboard = canAccessDashboard(currentUserRole, isMaster);
 
@@ -1189,25 +1223,83 @@ export default function App() {
     const ws = workspaces.find((w) => w.id === workspaceId);
     if (ws) {
       setCurrentWorkspace(ws);
+      StorageService.setCurrentWorkspaceId(ws.id);
       setSelectedProjectId('all');
     }
   };
 
-  const handleCreateWorkspace = (name: string, description: string, color: string) => {
-    const newWs: Workspace = {
-      id: `ws-${Date.now()}`,
-      name,
-      slug: name.toLowerCase().replace(/\s+/g, '-'),
-      description,
-      logoColor: color,
-      ownerId: currentUser.id,
-      members: [{ userId: currentUser.id, role: 'owner', joinedAt: new Date().toISOString() }],
-      createdAt: new Date().toISOString(),
+  // Modo Suporte para Super Admin (Acesso ao Workspace do Cliente com isolamento total)
+  const handleEnterSupportMode = (client: ClientCompany) => {
+    const modeState: SupportModeState = {
+      isActive: true,
+      clientName: client.name,
+      clientId: client.id,
+      workspaceId: client.primaryWorkspaceId,
+      enteredAt: new Date().toISOString(),
     };
+    setSupportMode(modeState);
+    StorageService.setSupportMode(modeState);
+    handleSelectWorkspace(client.primaryWorkspaceId);
+    setIsMasterModalOpen(false);
+    showToast({
+      type: 'info',
+      message: `Modo Suporte ativado para a empresa "${client.name}". Visualizando workspace do cliente.`,
+    });
+  };
 
-    setWorkspaces((prev) => [...prev, newWs]);
-    setCurrentWorkspace(newWs);
-    recordActivity(`criou o workspace "${newWs.name}"`);
+  const handleExitSupportMode = () => {
+    setSupportMode(null);
+    StorageService.clearSupportMode();
+    const defaultWs = workspaces.find((w) => w.id === 'ws-principal') || workspaces[0];
+    if (defaultWs) {
+      handleSelectWorkspace(defaultWs.id);
+    }
+    setIsMasterModalOpen(true);
+    showToast({
+      type: 'success',
+      message: 'Modo Suporte encerrado. Retornado ao Painel Master.',
+    });
+  };
+
+  const handleCreateWorkspace = async (name: string, description: string, color: string) => {
+    try {
+      const newWs: Workspace = {
+        id: `ws-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        name,
+        slug: name.toLowerCase().replace(/\s+/g, '-'),
+        description,
+        logoColor: color || '#173653',
+        ownerId: currentUser.id,
+        members: [{ userId: currentUser.id, role: 'owner' as const, joinedAt: new Date().toISOString() }],
+        createdAt: new Date().toISOString(),
+      };
+
+      // 1. Salva imediatamente no banco de dados Supabase e no cache local
+      await StorageService.createWorkspaceAsync(newWs);
+
+      // 2. Atualiza estado da aplicação e seleciona o workspace criado
+      setWorkspaces((prev) => {
+        const exists = prev.some((w) => w.id === newWs.id);
+        return exists ? prev.map((w) => (w.id === newWs.id ? newWs : w)) : [...prev, newWs];
+      });
+      setCurrentWorkspace(newWs);
+      StorageService.setCurrentWorkspaceId(newWs.id);
+      setSelectedProjectId('all');
+
+      recordActivity(`criou o workspace "${newWs.name}"`);
+
+      showToast({
+        type: 'success',
+        message: `Workspace "${newWs.name}" criado com sucesso!`,
+      });
+    } catch (err: any) {
+      console.error('[OperaTask] Erro ao criar workspace:', err);
+      showToast({
+        type: 'error',
+        message: err.message || 'Falha ao salvar workspace no banco de dados.',
+      });
+      throw err;
+    }
   };
 
   const handleSaveWorkspace = (data: Partial<Workspace>) => {
@@ -1305,6 +1397,9 @@ export default function App() {
     setWorkspaces(remaining);
     setCurrentWorkspace(remaining[0]);
     setSelectedProjectId('all');
+
+    // Remove do Supabase e storage local
+    StorageService.deleteWorkspaceAsync(workspaceId);
 
     // Limpar projetos e tarefas associados ao workspace excluído
     setProjects((prev) => prev.filter((p) => p.workspaceId !== workspaceId));
@@ -1489,6 +1584,33 @@ export default function App() {
     );
   }
 
+  // Se a empresa/workspace atual estiver com acesso suspenso (e usuário não for Master)
+  if (isCurrentWorkspaceSuspended) {
+    return (
+      <div className="min-h-screen w-full bg-slate-950 flex items-center justify-center p-4 font-sans">
+        <div className="max-w-md w-full bg-slate-900 border border-rose-500/30 rounded-3xl p-8 text-center shadow-2xl space-y-4">
+          <div className="w-16 h-16 rounded-2xl bg-rose-500/10 text-rose-400 flex items-center justify-center mx-auto border border-rose-500/20">
+            <ShieldAlert className="w-8 h-8" />
+          </div>
+          <h2 className="text-xl font-bold text-white">Acesso Temporariamente Suspenso</h2>
+          <p className="text-xs text-slate-400 leading-relaxed">
+            O acesso para a empresa <strong>{currentWorkspace.companyName || currentWorkspace.name}</strong> encontra-se temporariamente suspenso pela administração da plataforma OperaTask.
+          </p>
+          <div className="p-3.5 rounded-xl bg-slate-800/80 border border-slate-700 text-xs text-slate-300">
+            Para regularizar ou reativar o seu plano, entre em contato com o suporte ou gestor responsável da plataforma.
+          </div>
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="w-full py-3 px-4 bg-slate-800 hover:bg-slate-700 text-white rounded-xl font-bold text-xs transition-all cursor-pointer"
+          >
+            Sair da Conta
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-screen w-full bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-hidden font-sans relative">
       {/* Indicador de Status Offline / PWA */}
@@ -1544,6 +1666,37 @@ export default function App() {
 
       {/* Conteúdo Principal */}
       <div className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
+        {/* Banner Persistente de Modo Suporte */}
+        {supportMode && supportMode.isActive && (
+          <div className="bg-linear-to-r from-amber-600 via-amber-500 to-teal-700 text-white px-4 py-2.5 shadow-md flex items-center justify-between z-30 text-xs shrink-0 animate-in slide-in-from-top duration-150">
+            <div className="flex items-center gap-2.5">
+              <div className="p-1.5 rounded-xl bg-black/20 text-amber-200">
+                <Headphones className="w-4 h-4" />
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-extrabold uppercase tracking-wider px-1.5 py-0.5 rounded bg-black/25 text-amber-200 text-[10px]">
+                  Modo Suporte Ativo
+                </span>
+                <span className="font-medium">
+                  Você está visualizando a empresa <strong>{supportMode.clientName}</strong> em modo de auditoria/suporte.
+                </span>
+                <span className="hidden lg:inline text-amber-100 opacity-80">
+                  · Dados isolados com total segurança
+                </span>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleExitSupportMode}
+              className="flex items-center gap-1.5 px-3 py-1 bg-white text-slate-900 hover:bg-slate-100 rounded-xl font-bold text-xs shadow-xs transition-colors cursor-pointer shrink-0"
+            >
+              <LogOut className="w-3.5 h-3.5 text-amber-700" />
+              <span>Encerrar Suporte & Voltar ao Painel Master</span>
+            </button>
+          </div>
+        )}
+
         {/* Cabeçalho */}
         <Header
           onOpenMobileMenu={() => setIsMobileSidebarOpen(true)}
@@ -1841,6 +1994,7 @@ export default function App() {
         workspaces={workspaces}
         projects={projects}
         tasks={tasks}
+        clients={clients}
         onUpdateUsers={(updated) => {
           setUsers(updated);
           StorageService.saveUsers(updated);
@@ -1861,10 +2015,15 @@ export default function App() {
           setTasks(updated);
           StorageService.saveTasks(updated);
         }}
+        onUpdateClients={(updated) => {
+          setClients(updated);
+          StorageService.saveClients(updated);
+        }}
         onSelectWorkspace={(workspaceId) => {
           handleSelectWorkspace(workspaceId);
           setIsMasterModalOpen(false);
         }}
+        onEnterSupportMode={handleEnterSupportMode}
         onShowToast={showToast}
       />
 

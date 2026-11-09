@@ -285,6 +285,27 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     Cadastrar Novo Usuário
                   </button>
                 )}
+
+                {isMaster && onOpenMasterPanel && (
+                  <div className="pt-1 mt-1 border-t border-slate-100 dark:border-slate-700">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsWorkspaceDropdownOpen(false);
+                        onOpenMasterPanel();
+                      }}
+                      className="w-full flex items-center justify-between p-2 rounded-lg text-xs font-black text-amber-900 dark:text-amber-200 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/50 transition-colors cursor-pointer"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Crown className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                        <span>Painel Master (Macro)</span>
+                      </div>
+                      <span className="text-[9px] px-1 py-0.2 rounded bg-amber-400 text-slate-950 font-black uppercase">
+                        Super Admin
+                      </span>
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           )}

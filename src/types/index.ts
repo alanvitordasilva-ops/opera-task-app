@@ -57,6 +57,38 @@ export interface WorkspaceMember {
   joinedAt: string;
 }
 
+export type ClientStatus = 'active' | 'trial' | 'suspended';
+export type ClientPlan = 'trial' | 'starter' | 'pro' | 'enterprise';
+
+export interface ClientCompany {
+  id: string;
+  name: string;
+  legalName?: string;
+  cnpjOrDoc?: string;
+  status: ClientStatus;
+  plan: ClientPlan;
+  primaryWorkspaceId: string;
+  workspaceIds: string[];
+  ownerId: string;
+  ownerName: string;
+  ownerEmail: string;
+  ownerPhone?: string;
+  createdAt: string;
+  lastAccessAt?: string;
+  trialExpiresAt?: string;
+  maxUsers?: number;
+  monthlyFee?: number;
+  notes?: string;
+}
+
+export interface SupportModeState {
+  isActive: boolean;
+  clientName: string;
+  clientId: string;
+  workspaceId: string;
+  enteredAt: string;
+}
+
 export interface Workspace {
   id: string;
   name: string;
@@ -66,6 +98,11 @@ export interface Workspace {
   ownerId: string;
   members: WorkspaceMember[];
   createdAt: string;
+  companyId?: string;
+  clientStatus?: ClientStatus;
+  clientPlan?: ClientPlan;
+  companyName?: string;
+  lastAccessAt?: string;
 }
 
 export interface BoardColumn {

@@ -12,6 +12,10 @@ import {
   SaveState,
   FichaTecnica,
   WorkspaceRole,
+  ClientCompany,
+  ClientStatus,
+  ClientPlan,
+  SupportModeState,
 } from '../types/index.ts';
 import { SupabaseService } from './supabaseService.ts';
 import { RealtimeService, SyncEntity } from './realtimeService.ts';
@@ -30,6 +34,8 @@ const STORAGE_KEYS = {
   THEME: 'operatask_clean_v1_theme',
   VIEW_MODE: 'operatask_clean_v1_view_mode',
   FICHAS_TECNICAS: 'operatask_clean_v1_fichas_tecnicas',
+  CLIENTS: 'operatask_clean_v1_clients',
+  SUPPORT_MODE: 'operatask_clean_v1_support_mode',
 };
 
 export const MASTER_USER: User = {
@@ -147,6 +153,26 @@ export const DEFAULT_WORKSPACES: Workspace[] = [
       { userId: MASTER_USER.id, role: 'owner', joinedAt: '2026-01-01T00:00:00.000Z' },
     ],
     createdAt: '2026-01-01T00:00:00.000Z',
+  },
+];
+
+export const DEFAULT_CLIENTS: ClientCompany[] = [
+  {
+    id: 'client-matriz',
+    name: 'OperaTask Matriz (Workspace Principal)',
+    legalName: 'OperaTask Tecnologia & Gestão',
+    status: 'active',
+    plan: 'enterprise',
+    primaryWorkspaceId: 'ws-principal',
+    workspaceIds: ['ws-principal'],
+    ownerId: MASTER_USER.id,
+    ownerName: MASTER_USER.name,
+    ownerEmail: MASTER_USER.email,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    lastAccessAt: new Date().toISOString(),
+    maxUsers: 999,
+    monthlyFee: 0,
+    notes: 'Empresa Matriz principal da plataforma OperaTask (Super Administrador)',
   },
 ];
 
@@ -625,7 +651,14 @@ export const StorageService = {
             localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(merged));
           }
           if (Array.isArray(data.workspaces) && data.workspaces.length > 0) {
-            localStorage.setItem(STORAGE_KEYS.WORKSPACES, JSON.stringify(data.workspaces));
+            const currentWs = this.getWorkspaces();
+            const mergedWs = [...data.workspaces];
+            currentWs.forEach((cw) => {
+              if (!mergedWs.some((mw) => mw.id === cw.id)) {
+                mergedWs.push(cw);
+              }
+            });
+            localStorage.setItem(STORAGE_KEYS.WORKSPACES, JSON.stringify(mergedWs));
           }
           if (Array.isArray(data.projects)) {
             localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify(data.projects));
@@ -638,6 +671,16 @@ export const StorageService = {
           }
           if (Array.isArray(data.activities)) {
             localStorage.setItem(STORAGE_KEYS.ACTIVITIES, JSON.stringify(data.activities));
+          }
+          if (Array.isArray(data.clients) && data.clients.length > 0) {
+            const currentClients = this.getClients();
+            const mergedClients = [...data.clients];
+            currentClients.forEach((cc) => {
+              if (!mergedClients.some((mc) => mc.id === cc.id)) {
+                mergedClients.push(cc);
+              }
+            });
+            localStorage.setItem(STORAGE_KEYS.CLIENTS, JSON.stringify(mergedClients));
           }
           return true;
         }
@@ -880,6 +923,426 @@ export const StorageService = {
 
   setCurrentWorkspaceId(workspaceId: string): void {
     localStorage.setItem(STORAGE_KEYS.CURRENT_WORKSPACE_ID, workspaceId);
+  },
+
+  /**
+   * Buscar lista atualizada de Workspaces do banco de dados na nuvem (Supabase)
+   */
+  async fetchWorkspacesCloud(): Promise<{ success: boolean; workspaces: Workspace[]; fromCloud: boolean }> {
+    if (SupabaseService.isConfigured()) {
+      try {
+        const res = await SupabaseService.fetchWorkspaces();
+        if (res.success && Array.isArray(res.workspaces) && res.workspaces.length > 0) {
+          const localWs = this.getWorkspaces();
+          const merged = [...res.workspaces];
+          localWs.forEach((lw) => {
+            if (!merged.some((mw) => mw.id === lw.id)) {
+              merged.push(lw);
+            }
+          });
+          this.saveWorkspaces(merged, true);
+          return { success: true, workspaces: merged, fromCloud: true };
+        }
+      } catch (err) {
+        console.warn('[StorageService] Falha ao carregar workspaces do Supabase:', err);
+      }
+    }
+    return { success: false, workspaces: this.getWorkspaces(), fromCloud: false };
+  },
+
+  /**
+   * Criar Workspace com persistência imediata local, no servidor e no Supabase
+   */
+  async createWorkspaceAsync(workspace: Workspace): Promise<{ success: boolean; workspace: Workspace; error?: string }> {
+    // 1. Atualiza lista local imediatamente
+    const current = this.getWorkspaces();
+    const nextList = [...current.filter((w) => w.id !== workspace.id), workspace];
+    this.saveWorkspaces(nextList, true);
+    this.setCurrentWorkspaceId(workspace.id);
+
+    // 2. Transmite via Realtime para todos os dispositivos conectados
+    RealtimeService.broadcast('workspaces', nextList, {
+      action: 'create_workspace',
+      targetId: workspace.id,
+      userName: workspace.name,
+    });
+
+    // 3. Salva no servidor de sincronização centralizado
+    if (isServerApiAvailable()) {
+      fetch('/api/sync/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaces: nextList }),
+      }).catch(() => {});
+    }
+
+    // 4. Salva imediatamente no banco de dados (Supabase) se configurado
+    if (SupabaseService.isConfigured()) {
+      try {
+        const cloudRes = await SupabaseService.createWorkspace(workspace);
+        if (!cloudRes.success) {
+          console.warn('[StorageService] Falha na nuvem ao criar workspace:', cloudRes.error);
+        }
+      } catch (e: any) {
+        console.warn('[StorageService] Erro ao gravar workspace no Supabase:', e);
+      }
+    }
+
+    return { success: true, workspace };
+  },
+
+  /**
+   * Excluir Workspace localmente e no banco de dados
+   */
+  async deleteWorkspaceAsync(workspaceId: string): Promise<{ success: boolean }> {
+    const current = this.getWorkspaces();
+    const filtered = current.filter((w) => w.id !== workspaceId);
+    this.saveWorkspaces(filtered, true);
+
+    if (this.getCurrentWorkspace().id === workspaceId && filtered.length > 0) {
+      this.setCurrentWorkspaceId(filtered[0].id);
+    }
+
+    RealtimeService.broadcast('workspaces', filtered, {
+      action: 'delete_workspace',
+      targetId: workspaceId,
+    });
+
+    if (isServerApiAvailable()) {
+      fetch('/api/sync/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaces: filtered }),
+      }).catch(() => {});
+    }
+
+    if (SupabaseService.isConfigured()) {
+      try {
+        await SupabaseService.deleteWorkspace(workspaceId);
+      } catch (e) {
+        console.warn('[StorageService] Erro ao excluir workspace no Supabase:', e);
+      }
+    }
+
+    return { success: true };
+  },
+
+  // ==========================================================================
+  // GESTÃO MACRO DE CLIENTES & EMPRESAS (PAINEL MASTER / SUPER ADMIN)
+  // ==========================================================================
+
+  getClients(): ClientCompany[] {
+    try {
+      const data = localStorage.getItem(STORAGE_KEYS.CLIENTS);
+      let list: ClientCompany[] = data ? JSON.parse(data) : [];
+
+      if (!Array.isArray(list) || list.length === 0) {
+        list = [...DEFAULT_CLIENTS];
+      }
+
+      // Garante que a Empresa Matriz esteja sempre presente
+      const hasMatriz = list.some((c) => c.id === 'client-matriz' || c.primaryWorkspaceId === 'ws-principal');
+      if (!hasMatriz) {
+        list.unshift(DEFAULT_CLIENTS[0]);
+      }
+
+      // Sincroniza com workspaces existentes para garantir que todos os workspaces tenham sua empresa mapeada
+      const workspaces = this.getWorkspaces();
+      const users = this.getUsers();
+      let modified = false;
+
+      workspaces.forEach((ws) => {
+        if (ws.id === 'ws-principal') return;
+        const alreadyLinked = list.some(
+          (c) => c.primaryWorkspaceId === ws.id || c.workspaceIds.includes(ws.id)
+        );
+        if (!alreadyLinked) {
+          const ownerUser = users.find((u) => u.id === ws.ownerId);
+          const newClient: ClientCompany = {
+            id: `client-${ws.id}`,
+            name: ws.name || 'Nova Empresa',
+            legalName: ws.description || ws.name,
+            status: ws.clientStatus || 'active',
+            plan: ws.clientPlan || 'pro',
+            primaryWorkspaceId: ws.id,
+            workspaceIds: [ws.id],
+            ownerId: ws.ownerId || MASTER_USER.id,
+            ownerName: ownerUser?.name || 'Administrador',
+            ownerEmail: ownerUser?.email || ownerUser?.username || 'admin@empresa.com',
+            ownerPhone: ownerUser?.phone,
+            createdAt: ws.createdAt || new Date().toISOString(),
+            lastAccessAt: ws.lastAccessAt || new Date().toISOString(),
+            maxUsers: 15,
+            notes: `Workspace autovinculado: ${ws.name}`,
+          };
+          list.push(newClient);
+          modified = true;
+        }
+      });
+
+      if (modified || !data) {
+        localStorage.setItem(STORAGE_KEYS.CLIENTS, JSON.stringify(list));
+      }
+      return list;
+    } catch {
+      return DEFAULT_CLIENTS;
+    }
+  },
+
+  saveClients(clients: ClientCompany[], immediate = true): void {
+    localStorage.setItem(STORAGE_KEYS.CLIENTS, JSON.stringify(clients));
+    handleSaveMutation(STORAGE_KEYS.CLIENTS, clients, immediate);
+
+    RealtimeService.broadcast('clients', clients, {
+      action: 'update_clients',
+      targetId: 'all',
+    });
+
+    if (isServerApiAvailable()) {
+      fetch('/api/sync/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clients }),
+      }).catch(() => {});
+    }
+  },
+
+  async createClientCompany(params: {
+    name: string;
+    legalName?: string;
+    cnpjOrDoc?: string;
+    plan: ClientPlan;
+    status: ClientStatus;
+    ownerName: string;
+    ownerEmail: string;
+    ownerPassword: string;
+    ownerPhone?: string;
+    workspaceName?: string;
+    maxUsers?: number;
+    monthlyFee?: number;
+    notes?: string;
+  }): Promise<{
+    success: boolean;
+    client?: ClientCompany;
+    workspace?: Workspace;
+    ownerUser?: User;
+    rawPassword?: string;
+    error?: string;
+  }> {
+    try {
+      const cleanCompanyName = params.name.trim();
+      const cleanOwnerName = params.ownerName.trim();
+      const rawEmail = params.ownerEmail.trim().toLowerCase();
+      const cleanPassword = params.ownerPassword.trim();
+      const cleanWsName = (params.workspaceName || cleanCompanyName).trim();
+
+      if (!cleanCompanyName) {
+        return { success: false, error: 'O nome da empresa cliente é obrigatório.' };
+      }
+      if (!cleanOwnerName) {
+        return { success: false, error: 'O nome do responsável/dono é obrigatório.' };
+      }
+      if (!rawEmail || !rawEmail.includes('@')) {
+        return { success: false, error: 'O login/e-mail do responsável deve conter o caractere @.' };
+      }
+      if (!cleanPassword || cleanPassword.length < 4) {
+        return { success: false, error: 'A senha inicial deve conter pelo menos 4 caracteres.' };
+      }
+
+      const clientId = `client-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+      const workspaceId = `ws-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+      const userId = `user-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+
+      // 1. Cria usuário Dono
+      const cleanUsername = rawEmail.replace(/\s+/g, '');
+      const userResult = await this.registerUser({
+        name: cleanOwnerName,
+        username: cleanUsername,
+        email: cleanUsername,
+        password: cleanPassword,
+        role: 'dono',
+        workspaceIds: [workspaceId],
+        workspaceId,
+      });
+
+      const finalUser = userResult.user || {
+        id: userId,
+        name: cleanOwnerName,
+        username: cleanUsername,
+        email: cleanUsername,
+        password: cleanPassword,
+        avatarColor: '#34B1AC',
+        title: 'Dono do Workspace',
+        tipo: 'dono',
+        status: 'active',
+        isActive: true,
+        createdAt: new Date().toISOString(),
+      };
+
+      // 2. Cria Workspace inicial do Cliente
+      const newWs: Workspace = {
+        id: workspaceId,
+        name: cleanWsName,
+        slug: cleanWsName.toLowerCase().replace(/\s+/g, '-'),
+        description: `Espaço de trabalho corporativo da empresa ${cleanCompanyName}`,
+        logoColor: '#34B1AC',
+        ownerId: finalUser.id,
+        members: [
+          { userId: finalUser.id, role: 'owner', joinedAt: new Date().toISOString() },
+          { userId: MASTER_USER.id, role: 'owner', joinedAt: new Date().toISOString() },
+        ],
+        createdAt: new Date().toISOString(),
+        companyId: clientId,
+        companyName: cleanCompanyName,
+        clientStatus: params.status,
+        clientPlan: params.plan,
+        lastAccessAt: new Date().toISOString(),
+      };
+
+      await this.createWorkspaceAsync(newWs);
+
+      // 3. Cria registro ClientCompany
+      const newClient: ClientCompany = {
+        id: clientId,
+        name: cleanCompanyName,
+        legalName: params.legalName?.trim() || cleanCompanyName,
+        cnpjOrDoc: params.cnpjOrDoc?.trim(),
+        status: params.status,
+        plan: params.plan,
+        primaryWorkspaceId: workspaceId,
+        workspaceIds: [workspaceId],
+        ownerId: finalUser.id,
+        ownerName: cleanOwnerName,
+        ownerEmail: cleanUsername,
+        ownerPhone: params.ownerPhone?.trim(),
+        createdAt: new Date().toISOString(),
+        lastAccessAt: new Date().toISOString(),
+        maxUsers: params.maxUsers || (params.plan === 'enterprise' ? 999 : params.plan === 'pro' ? 25 : 5),
+        monthlyFee: params.monthlyFee,
+        notes: params.notes?.trim(),
+      };
+
+      const currentClients = this.getClients();
+      const updatedClients = [newClient, ...currentClients.filter((c) => c.id !== clientId)];
+      this.saveClients(updatedClients, true);
+
+      return {
+        success: true,
+        client: newClient,
+        workspace: newWs,
+        ownerUser: finalUser,
+        rawPassword: cleanPassword,
+      };
+    } catch (err: any) {
+      console.error('[StorageService] Erro ao criar cliente/empresa:', err);
+      return { success: false, error: err.message || 'Erro inesperado ao criar cliente.' };
+    }
+  },
+
+  updateClientStatus(clientId: string, status: ClientStatus): ClientCompany | null {
+    const clients = this.getClients();
+    const idx = clients.findIndex((c) => c.id === clientId);
+    if (idx === -1) return null;
+
+    clients[idx] = {
+      ...clients[idx],
+      status,
+      lastAccessAt: new Date().toISOString(),
+    };
+    this.saveClients(clients, true);
+
+    // Atualiza status nos workspaces vinculados
+    const workspaces = this.getWorkspaces();
+    const wsIds = clients[idx].workspaceIds || [clients[idx].primaryWorkspaceId];
+    let wsModified = false;
+    const updatedWs = workspaces.map((w) => {
+      if (wsIds.includes(w.id) || w.companyId === clientId) {
+        wsModified = true;
+        return { ...w, clientStatus: status };
+      }
+      return w;
+    });
+
+    if (wsModified) {
+      this.saveWorkspaces(updatedWs, true);
+    }
+
+    return clients[idx];
+  },
+
+  updateClientPlan(
+    clientId: string,
+    plan: ClientPlan,
+    maxUsers?: number,
+    notes?: string
+  ): ClientCompany | null {
+    const clients = this.getClients();
+    const idx = clients.findIndex((c) => c.id === clientId);
+    if (idx === -1) return null;
+
+    clients[idx] = {
+      ...clients[idx],
+      plan,
+      ...(maxUsers !== undefined ? { maxUsers } : {}),
+      ...(notes !== undefined ? { notes } : {}),
+    };
+    this.saveClients(clients, true);
+
+    // Atualiza nos workspaces
+    const workspaces = this.getWorkspaces();
+    const wsIds = clients[idx].workspaceIds || [clients[idx].primaryWorkspaceId];
+    let wsModified = false;
+    const updatedWs = workspaces.map((w) => {
+      if (wsIds.includes(w.id) || w.companyId === clientId) {
+        wsModified = true;
+        return { ...w, clientPlan: plan };
+      }
+      return w;
+    });
+
+    if (wsModified) {
+      this.saveWorkspaces(updatedWs, true);
+    }
+
+    return clients[idx];
+  },
+
+  async deleteClient(clientId: string): Promise<{ success: boolean; error?: string }> {
+    if (clientId === 'client-matriz') {
+      return { success: false, error: 'A empresa Matriz do OperaTask não pode ser excluída.' };
+    }
+
+    const clients = this.getClients();
+    const target = clients.find((c) => c.id === clientId);
+    if (!target) return { success: false, error: 'Cliente não encontrado.' };
+
+    const remaining = clients.filter((c) => c.id !== clientId);
+    this.saveClients(remaining, true);
+
+    return { success: true };
+  },
+
+  getSupportMode(): SupportModeState | null {
+    try {
+      const data = localStorage.getItem(STORAGE_KEYS.SUPPORT_MODE);
+      return data ? JSON.parse(data) : null;
+    } catch {
+      return null;
+    }
+  },
+
+  setSupportMode(state: SupportModeState | null): void {
+    try {
+      if (state) {
+        localStorage.setItem(STORAGE_KEYS.SUPPORT_MODE, JSON.stringify(state));
+      } else {
+        localStorage.removeItem(STORAGE_KEYS.SUPPORT_MODE);
+      }
+    } catch {}
+  },
+
+  clearSupportMode(): void {
+    this.setSupportMode(null);
   },
 
   getProjects(): Project[] {
