@@ -21,6 +21,7 @@ import {
 } from '../types/index.ts';
 import { SupabaseService } from './supabaseService.ts';
 import { RealtimeService, SyncEntity } from './realtimeService.ts';
+import { isUserMaster } from '../utils/helpers.ts';
 
 const STORAGE_KEYS = {
   USERS: 'operatask_clean_v1_users',
@@ -819,6 +820,71 @@ export const StorageService = {
   },
 
   /**
+   * Retorna estritamente os utilizadores elegíveis para alternância de sessão rápida
+   * dentro do workspace ou empresa atual, garantindo isolamento total multi-tenant
+   * e ocultando totalmente o Master para utilizadores comuns de clientes.
+   */
+  getSwitchableUsers(
+    workspace: Workspace | null | undefined,
+    currentViewingUser: User,
+    allUsersList?: User[]
+  ): User[] {
+    const users = allUsersList || this.getUsers();
+    const isViewerMaster = isUserMaster(currentViewingUser);
+
+    if (!workspace) {
+      if (!isViewerMaster) {
+        return users.filter(
+          (u) =>
+            !isUserMaster(u) &&
+            u.systemRole !== 'master' &&
+            !u.isSuperAdmin &&
+            !u.email?.toLowerCase().includes('alanvitordasilva') &&
+            u.username?.toLowerCase() !== 'alan'
+        );
+      }
+      return users;
+    }
+
+    const wsCompanyId = workspace.companyId || (workspace as any)?.tenantId;
+
+    return users.filter((u) => {
+      // 1. Se o visualizador não for Master, contas com privilégios globais ou Master são 100% ocultas
+      if (!isViewerMaster) {
+        if (
+          isUserMaster(u) ||
+          u.systemRole === 'master' ||
+          u.isSuperAdmin ||
+          u.email?.toLowerCase().includes('alanvitordasilva') ||
+          u.username?.toLowerCase() === 'alan'
+        ) {
+          return false;
+        }
+      }
+
+      // 2. Se for membro registrado deste workspace
+      const isMember = Array.isArray(workspace.members) && workspace.members.some((m) => m.userId === u.id);
+      if (isMember) return true;
+
+      // 3. Se for o dono do workspace
+      if (workspace.ownerId === u.id) return true;
+
+      // 4. Se pertencer à mesma empresa/tenant
+      if (wsCompanyId) {
+        if (u.companyId && u.companyId === wsCompanyId) return true;
+        if (u.tenantId && u.tenantId === wsCompanyId) return true;
+      }
+
+      // Master visualizando pode ver a si próprio
+      if (isViewerMaster && isUserMaster(u)) {
+        return true;
+      }
+
+      return false;
+    });
+  },
+
+  /**
    * Zera todos os membros cadastrados no sistema, mantendo exclusivamente a conta Master (Alan Silva).
    * Não apaga a estrutura de Workspaces, Quadros, Colunas, Fichas Técnicas ou Cards.
    */
@@ -899,7 +965,30 @@ export const StorageService = {
         return DEFAULT_WORKSPACES;
       }
       const parsed: Workspace[] = JSON.parse(data);
-      const clean = parsed.filter((w) => w.id !== 'ws-agency' && w.id !== 'ws-acme');
+      let clean = parsed.filter((w) => w.id !== 'ws-agency' && w.id !== 'ws-acme');
+
+      // Sanitização multi-tenant: remove Master dos membros de workspaces que pertencem a empresas/clientes
+      let sanitized = false;
+      clean = clean.map((w) => {
+        if (w.id !== 'ws-principal' && (w.companyId || (w as any).tenantId)) {
+          const originalLen = w.members?.length || 0;
+          const filteredMembers = (w.members || []).filter(
+            (m) =>
+              m.userId !== MASTER_USER.id &&
+              m.userId !== 'user-master-alan' &&
+              m.userId !== 'master-alan'
+          );
+          if (filteredMembers.length !== originalLen) {
+            sanitized = true;
+            return { ...w, members: filteredMembers };
+          }
+        }
+        return w;
+      });
+      if (sanitized) {
+        localStorage.setItem(STORAGE_KEYS.WORKSPACES, JSON.stringify(clean));
+      }
+
       if (clean.length === 0) {
         this.saveWorkspaces(DEFAULT_WORKSPACES);
         return DEFAULT_WORKSPACES;
@@ -1186,10 +1275,14 @@ export const StorageService = {
         tipo: 'dono',
         status: 'active',
         isActive: true,
+        companyId: clientId,
+        tenantId: clientId,
         createdAt: new Date().toISOString(),
       };
+      finalUser.companyId = clientId;
+      finalUser.tenantId = clientId;
 
-      // 2. Cria Workspace inicial do Cliente
+      // 2. Cria Workspace inicial do Cliente (sem poluir membros com Master global)
       const newWs: Workspace = {
         id: workspaceId,
         name: cleanWsName,
@@ -1199,7 +1292,6 @@ export const StorageService = {
         ownerId: finalUser.id,
         members: [
           { userId: finalUser.id, role: 'owner', joinedAt: new Date().toISOString() },
-          { userId: MASTER_USER.id, role: 'owner', joinedAt: new Date().toISOString() },
         ],
         createdAt: new Date().toISOString(),
         companyId: clientId,
@@ -1924,6 +2016,10 @@ export const StorageService = {
       viewer: 'Visualizador',
     };
 
+    const allWorkspaces = this.getWorkspaces();
+    const primaryWs = allWorkspaces.find((w) => targetWorkspaceIds.includes(w.id));
+    const assignedCompanyId = primaryWs?.companyId || (primaryWs as any)?.tenantId;
+
     let newUser: User = {
       id: `user-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
       name: cleanName,
@@ -1935,6 +2031,8 @@ export const StorageService = {
       tipo: (params.role as any) || 'membro',
       status: 'active',
       isActive: true,
+      tenantId: assignedCompanyId,
+      companyId: assignedCompanyId,
       createdAt: new Date().toISOString(),
     };
 

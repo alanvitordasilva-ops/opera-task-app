@@ -435,14 +435,14 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
                     const nextState = !showAllUsersList;
                     setShowAllUsersList(nextState);
                     if (nextState) {
+                      let rawUsers: User[] = [];
                       if (isServerApiAvailable()) {
                         try {
                           const resp = await fetch('/api/auth/users');
                           if (resp.ok) {
                             const json = await resp.json();
                             if (Array.isArray(json.users)) {
-                              setAllUsersList(json.users);
-                              return;
+                              rawUsers = json.users;
                             }
                           } else if (resp.status === 404) {
                             setServerApiAvailable(false);
@@ -451,7 +451,12 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
                           setServerApiAvailable(false);
                         }
                       }
-                      setAllUsersList(StorageService.getUsers());
+                      if (rawUsers.length === 0) {
+                        rawUsers = StorageService.getUsers();
+                      }
+                      const currentWs = availableWorkspaces.find((w) => selectedWorkspaceIds.includes(w.id)) || availableWorkspaces[0];
+                      const filteredList = StorageService.getSwitchableUsers(currentWs, activeUser, rawUsers);
+                      setAllUsersList(filteredList);
                     }
                   }}
                   className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer"

@@ -603,11 +603,55 @@ function operataskRealtimePlugin() {
           return;
         }
 
-        // 7. API: Lista de Usuários
-        if (url === '/api/auth/users' && req.method === 'GET') {
+        // 7. API: Lista de Usuários (com isolamento multi-tenant)
+        if (url && url.startsWith('/api/auth/users') && req.method === 'GET') {
           res.setHeader('Content-Type', 'application/json');
           const latestDb = readDb();
-          res.end(JSON.stringify({ status: 'ok', users: latestDb.users || sharedCache.users || [] }));
+          let usersList = latestDb.users || sharedCache.users || [];
+
+          try {
+            const parsedUrl = new URL(req.url || '', 'http://localhost');
+            const workspaceId = parsedUrl.searchParams.get('workspaceId');
+            const companyId = parsedUrl.searchParams.get('companyId');
+            const currentUserId = parsedUrl.searchParams.get('currentUserId');
+
+            if (workspaceId || companyId || currentUserId) {
+              const workspaces = latestDb.workspaces || sharedCache.workspaces || [];
+              const targetWs = workspaces.find((w: any) => w.id === workspaceId);
+              const targetCompany = companyId || targetWs?.companyId;
+
+              const reqUser = usersList.find((u: any) => u.id === currentUserId);
+              const isMaster =
+                reqUser?.systemRole === 'master' ||
+                reqUser?.email?.toLowerCase().includes('alanvitordasilva');
+
+              usersList = usersList.filter((u: any) => {
+                if (!isMaster) {
+                  if (
+                    u.systemRole === 'master' ||
+                    u.isSuperAdmin ||
+                    u.email?.toLowerCase().includes('alanvitordasilva') ||
+                    u.username?.toLowerCase() === 'alan'
+                  ) {
+                    return false;
+                  }
+                }
+                if (targetWs) {
+                  const inMembers = Array.isArray(targetWs.members) && targetWs.members.some((m: any) => m.userId === u.id);
+                  const isOwner = targetWs.ownerId === u.id;
+                  const matchCompany =
+                    targetCompany && (u.companyId === targetCompany || u.tenantId === targetCompany);
+                  return inMembers || isOwner || matchCompany;
+                }
+                if (targetCompany) {
+                  return u.companyId === targetCompany || u.tenantId === targetCompany;
+                }
+                return true;
+              });
+            }
+          } catch {}
+
+          res.end(JSON.stringify({ status: 'ok', users: usersList }));
           return;
         }
 

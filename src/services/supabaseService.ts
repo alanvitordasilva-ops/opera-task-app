@@ -358,12 +358,17 @@ export class SupabaseService {
   // ==========================================================================
   // Buscar lista de perfis do Supabase
   // ==========================================================================
-  static async fetchProfiles(): Promise<SupabaseProfile[]> {
+  static async fetchProfiles(companyIdOrWorkspaceId?: string): Promise<SupabaseProfile[]> {
     const client = this.getClient();
     if (!client) return [];
 
     try {
-      const { data, error } = await client.from('profiles').select('*');
+      let query = client.from('profiles').select('*');
+      if (companyIdOrWorkspaceId) {
+        // Filtra por tenant_id ou company_id diretamente no Supabase
+        query = query.or(`company_id.eq.${companyIdOrWorkspaceId},tenant_id.eq.${companyIdOrWorkspaceId}`);
+      }
+      const { data, error } = await query;
       if (error || !data) return [];
       return data as SupabaseProfile[];
     } catch {

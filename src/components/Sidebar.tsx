@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo } from 'react';
 import {
   Workspace,
   Project,
@@ -133,6 +133,36 @@ export const Sidebar: React.FC<SidebarProps> = ({
   // Lógica de verificação de permissão estrita:
   // Apenas usuários com a role 'owner' ou 'admin' no workspace atual podem visualizar a seção de itens arquivados
   const canViewArchived = Boolean(userRole === 'owner' || userRole === 'admin');
+
+  // Lista de usuários estritamente filtrada para troca rápida de sessão no workspace/empresa ativo
+  const switchableUsers = useMemo(() => {
+    return allUsers.filter((u) => {
+      // 1. Oculta contas globais/Master se o usuário atual for um cliente comum
+      if (!isMaster) {
+        if (
+          isUserMaster(u) ||
+          u.systemRole === 'master' ||
+          u.isSuperAdmin ||
+          u.email?.toLowerCase().includes('alanvitordasilva') ||
+          u.username?.toLowerCase() === 'alan'
+        ) {
+          return false;
+        }
+      }
+
+      // 2. Deve pertencer ao workspace ativo ou à empresa/tenant ativa
+      const isMember = currentWorkspace?.members?.some((member) => member.userId === u.id);
+      const isOwner = currentWorkspace?.ownerId === u.id;
+      const wsCompanyId = currentWorkspace?.companyId || (currentWorkspace as any)?.tenantId;
+      const isSameCompany = Boolean(
+        wsCompanyId && (u.companyId === wsCompanyId || u.tenantId === wsCompanyId)
+      );
+
+      if (isMaster && isUserMaster(u)) return true;
+
+      return Boolean(isMember || isOwner || isSameCompany);
+    });
+  }, [allUsers, currentWorkspace, isMaster]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -701,41 +731,50 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   </div>
                 )}
 
-                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2 py-1">
-                  Alternar Usuário Ativo
+                <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2 py-1">
+                  <span>Alternar Usuário Ativo</span>
+                  <span className="text-[9px] font-semibold text-slate-400">
+                    {switchableUsers.length} {switchableUsers.length === 1 ? 'membro' : 'membros'}
+                  </span>
                 </div>
-                {allUsers.map((u) => {
-                  const m = currentWorkspace?.members?.find((member) => member.userId === u.id);
-                  const isUMaster = isUserMaster(u);
-                  const role: WorkspaceRole =
-                    m?.role || (currentWorkspace?.ownerId === u.id ? 'owner' : 'member');
-                  const rInfo = ROLE_CONFIG[role] || ROLE_CONFIG.member;
+                {switchableUsers.length === 0 ? (
+                  <div className="p-2.5 my-1 text-center text-xs text-slate-400 bg-slate-50 dark:bg-slate-800/40 rounded-lg">
+                    Nenhum outro usuário disponível
+                  </div>
+                ) : (
+                  switchableUsers.map((u) => {
+                    const m = currentWorkspace?.members?.find((member) => member.userId === u.id);
+                    const isUMaster = isUserMaster(u);
+                    const role: WorkspaceRole =
+                      m?.role || (currentWorkspace?.ownerId === u.id ? 'owner' : 'member');
+                    const rInfo = ROLE_CONFIG[role] || ROLE_CONFIG.member;
 
-                  return (
-                    <button
-                      key={u.id}
-                      type="button"
-                      onClick={() => {
-                        onSelectCurrentUser(u);
-                        setIsUserSwitcherOpen(false);
-                      }}
-                      className={`w-full flex items-center justify-between p-2 rounded-lg text-xs transition-colors text-left ${
-                        u.id === currentUser.id
-                          ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 font-bold'
-                          : 'hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <UserAvatar user={u} size="xs" />
-                        <span className="truncate">{u.name}</span>
-                        {isUMaster && <Crown className="w-3 h-3 text-amber-500 shrink-0" />}
-                      </div>
-                      <span className="text-[10px] text-slate-400">
-                        {isUMaster ? 'Super Admin' : rInfo.label}
-                      </span>
-                    </button>
-                  );
-                })}
+                    return (
+                      <button
+                        key={u.id}
+                        type="button"
+                        onClick={() => {
+                          onSelectCurrentUser(u);
+                          setIsUserSwitcherOpen(false);
+                        }}
+                        className={`w-full flex items-center justify-between p-2 rounded-lg text-xs transition-colors text-left ${
+                          u.id === currentUser.id
+                            ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 font-bold'
+                            : 'hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <UserAvatar user={u} size="xs" />
+                          <span className="truncate">{u.name}</span>
+                          {isUMaster && <Crown className="w-3 h-3 text-amber-500 shrink-0" />}
+                        </div>
+                        <span className="text-[10px] text-slate-400">
+                          {isUMaster ? 'Super Admin' : rInfo.label}
+                        </span>
+                      </button>
+                    );
+                  })
+                )}
 
                 {onLogout && (
                   <div className="pt-1.5 mt-1 border-t border-slate-100 dark:border-slate-700">

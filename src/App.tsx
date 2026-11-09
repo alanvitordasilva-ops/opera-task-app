@@ -487,11 +487,15 @@ export default function App() {
     } catch {}
   }, [tasks]);
 
-  // Membros do workspace atual
+  // Membros do workspace atual com isolamento estrito multi-tenant
   const workspaceMembers = useMemo(() => {
-    const memberIds = currentWorkspace.members.map((m) => m.userId);
-    return users.filter((u) => memberIds.includes(u.id));
-  }, [currentWorkspace, users]);
+    return StorageService.getSwitchableUsers(currentWorkspace, currentUser, users);
+  }, [currentWorkspace, currentUser, users]);
+
+  // Lista estrita de usuários disponíveis para alternância rápida no menu lateral
+  const switchableUsers = useMemo(() => {
+    return StorageService.getSwitchableUsers(currentWorkspace, currentUser, users);
+  }, [currentWorkspace, currentUser, users]);
 
   // Papel do usuário atual no workspace ativo
   const currentUserRole: WorkspaceRole = useMemo(() => {
@@ -1691,7 +1695,7 @@ export default function App() {
         myTasksCount={myTasksCount}
         taskCountsByProject={taskCountsByProject}
         currentUser={currentUser}
-        allUsers={users}
+        allUsers={switchableUsers}
         onSelectCurrentUser={(u) => {
           setCurrentUser(u);
         }}
@@ -2033,7 +2037,7 @@ export default function App() {
         isOpen={isWorkspaceModalOpen}
         onClose={() => setIsWorkspaceModalOpen(false)}
         workspace={currentWorkspace}
-        allUsers={users}
+        allUsers={switchableUsers}
         currentUserId={currentUser.id}
         onSaveWorkspace={handleSaveWorkspace}
         onInviteMember={handleInviteMember}
