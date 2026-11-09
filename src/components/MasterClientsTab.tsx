@@ -3,6 +3,8 @@ import {
   ClientCompany,
   ClientStatus,
   ClientPlan,
+  PaymentStatus,
+  PLAN_CONFIGS,
   Workspace,
   User,
   Project,
@@ -40,6 +42,7 @@ import {
   RotateCcw,
   Building,
   HelpCircle,
+  CreditCard,
 } from 'lucide-react';
 import { StorageService } from '../services/storage.ts';
 import { generateUserAccessMessage, OFFICIAL_APP_ACCESS_URL } from '../utils/userAccessMessage.ts';
@@ -77,6 +80,7 @@ export const MasterClientsTab: React.FC<MasterClientsTabProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | ClientStatus>('all');
   const [planFilter, setPlanFilter] = useState<'all' | ClientPlan>('all');
+  const [paymentFilter, setPaymentFilter] = useState<'all' | PaymentStatus>('all');
 
   // Modais
   const [isNewClientModalOpen, setIsNewClientModalOpen] = useState(false);
@@ -87,14 +91,14 @@ export const MasterClientsTab: React.FC<MasterClientsTabProps> = ({
   // Formulário de Novo Cliente
   const [newCompanyName, setNewCompanyName] = useState('');
   const [newLegalName, setNewLegalName] = useState('');
-  const [newPlan, setNewPlan] = useState<ClientPlan>('pro');
+  const [newPlan, setNewPlan] = useState<ClientPlan>('profissional');
   const [newStatus, setNewStatus] = useState<ClientStatus>('active');
   const [newOwnerName, setNewOwnerName] = useState('');
   const [newOwnerEmail, setNewOwnerEmail] = useState('');
   const [newOwnerPassword, setNewOwnerPassword] = useState('123456');
   const [newOwnerPhone, setNewOwnerPhone] = useState('');
   const [newWorkspaceName, setNewWorkspaceName] = useState('');
-  const [newMaxUsers, setNewMaxUsers] = useState<number>(25);
+  const [newMaxUsers, setNewMaxUsers] = useState<number>(30);
   const [newNotes, setNewNotes] = useState('');
   const [isSubmittingNewClient, setIsSubmittingNewClient] = useState(false);
 
@@ -109,8 +113,9 @@ export const MasterClientsTab: React.FC<MasterClientsTabProps> = ({
 
   // Edição de Plano / Status
   const [editStatus, setEditStatus] = useState<ClientStatus>('active');
-  const [editPlan, setEditPlan] = useState<ClientPlan>('pro');
-  const [editMaxUsers, setEditMaxUsers] = useState<number>(25);
+  const [editPlan, setEditPlan] = useState<ClientPlan>('profissional');
+  const [editPaymentStatus, setEditPaymentStatus] = useState<PaymentStatus>('paid');
+  const [editMaxUsers, setEditMaxUsers] = useState<number>(30);
   const [editNotes, setEditNotes] = useState('');
 
   // Sincroniza campos quando abrir edição
@@ -118,7 +123,8 @@ export const MasterClientsTab: React.FC<MasterClientsTabProps> = ({
     setEditingClient(client);
     setEditStatus(client.status);
     setEditPlan(client.plan);
-    setEditMaxUsers(client.maxUsers || 15);
+    setEditPaymentStatus(client.paymentStatus || 'paid');
+    setEditMaxUsers(client.maxUsers || 30);
     setEditNotes(client.notes || '');
   };
 
@@ -131,10 +137,17 @@ export const MasterClientsTab: React.FC<MasterClientsTabProps> = ({
     const trialClients = clients.filter((c) => c.status === 'trial').length;
     const suspendedClients = clients.filter((c) => c.status === 'suspended').length;
 
+    // Métricas de Pagamento
+    const paidClients = clients.filter((c) => c.paymentStatus === 'paid').length;
+    const pastDueClients = clients.filter((c) => c.paymentStatus === 'past_due').length;
+    const trialingClients = clients.filter((c) => c.paymentStatus === 'trialing').length;
+
     const planBreakdown = {
       trial: clients.filter((c) => c.plan === 'trial').length,
-      starter: clients.filter((c) => c.plan === 'starter').length,
-      pro: clients.filter((c) => c.plan === 'pro').length,
+      basico: clients.filter((c) => c.plan === 'basico' || c.plan === 'starter').length,
+      starter: clients.filter((c) => c.plan === 'starter' || c.plan === 'basico').length,
+      profissional: clients.filter((c) => c.plan === 'profissional' || c.plan === 'pro').length,
+      pro: clients.filter((c) => c.plan === 'pro' || c.plan === 'profissional').length,
       enterprise: clients.filter((c) => c.plan === 'enterprise').length,
     };
 
@@ -161,6 +174,9 @@ export const MasterClientsTab: React.FC<MasterClientsTabProps> = ({
       activeClients,
       trialClients,
       suspendedClients,
+      paidClients,
+      pastDueClients,
+      trialingClients,
       planBreakdown,
       totalUsers,
       avgUsers,
@@ -176,13 +192,20 @@ export const MasterClientsTab: React.FC<MasterClientsTabProps> = ({
   // ==========================================================================
   const filteredClients = useMemo(() => {
     return clients.filter((client) => {
-      // Filtro de status
+      // Filtro de status da empresa
       if (statusFilter !== 'all' && client.status !== statusFilter) {
         return false;
       }
+      // Filtro de status de pagamento / cobrança
+      if (paymentFilter !== 'all') {
+        const clientPayStatus = client.paymentStatus || 'paid';
+        if (clientPayStatus !== paymentFilter) return false;
+      }
       // Filtro de plano
-      if (planFilter !== 'all' && client.plan !== planFilter) {
-        return false;
+      if (planFilter !== 'all') {
+        const pA = client.plan === 'pro' ? 'profissional' : client.plan === 'starter' ? 'basico' : client.plan;
+        const pB = planFilter === 'pro' ? 'profissional' : planFilter === 'starter' ? 'basico' : planFilter;
+        if (pA !== pB) return false;
       }
       // Busca por texto
       if (searchTerm.trim()) {
@@ -197,7 +220,7 @@ export const MasterClientsTab: React.FC<MasterClientsTabProps> = ({
       }
       return true;
     });
-  }, [clients, statusFilter, planFilter, searchTerm]);
+  }, [clients, statusFilter, paymentFilter, planFilter, searchTerm]);
 
   // Estatísticas específicas de um cliente
   const getClientStats = (client: ClientCompany) => {
@@ -362,6 +385,10 @@ export const MasterClientsTab: React.FC<MasterClientsTabProps> = ({
       StorageService.updateClientStatus(editingClient.id, editStatus);
     }
 
+    if (editPaymentStatus !== editingClient.paymentStatus) {
+      StorageService.updateClientPaymentStatus(editingClient.id, editPaymentStatus);
+    }
+
     StorageService.updateClientPlan(editingClient.id, editPlan, editMaxUsers, editNotes);
 
     const freshClients = StorageService.getClients();
@@ -418,19 +445,21 @@ export const MasterClientsTab: React.FC<MasterClientsTabProps> = ({
       case 'enterprise':
         return (
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-extrabold bg-purple-500/10 text-purple-700 dark:text-purple-300 border border-purple-500/20 uppercase tracking-wide">
-            Enterprise
+            Enterprise (R$ 597)
           </span>
         );
+      case 'profissional':
       case 'pro':
         return (
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-extrabold bg-blue-500/10 text-blue-700 dark:text-blue-300 border border-blue-500/20 uppercase tracking-wide">
-            Pro
+            Profissional (R$ 247)
           </span>
         );
+      case 'basico':
       case 'starter':
         return (
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-extrabold bg-teal-500/10 text-teal-700 dark:text-teal-300 border border-teal-500/20 uppercase tracking-wide">
-            Starter
+            Básico (R$ 97)
           </span>
         );
       case 'trial':
@@ -438,6 +467,53 @@ export const MasterClientsTab: React.FC<MasterClientsTabProps> = ({
         return (
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-extrabold bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-500/20 uppercase tracking-wide">
             Trial 14d
+          </span>
+        );
+    }
+  };
+
+  // Cores de Badge para Pagamento & Cobrança (Stripe)
+  const paymentBadge = (paymentStatus?: PaymentStatus) => {
+    switch (paymentStatus) {
+      case 'paid':
+        return (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
+            <CheckCircle2 className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
+            Pago
+          </span>
+        );
+      case 'trialing':
+        return (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-sky-500/15 text-sky-700 dark:text-sky-300 border border-sky-500/30">
+            <Clock className="w-3 h-3 text-sky-600 dark:text-sky-400" />
+            Em Teste
+          </span>
+        );
+      case 'past_due':
+        return (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30">
+            <AlertTriangle className="w-3 h-3 text-amber-600 dark:text-amber-400" />
+            Em Atraso
+          </span>
+        );
+      case 'unpaid':
+        return (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/30">
+            <AlertTriangle className="w-3 h-3 text-rose-600 dark:text-rose-400" />
+            Não Pago
+          </span>
+        );
+      case 'canceled':
+        return (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-slate-500/15 text-slate-700 dark:text-slate-300 border border-slate-500/30">
+            Cancelado
+          </span>
+        );
+      default:
+        return (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
+            <CheckCircle2 className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
+            Pago
           </span>
         );
     }
@@ -701,9 +777,26 @@ export const MasterClientsTab: React.FC<MasterClientsTabProps> = ({
             >
               <option value="all">Todos os Planos</option>
               <option value="trial">Plano Trial (14d)</option>
-              <option value="starter">Plano Starter</option>
-              <option value="pro">Plano Pro</option>
-              <option value="enterprise">Plano Enterprise</option>
+              <option value="basico">Plano Básico (R$ 97)</option>
+              <option value="profissional">Plano Profissional (R$ 247)</option>
+              <option value="enterprise">Plano Enterprise (R$ 597)</option>
+            </select>
+          </div>
+
+          {/* Filtro de Pagamento / Cobrança */}
+          <div className="flex items-center gap-2">
+            <CreditCard className="w-3.5 h-3.5 text-slate-400" />
+            <select
+              value={paymentFilter}
+              onChange={(e) => setPaymentFilter(e.target.value as any)}
+              className="text-xs py-1.5 px-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-semibold focus:ring-2 focus:ring-[#34B1AC]"
+            >
+              <option value="all">Todas as Cobranças</option>
+              <option value="paid">Pagos (Ativos)</option>
+              <option value="trialing">Em Teste (Trial)</option>
+              <option value="past_due">Em Atraso (Past Due)</option>
+              <option value="unpaid">Não Pagos</option>
+              <option value="canceled">Cancelados</option>
             </select>
           </div>
         </div>
@@ -718,7 +811,7 @@ export const MasterClientsTab: React.FC<MasterClientsTabProps> = ({
             <thead>
               <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/60 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
                 <th className="py-3 px-4">Empresa / Cliente</th>
-                <th className="py-3 px-4">Status & Plano</th>
+                <th className="py-3 px-4">Status & Cobrança</th>
                 <th className="py-3 px-4">Responsável (Dono)</th>
                 <th className="py-3 px-4">Usuários</th>
                 <th className="py-3 px-4">Volume de Uso</th>
@@ -776,10 +869,13 @@ export const MasterClientsTab: React.FC<MasterClientsTabProps> = ({
                         </div>
                       </td>
 
-                      {/* Status & Plano */}
+                      {/* Status & Plano & Cobrança */}
                       <td className="py-3.5 px-4">
                         <div className="space-y-1">
-                          <div>{statusBadge(client.status)}</div>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            {statusBadge(client.status)}
+                            {paymentBadge(client.paymentStatus)}
+                          </div>
                           <div>{planBadge(client.plan)}</div>
                         </div>
                       </td>
@@ -897,7 +993,38 @@ export const MasterClientsTab: React.FC<MasterClientsTabProps> = ({
                             </button>
                           )}
 
-                          {/* 4. Editar Plano / Status */}
+                          {/* 4. Alternar Pagamento Rápido (Master / Teste de Cobrança) */}
+                          {!isMatriz && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const nextPay: PaymentStatus = client.paymentStatus === 'paid' ? 'past_due' : 'paid';
+                                StorageService.updateClientPaymentStatus(client.id, nextPay);
+                                const fresh = StorageService.getClients();
+                                onUpdateClients(fresh);
+                                onShowToast({
+                                  type: nextPay === 'paid' ? 'success' : 'error',
+                                  message: `Cobrança de "${client.name}" alterada para ${
+                                    nextPay === 'paid' ? 'PAGO (Ativo)' : 'EM ATRASO (Past Due)'
+                                  }.`,
+                                });
+                              }}
+                              className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                                client.paymentStatus === 'past_due'
+                                  ? 'text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/40'
+                                  : 'text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/40'
+                              }`}
+                              title={
+                                client.paymentStatus === 'paid'
+                                  ? 'Marcar como Em Atraso (Testar Bloqueio de Cobrança)'
+                                  : 'Marcar como Pago (Regularizar Assinatura)'
+                              }
+                            >
+                              <CreditCard className="w-4 h-4" />
+                            </button>
+                          )}
+
+                          {/* 5. Editar Plano / Status */}
                           <button
                             type="button"
                             onClick={() => handleOpenEdit(client)}
@@ -1497,6 +1624,24 @@ export const MasterClientsTab: React.FC<MasterClientsTabProps> = ({
 
               <div>
                 <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  Status de Pagamento (Stripe / Cobrança)
+                </label>
+                <select
+                  value={editPaymentStatus}
+                  disabled={editingClient.id === 'client-matriz'}
+                  onChange={(e) => setEditPaymentStatus(e.target.value as PaymentStatus)}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-bold"
+                >
+                  <option value="paid">Pago (Assinatura Ativa & Em Dia)</option>
+                  <option value="trialing">Em Teste (Período Trial)</option>
+                  <option value="past_due">Em Atraso (Past Due - Fatura Pendente)</option>
+                  <option value="unpaid">Não Pago (Cobrança Falhou)</option>
+                  <option value="canceled">Cancelado</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
                   Plano da Empresa
                 </label>
                 <select
@@ -1504,10 +1649,10 @@ export const MasterClientsTab: React.FC<MasterClientsTabProps> = ({
                   onChange={(e) => setEditPlan(e.target.value as ClientPlan)}
                   className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-bold"
                 >
-                  <option value="trial">Trial (14 dias)</option>
-                  <option value="starter">Starter (Até 5 usuários)</option>
-                  <option value="pro">Pro (Até 25 usuários)</option>
-                  <option value="enterprise">Enterprise (Ilimitado)</option>
+                  <option value="trial">Trial Gratuito (14 dias / 5 usuários)</option>
+                  <option value="basico">Básico (Até 10 usuários / R$ 97)</option>
+                  <option value="profissional">Profissional (Até 30 usuários / R$ 247)</option>
+                  <option value="enterprise">Enterprise (Ilimitado / R$ 597)</option>
                 </select>
               </div>
 

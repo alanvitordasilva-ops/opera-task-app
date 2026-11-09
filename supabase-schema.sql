@@ -1,15 +1,44 @@
 -- ============================================================================
--- SCRIPT DE BANCO DE DADOS SUPABASE PARA OPERATASK (MULTI-USUÁRIO REAL)
+-- SCRIPT DE BANCO DE DADOS SUPABASE PARA OPERATASK (MULTI-TENANT REAL & RLS)
 -- Cole este script no "SQL Editor" do painel do seu projeto Supabase e execute.
 -- ============================================================================
 
 -- 1. Habilitar extensão de UUID se necessário
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- 2. Tabela de Perfis de Usuários (public.profiles)
--- Vinculada diretamente a auth.users via UUID
+-- 2. Tabela de Tenants (Empresas / Clientes da plataforma)
+CREATE TABLE IF NOT EXISTS public.tenants (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  legal_name TEXT,
+  cnpj_or_doc TEXT,
+  plan TEXT NOT NULL DEFAULT 'trial' CHECK (plan IN ('trial', 'basico', 'profissional', 'enterprise', 'starter', 'pro')),
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'trial', 'suspended', 'canceled')),
+  payment_status TEXT NOT NULL DEFAULT 'trialing' CHECK (payment_status IN ('paid', 'past_due', 'unpaid', 'trialing', 'canceled')),
+  owner_id TEXT NOT NULL,
+  owner_name TEXT NOT NULL,
+  owner_email TEXT NOT NULL,
+  owner_phone TEXT,
+  primary_workspace_id TEXT,
+  max_users INTEGER DEFAULT 10,
+  plan_start_date TIMESTAMPTZ DEFAULT NOW(),
+  plan_expires_at TIMESTAMPTZ,
+  next_billing_date TIMESTAMPTZ,
+  stripe_customer_id TEXT,
+  stripe_subscription_id TEXT,
+  notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tenants_status ON public.tenants(status);
+CREATE INDEX IF NOT EXISTS idx_tenants_plan ON public.tenants(plan);
+CREATE INDEX IF NOT EXISTS idx_tenants_payment ON public.tenants(payment_status);
+
+-- 3. Tabela de Perfis de Usuários (public.profiles)
 CREATE TABLE IF NOT EXISTS public.profiles (
   id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  tenant_id TEXT REFERENCES public.tenants(id) ON DELETE SET NULL,
   nome TEXT NOT NULL,
   email TEXT NOT NULL,
   tipo TEXT NOT NULL DEFAULT 'membro' CHECK (tipo IN ('master', 'dono', 'administrador', 'producao', 'membro', 'visualizador')),
@@ -17,13 +46,14 @@ CREATE TABLE IF NOT EXISTS public.profiles (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Índices para busca rápida de perfil por email e nome
 CREATE INDEX IF NOT EXISTS idx_profiles_email ON public.profiles(email);
 CREATE INDEX IF NOT EXISTS idx_profiles_nome ON public.profiles(nome);
+CREATE INDEX IF NOT EXISTS idx_profiles_tenant ON public.profiles(tenant_id);
 
--- 3. Tabela de Espaços de Trabalho (workspaces)
+-- 4. Tabela de Espaços de Trabalho (workspaces)
 CREATE TABLE IF NOT EXISTS public.workspaces (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT REFERENCES public.tenants(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   slug TEXT NOT NULL,
   description TEXT,
@@ -32,7 +62,9 @@ CREATE TABLE IF NOT EXISTS public.workspaces (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 4. Tabela de Membros dos Espaços de Trabalho (workspace_members)
+CREATE INDEX IF NOT EXISTS idx_workspaces_tenant ON public.workspaces(tenant_id);
+
+-- 5. Tabela de Membros dos Espaços de Trabalho (workspace_members)
 CREATE TABLE IF NOT EXISTS public.workspace_members (
   workspace_id TEXT REFERENCES public.workspaces(id) ON DELETE CASCADE,
   user_id TEXT NOT NULL,
@@ -44,9 +76,10 @@ CREATE TABLE IF NOT EXISTS public.workspace_members (
 CREATE INDEX IF NOT EXISTS idx_workspace_members_user ON public.workspace_members(user_id);
 CREATE INDEX IF NOT EXISTS idx_workspace_members_ws ON public.workspace_members(workspace_id);
 
--- 5. Tabela de Projetos / Quadros (projects)
+-- 6. Tabela de Projetos / Quadros (projects)
 CREATE TABLE IF NOT EXISTS public.projects (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT,
   workspace_id TEXT REFERENCES public.workspaces(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   description TEXT,
@@ -59,10 +92,12 @@ CREATE TABLE IF NOT EXISTS public.projects (
 );
 
 CREATE INDEX IF NOT EXISTS idx_projects_workspace ON public.projects(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_projects_tenant ON public.projects(tenant_id);
 
--- 6. Tabela de Cards / Tarefas (cards & tasks)
+-- 7. Tabela de Cards / Tarefas (cards & tasks)
 CREATE TABLE IF NOT EXISTS public.cards (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT,
   workspace_id TEXT REFERENCES public.workspaces(id) ON DELETE CASCADE,
   project_id TEXT REFERENCES public.projects(id) ON DELETE CASCADE,
   column_id TEXT NOT NULL,
@@ -90,11 +125,12 @@ CREATE TABLE IF NOT EXISTS public.cards (
 
 CREATE INDEX IF NOT EXISTS idx_cards_project ON public.cards(project_id);
 CREATE INDEX IF NOT EXISTS idx_cards_workspace ON public.cards(workspace_id);
-CREATE INDEX IF NOT EXISTS idx_cards_column_order ON public.cards(column_id, order_index);
+CREATE INDEX IF NOT EXISTS idx_cards_tenant ON public.cards(tenant_id);
 
--- Tabela de tarefas legada / compatibilidade
+-- Tabela de tarefas compatibilidade
 CREATE TABLE IF NOT EXISTS public.tasks (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT,
   workspace_id TEXT,
   project_id TEXT,
   column_id TEXT,
@@ -120,9 +156,12 @@ CREATE TABLE IF NOT EXISTS public.tasks (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Tabela de Fichas Técnicas
+CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON public.tasks(tenant_id);
+
+-- 8. Tabela de Fichas Técnicas
 CREATE TABLE IF NOT EXISTS public.fichas_tecnicas (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT,
   name TEXT NOT NULL,
   workspace_id TEXT,
   project_id TEXT,
@@ -142,138 +181,184 @@ CREATE TABLE IF NOT EXISTS public.fichas_tecnicas (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Garantir colunas caso as tabelas já existam
-ALTER TABLE public.cards ADD COLUMN IF NOT EXISTS ficha_tecnica JSONB DEFAULT NULL;
-ALTER TABLE public.cards ADD COLUMN IF NOT EXISTS production_records JSONB DEFAULT '[]'::jsonb;
-ALTER TABLE public.cards ADD COLUMN IF NOT EXISTS frame_color TEXT;
+CREATE INDEX IF NOT EXISTS idx_fichas_tenant ON public.fichas_tecnicas(tenant_id);
 
-ALTER TABLE public.tasks ADD COLUMN IF NOT EXISTS ficha_tecnica JSONB DEFAULT NULL;
-ALTER TABLE public.tasks ADD COLUMN IF NOT EXISTS production_records JSONB DEFAULT '[]'::jsonb;
-ALTER TABLE public.tasks ADD COLUMN IF NOT EXISTS frame_color TEXT;
-
--- Tabela de Tags
+-- 9. Tabela de Tags
 CREATE TABLE IF NOT EXISTS public.tags (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT,
   name TEXT NOT NULL,
   color TEXT NOT NULL
 );
 
--- 7. Gatilho (Trigger) para Criação Automática de Perfil após cadastro em auth.users
-CREATE OR REPLACE FUNCTION public.handle_new_user()
-RETURNS trigger AS $$
-BEGIN
-  INSERT INTO public.profiles (id, nome, email, tipo, avatar_url, created_at)
-  VALUES (
-    new.id,
-    COALESCE(
-      new.raw_user_meta_data->>'nome',
-      new.raw_user_meta_data->>'name',
-      split_part(new.email, '@', 1)
-    ),
-    new.email,
-    COALESCE(new.raw_user_meta_data->>'tipo', 'membro'),
-    COALESCE(
-      new.raw_user_meta_data->>'avatar_url',
-      new.raw_user_meta_data->>'avatarColor',
-      '#34B1AC'
-    ),
-    NOW()
-  )
-  ON CONFLICT (id) DO UPDATE
-  SET
-    nome = EXCLUDED.nome,
-    email = EXCLUDED.email,
-    tipo = EXCLUDED.tipo,
-    avatar_url = EXCLUDED.avatar_url;
+-- Garantir colunas de Tenant nas tabelas existentes se já criadas
+ALTER TABLE public.workspaces ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+ALTER TABLE public.projects ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+ALTER TABLE public.cards ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+ALTER TABLE public.tasks ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+ALTER TABLE public.fichas_tecnicas ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+ALTER TABLE public.tags ADD COLUMN IF NOT EXISTS tenant_id TEXT;
 
-  RETURN new;
+-- 10. Funções Auxiliares de Multi-Tenant e Governança Master
+CREATE OR REPLACE FUNCTION public.is_master_user()
+RETURNS boolean AS $$
+BEGIN
+  RETURN (
+    auth.jwt() ->> 'email' = 'alanvitordasilva@gmail.com.br' OR
+    EXISTS (
+      SELECT 1 FROM public.profiles
+      WHERE id = auth.uid() AND tipo = 'master'
+    )
+  );
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
-DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
-CREATE TRIGGER on_auth_user_created
-  AFTER INSERT ON auth.users
-  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+CREATE OR REPLACE FUNCTION public.get_auth_tenant_id()
+RETURNS text AS $$
+DECLARE
+  v_tenant_id text;
+BEGIN
+  SELECT tenant_id INTO v_tenant_id
+  FROM public.profiles
+  WHERE id = auth.uid();
+  RETURN v_tenant_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- 8. Políticas de Segurança (Row Level Security - RLS)
+-- 11. Políticas Estritas de Isolamento Multi-Tenant (Row Level Security - RLS)
+ALTER TABLE public.tenants ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.workspaces ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.workspace_members ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.projects ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.cards ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.tasks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.fichas_tecnicas ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.tags ENABLE ROW LEVEL SECURITY;
 
+-- Políticas para TENANTS
+DROP POLICY IF EXISTS "Tenants isolation policy" ON public.tenants;
+CREATE POLICY "Tenants isolation policy"
+  ON public.tenants FOR ALL
+  USING (
+    public.is_master_user() OR
+    id = public.get_auth_tenant_id() OR
+    owner_id = auth.uid()::text
+  )
+  WITH CHECK (
+    public.is_master_user() OR
+    id = public.get_auth_tenant_id() OR
+    owner_id = auth.uid()::text
+  );
+
 -- Políticas para PROFILES
-DROP POLICY IF EXISTS "Profiles are readable by everyone" ON public.profiles;
-CREATE POLICY "Profiles are readable by everyone"
-  ON public.profiles FOR SELECT
-  USING (true);
-
-DROP POLICY IF EXISTS "Users can insert profiles" ON public.profiles;
-CREATE POLICY "Users can insert profiles"
-  ON public.profiles FOR INSERT
-  WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Users can update their profile or admins" ON public.profiles;
-CREATE POLICY "Users can update their profile or admins"
-  ON public.profiles FOR UPDATE
-  USING (true)
-  WITH CHECK (true);
+DROP POLICY IF EXISTS "Profiles isolation policy" ON public.profiles;
+CREATE POLICY "Profiles isolation policy"
+  ON public.profiles FOR ALL
+  USING (
+    public.is_master_user() OR
+    id = auth.uid() OR
+    tenant_id = public.get_auth_tenant_id()
+  )
+  WITH CHECK (
+    public.is_master_user() OR
+    id = auth.uid() OR
+    tenant_id = public.get_auth_tenant_id()
+  );
 
 -- Políticas para WORKSPACES
-DROP POLICY IF EXISTS "Workspaces select policy" ON public.workspaces;
-CREATE POLICY "Workspaces select policy"
-  ON public.workspaces FOR SELECT
-  USING (true);
-
-DROP POLICY IF EXISTS "Workspaces all policy" ON public.workspaces;
-CREATE POLICY "Workspaces all policy"
+DROP POLICY IF EXISTS "Workspaces isolation policy" ON public.workspaces;
+CREATE POLICY "Workspaces isolation policy"
   ON public.workspaces FOR ALL
-  USING (true)
-  WITH CHECK (true);
+  USING (
+    public.is_master_user() OR
+    tenant_id = public.get_auth_tenant_id() OR
+    owner_id = auth.uid()::text OR
+    EXISTS (
+      SELECT 1 FROM public.workspace_members
+      WHERE workspace_id = public.workspaces.id AND user_id = auth.uid()::text
+    )
+  )
+  WITH CHECK (
+    public.is_master_user() OR
+    tenant_id = public.get_auth_tenant_id() OR
+    owner_id = auth.uid()::text
+  );
 
 -- Políticas para WORKSPACE_MEMBERS
-DROP POLICY IF EXISTS "Workspace members select policy" ON public.workspace_members;
-CREATE POLICY "Workspace members select policy"
-  ON public.workspace_members FOR SELECT
-  USING (true);
-
-DROP POLICY IF EXISTS "Workspace members all policy" ON public.workspace_members;
-CREATE POLICY "Workspace members all policy"
+DROP POLICY IF EXISTS "Workspace members isolation policy" ON public.workspace_members;
+CREATE POLICY "Workspace members isolation policy"
   ON public.workspace_members FOR ALL
-  USING (true)
-  WITH CHECK (true);
+  USING (
+    public.is_master_user() OR
+    user_id = auth.uid()::text OR
+    EXISTS (
+      SELECT 1 FROM public.workspaces w
+      WHERE w.id = public.workspace_members.workspace_id AND (
+        w.tenant_id = public.get_auth_tenant_id() OR
+        w.owner_id = auth.uid()::text
+      )
+    )
+  )
+  WITH CHECK (
+    public.is_master_user() OR
+    EXISTS (
+      SELECT 1 FROM public.workspaces w
+      WHERE w.id = public.workspace_members.workspace_id AND (
+        w.tenant_id = public.get_auth_tenant_id() OR
+        w.owner_id = auth.uid()::text
+      )
+    )
+  );
 
--- Políticas para PROJECTS
-DROP POLICY IF EXISTS "Projects all policy" ON public.projects;
-CREATE POLICY "Projects all policy"
-  ON public.projects FOR ALL
-  USING (true)
-  WITH CHECK (true);
-
--- Políticas para CARDS
-DROP POLICY IF EXISTS "Cards all policy" ON public.cards;
-CREATE POLICY "Cards all policy"
+-- Políticas para CARDS e TASKS (Isolamento total por Tenant e Workspace)
+DROP POLICY IF EXISTS "Cards isolation policy" ON public.cards;
+CREATE POLICY "Cards isolation policy"
   ON public.cards FOR ALL
-  USING (true)
-  WITH CHECK (true);
+  USING (
+    public.is_master_user() OR
+    tenant_id = public.get_auth_tenant_id() OR
+    EXISTS (
+      SELECT 1 FROM public.workspace_members wm
+      WHERE wm.workspace_id = public.cards.workspace_id AND wm.user_id = auth.uid()::text
+    )
+  )
+  WITH CHECK (
+    public.is_master_user() OR
+    tenant_id = public.get_auth_tenant_id() OR
+    EXISTS (
+      SELECT 1 FROM public.workspace_members wm
+      WHERE wm.workspace_id = public.cards.workspace_id AND wm.user_id = auth.uid()::text
+    )
+  );
 
--- Políticas para TASKS
-DROP POLICY IF EXISTS "Tasks all policy" ON public.tasks;
-CREATE POLICY "Tasks all policy"
+DROP POLICY IF EXISTS "Tasks isolation policy" ON public.tasks;
+CREATE POLICY "Tasks isolation policy"
   ON public.tasks FOR ALL
-  USING (true)
-  WITH CHECK (true);
+  USING (
+    public.is_master_user() OR
+    tenant_id = public.get_auth_tenant_id() OR
+    EXISTS (
+      SELECT 1 FROM public.workspace_members wm
+      WHERE wm.workspace_id = public.tasks.workspace_id AND wm.user_id = auth.uid()::text
+    )
+  )
+  WITH CHECK (
+    public.is_master_user() OR
+    tenant_id = public.get_auth_tenant_id() OR
+    EXISTS (
+      SELECT 1 FROM public.workspace_members wm
+      WHERE wm.workspace_id = public.tasks.workspace_id AND wm.user_id = auth.uid()::text
+    )
+  );
 
--- Políticas para TAGS
-DROP POLICY IF EXISTS "Tags all policy" ON public.tags;
-CREATE POLICY "Tags all policy"
-  ON public.tags FOR ALL
-  USING (true)
-  WITH CHECK (true);
-
--- Inserir Workspace Inicial Padrão se não existir
-INSERT INTO public.workspaces (id, name, slug, description, logo_color, owner_id)
-VALUES ('ws-principal', 'Meu Workspace', 'meu-workspace', 'Espaço de trabalho corporativo', '#173653', 'master')
+-- 12. Inserir Tenant Matriz e Workspace Padrão
+INSERT INTO public.tenants (id, name, legal_name, plan, status, payment_status, owner_id, owner_name, owner_email, max_users)
+VALUES ('tenant-matriz', 'OperaTask Matriz', 'OperaTask Tecnologia Ltda', 'enterprise', 'active', 'paid', 'user-master-alan', 'Alan Silva (Master)', 'alanvitordasilva@gmail.com.br', 9999)
 ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO public.workspaces (id, tenant_id, name, slug, description, logo_color, owner_id)
+VALUES ('ws-principal', 'tenant-matriz', 'Meu Workspace', 'meu-workspace', 'Espaço de trabalho corporativo', '#173653', 'user-master-alan')
+ON CONFLICT (id) DO NOTHING;
+

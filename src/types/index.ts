@@ -49,6 +49,8 @@ export interface User {
   status?: 'active' | 'inactive';
   isActive?: boolean;
   tipo?: ProfileTipo;
+  tenantId?: string; // Tenant isolado da empresa
+  companyId?: string;
 }
 
 export interface WorkspaceMember {
@@ -57,16 +59,146 @@ export interface WorkspaceMember {
   joinedAt: string;
 }
 
-export type ClientStatus = 'active' | 'trial' | 'suspended';
-export type ClientPlan = 'trial' | 'starter' | 'pro' | 'enterprise';
+export type ClientStatus = 'active' | 'trial' | 'suspended' | 'canceled';
+export type TenantStatus = ClientStatus;
+
+export type ClientPlan = 'trial' | 'basico' | 'profissional' | 'enterprise' | 'starter' | 'pro';
+export type TenantPlan = ClientPlan;
+
+export type PaymentStatus = 'paid' | 'past_due' | 'unpaid' | 'trialing' | 'canceled';
+
+export interface PlanConfig {
+  id: 'trial' | 'basico' | 'profissional' | 'enterprise';
+  name: string;
+  badge: string;
+  description: string;
+  priceMonthly: number;
+  maxUsers: number;
+  trialDays?: number;
+  features: string[];
+  popular?: boolean;
+}
+
+export const normalizePlan = (
+  plan?: ClientPlan | string | null
+): 'trial' | 'basico' | 'profissional' | 'enterprise' => {
+  if (!plan) return 'trial';
+  const p = String(plan).toLowerCase();
+  if (p === 'pro' || p === 'profissional') return 'profissional';
+  if (p === 'starter' || p === 'basico') return 'basico';
+  if (p === 'enterprise') return 'enterprise';
+  return 'trial';
+};
+
+export const PLAN_CONFIGS: Record<ClientPlan, PlanConfig> = {
+  trial: {
+    id: 'trial',
+    name: 'Trial Gratuito',
+    badge: '14 Dias Grátis',
+    description: 'Teste completo de todos os recursos da plataforma',
+    priceMonthly: 0,
+    maxUsers: 5,
+    trialDays: 14,
+    features: [
+      'Até 5 usuários na equipe',
+      '14 dias de acesso irrestrito',
+      'Quadros Kanban e visualização em lista',
+      'Fichas técnicas e ordens de produção',
+      'Suporte inicial da equipe',
+    ],
+  },
+  basico: {
+    id: 'basico',
+    name: 'Básico',
+    badge: 'Uso Inicial',
+    description: 'Ideal para equipes em fase inicial de estruturação',
+    priceMonthly: 97,
+    maxUsers: 10,
+    features: [
+      'Até 10 usuários ativos',
+      'Workspaces e projetos ilimitados',
+      'Quadros Kanban e lista de tarefas',
+      'Fichas técnicas padrão',
+      'Registro básico de produção',
+      'Suporte por e-mail em horário comercial',
+    ],
+  },
+  starter: {
+    id: 'basico',
+    name: 'Básico (Starter)',
+    badge: 'Uso Inicial',
+    description: 'Ideal para equipes em fase inicial de estruturação',
+    priceMonthly: 97,
+    maxUsers: 10,
+    features: [
+      'Até 10 usuários ativos',
+      'Workspaces e projetos ilimitados',
+      'Quadros Kanban e lista de tarefas',
+      'Fichas técnicas padrão',
+      'Registro básico de produção',
+      'Suporte por e-mail em horário comercial',
+    ],
+  },
+  profissional: {
+    id: 'profissional',
+    name: 'Profissional',
+    badge: 'Mais Popular',
+    popular: true,
+    description: 'Para empresas com produção ativa e múltiplos setores',
+    priceMonthly: 247,
+    maxUsers: 30,
+    features: [
+      'Até 30 usuários na empresa',
+      'Todos os recursos do plano Básico',
+      'Dashboard de produtividade avançado',
+      'Fichas técnicas completas com cálculo de custos',
+      'Histórico de auditoria e métricas em tempo real',
+      'Suporte prioritário via WhatsApp',
+    ],
+  },
+  pro: {
+    id: 'profissional',
+    name: 'Profissional (Pro)',
+    badge: 'Mais Popular',
+    popular: true,
+    description: 'Para empresas com produção ativa e múltiplos setores',
+    priceMonthly: 247,
+    maxUsers: 30,
+    features: [
+      'Até 30 usuários na empresa',
+      'Todos os recursos do plano Básico',
+      'Dashboard de produtividade avançado',
+      'Fichas técnicas completas com cálculo de custos',
+      'Histórico de auditoria e métricas em tempo real',
+      'Suporte prioritário via WhatsApp',
+    ],
+  },
+  enterprise: {
+    id: 'enterprise',
+    name: 'Enterprise',
+    badge: 'Escala Ilimitada',
+    description: 'Solução sob medida para grandes indústrias e redes',
+    priceMonthly: 597,
+    maxUsers: 9999,
+    features: [
+      'Usuários e membros ilimitados',
+      'Múltiplos workspaces por subsidiária',
+      'Isolamento e banco de dados dedicado',
+      'SLA garantido de 99.9%',
+      'Gerente de contas e suporte 24/7',
+      'Integrações customizadas via Webhook/API',
+    ],
+  },
+};
 
 export interface ClientCompany {
-  id: string;
+  id: string; // ID do Tenant (ex: 'tenant-123' ou 'client-123')
   name: string;
   legalName?: string;
   cnpjOrDoc?: string;
   status: ClientStatus;
   plan: ClientPlan;
+  paymentStatus: PaymentStatus;
   primaryWorkspaceId: string;
   workspaceIds: string[];
   ownerId: string;
@@ -75,11 +207,18 @@ export interface ClientCompany {
   ownerPhone?: string;
   createdAt: string;
   lastAccessAt?: string;
-  trialExpiresAt?: string;
-  maxUsers?: number;
+  planStartDate?: string;
+  planExpiresAt?: string;
+  nextBillingDate?: string;
+  maxUsers: number;
   monthlyFee?: number;
+  stripeCustomerId?: string;
+  stripeSubscriptionId?: string;
+  stripePaymentMethodId?: string;
   notes?: string;
 }
+
+export type Tenant = ClientCompany;
 
 export interface SupportModeState {
   isActive: boolean;
@@ -98,9 +237,11 @@ export interface Workspace {
   ownerId: string;
   members: WorkspaceMember[];
   createdAt: string;
+  tenantId?: string;
   companyId?: string;
   clientStatus?: ClientStatus;
   clientPlan?: ClientPlan;
+  paymentStatus?: PaymentStatus;
   companyName?: string;
   lastAccessAt?: string;
 }
@@ -121,6 +262,7 @@ export interface Tag {
 
 export interface Project {
   id: string;
+  tenantId?: string;
   workspaceId: string;
   name: string;
   description?: string;
@@ -150,6 +292,7 @@ export interface TaskActivity {
   id: string;
   userId: string;
   action: string;
+  details?: string;
   timestamp: string;
 }
 
@@ -180,6 +323,7 @@ export interface Ingrediente {
 
 export interface FichaTecnica {
   id?: string;
+  tenantId?: string;
   nomeItem: string;
   ingredientes: Ingrediente[];
   rendimento?: string;
@@ -214,6 +358,7 @@ export interface ProductionRecord {
 
 export interface Task {
   id: string;
+  tenantId?: string;
   workspaceId: string;
   projectId: string;
   columnId: string;
@@ -241,6 +386,7 @@ export interface Task {
 
 export interface WorkspaceActivity {
   id: string;
+  tenantId?: string;
   workspaceId: string;
   projectId?: string;
   taskId?: string;

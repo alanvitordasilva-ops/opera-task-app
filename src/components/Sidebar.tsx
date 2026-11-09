@@ -35,6 +35,7 @@ import {
   User as UserIcon,
   Crown,
   UserPlus,
+  CreditCard,
 } from 'lucide-react';
 import { ProjectIcon } from './ProjectIcon.tsx';
 import { getInitials, ROLE_CONFIG, isUserMaster, canAccessDashboard } from '../utils/helpers.ts';
@@ -47,6 +48,7 @@ interface SidebarProps {
   onOpenUserProfile?: () => void;
   onOpenMasterPanel?: () => void;
   onOpenRegisterUserModal?: () => void;
+  onOpenBillingPlans?: () => void;
   isOpenMobile: boolean;
   onCloseMobile: () => void;
   workspaces: Workspace[];
@@ -112,6 +114,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenUserProfile,
   onOpenMasterPanel,
   onOpenRegisterUserModal,
+  onOpenBillingPlans,
 }) => {
   const [isWorkspaceDropdownOpen, setIsWorkspaceDropdownOpen] = useState(false);
   const [isUserSwitcherOpen, setIsUserSwitcherOpen] = useState(false);
@@ -283,6 +286,25 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   >
                     <UserPlus className="w-3.5 h-3.5 text-[#34B1AC]" />
                     Cadastrar Novo Usuário
+                  </button>
+                )}
+
+                {(isMaster || userRole === 'owner' || userRole === 'admin') && onOpenBillingPlans && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsWorkspaceDropdownOpen(false);
+                      onOpenBillingPlans();
+                    }}
+                    className="w-full flex items-center justify-between p-2 rounded-lg text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700/60 transition-colors cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2">
+                      <CreditCard className="w-3.5 h-3.5 text-[#34B1AC]" />
+                      <span>Planos & Cobrança</span>
+                    </div>
+                    <span className="text-[10px] px-1.5 py-0.2 rounded-md bg-[#34B1AC]/15 text-[#34B1AC] font-bold">
+                      Stripe
+                    </span>
                   </button>
                 )}
 

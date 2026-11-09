@@ -51,7 +51,8 @@ import { LoginScreen } from './components/LoginScreen.tsx';
 import { WelcomeEmptyState } from './components/WelcomeEmptyState.tsx';
 import { UserProfileModal } from './components/UserProfileModal.tsx';
 import { MasterAdminModal } from './components/MasterAdminModal.tsx';
-import { AlertTriangle, X, CheckCircle2, Info, Headphones, LogOut, ShieldAlert } from 'lucide-react';
+import { BillingPlansModal } from './components/BillingPlansModal.tsx';
+import { AlertTriangle, X, CheckCircle2, Info, Headphones, LogOut, ShieldAlert, CreditCard, Sparkles } from 'lucide-react';
 
 export default function App() {
   // Estado Persistido
@@ -206,6 +207,8 @@ export default function App() {
   const [isUserProfileModalOpen, setIsUserProfileModalOpen] = useState(false);
   const [isMasterModalOpen, setIsMasterModalOpen] = useState(false);
   const [isRegisterUserOpen, setIsRegisterUserOpen] = useState(false);
+  const [isBillingPlansOpen, setIsBillingPlansOpen] = useState(false);
+  const [isDismissedBillingWarning, setIsDismissedBillingWarning] = useState(false);
 
   const handleUpdateUser = (updatedUser: User) => {
     const updatedUsers = users.map((u) => (u.id === updatedUser.id ? updatedUser : u));
@@ -320,6 +323,28 @@ export default function App() {
       });
     }
   }, [currentWorkspace.id]);
+
+  // Detecção de retorno do Stripe Checkout (?checkout_success=true ou ?checkout_canceled=true)
+  useEffect(() => {
+    try {
+      if (typeof window === 'undefined') return;
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('checkout_success') === 'true') {
+        const planParam = params.get('plan') || 'plano';
+        showToast({
+          type: 'success',
+          message: `Assinatura confirmada com sucesso! O plano ${planParam.toUpperCase()} foi ativado para sua empresa.`,
+        });
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } else if (params.get('checkout_canceled') === 'true') {
+        showToast({
+          type: 'info',
+          message: 'Processo de assinatura cancelado. Sua conta permanece inalterada.',
+        });
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+    } catch {}
+  }, []);
 
   // Auto-save de estado
   useEffect(() => {
@@ -526,18 +551,23 @@ export default function App() {
     }
   }, [userVisibleWorkspaceIds, currentWorkspace.id]);
 
-  // Verificação de Empresa Suspensa para Usuários Não-Master
+  // Tenant / Empresa do Usuário e Workspace Atual (Isolamento Multi-tenant)
+  const currentTenant = useMemo(() => {
+    return StorageService.getCurrentTenant(currentUser, currentWorkspace?.id);
+  }, [currentUser, currentWorkspace?.id, clients]);
+
+  // Verificação de Empresa Suspensa ou Fatura em Atraso para Usuários Não-Master
   const isCurrentWorkspaceSuspended = useMemo(() => {
     if (isMaster) return false;
     if (currentWorkspace.clientStatus === 'suspended') return true;
-    const client = clients.find(
-      (c) =>
-        c.primaryWorkspaceId === currentWorkspace.id ||
-        (Array.isArray(c.workspaceIds) && c.workspaceIds.includes(currentWorkspace.id)) ||
-        c.id === currentWorkspace.companyId
-    );
-    return client?.status === 'suspended';
-  }, [isMaster, currentWorkspace, clients]);
+    if (currentTenant?.status === 'suspended') return true;
+    return false;
+  }, [isMaster, currentWorkspace.clientStatus, currentTenant?.status]);
+
+  const isCurrentTenantPastDue = useMemo(() => {
+    if (isMaster) return false;
+    return currentTenant?.paymentStatus === 'past_due' || currentWorkspace.paymentStatus === 'past_due';
+  }, [isMaster, currentTenant?.paymentStatus, currentWorkspace.paymentStatus]);
 
   const canViewDashboard = canAccessDashboard(currentUserRole, isMaster);
 
@@ -1586,27 +1616,54 @@ export default function App() {
 
   // Se a empresa/workspace atual estiver com acesso suspenso (e usuário não for Master)
   if (isCurrentWorkspaceSuspended) {
+    const isPastDue = isCurrentTenantPastDue;
     return (
       <div className="min-h-screen w-full bg-slate-950 flex items-center justify-center p-4 font-sans">
-        <div className="max-w-md w-full bg-slate-900 border border-rose-500/30 rounded-3xl p-8 text-center shadow-2xl space-y-4">
-          <div className="w-16 h-16 rounded-2xl bg-rose-500/10 text-rose-400 flex items-center justify-center mx-auto border border-rose-500/20">
-            <ShieldAlert className="w-8 h-8" />
+        <div className="max-w-md w-full bg-slate-900 border border-amber-500/30 rounded-3xl p-8 text-center shadow-2xl space-y-4">
+          <div className="w-16 h-16 rounded-2xl bg-amber-500/10 text-amber-400 flex items-center justify-center mx-auto border border-amber-500/20">
+            {isPastDue ? <CreditCard className="w-8 h-8" /> : <ShieldAlert className="w-8 h-8" />}
           </div>
-          <h2 className="text-xl font-bold text-white">Acesso Temporariamente Suspenso</h2>
+          <h2 className="text-xl font-bold text-white">
+            {isPastDue ? 'Fatura da Assinatura Pendente' : 'Acesso Temporariamente Suspenso'}
+          </h2>
           <p className="text-xs text-slate-400 leading-relaxed">
-            O acesso para a empresa <strong>{currentWorkspace.companyName || currentWorkspace.name}</strong> encontra-se temporariamente suspenso pela administração da plataforma OperaTask.
+            {isPastDue
+              ? `A assinatura da empresa ${currentWorkspace.companyName || currentWorkspace.name} encontra-se em atraso (Past Due). Regularize o pagamento via Stripe para reativar o acesso da equipe.`
+              : `O acesso para a empresa ${currentWorkspace.companyName || currentWorkspace.name} encontra-se temporariamente suspenso pela administração da plataforma.`}
           </p>
-          <div className="p-3.5 rounded-xl bg-slate-800/80 border border-slate-700 text-xs text-slate-300">
-            Para regularizar ou reativar o seu plano, entre em contato com o suporte ou gestor responsável da plataforma.
+          <div className="flex flex-col gap-2 pt-2">
+            <button
+              type="button"
+              onClick={() => setIsBillingPlansOpen(true)}
+              className="w-full py-3 px-4 bg-[#34B1AC] hover:bg-[#2da09c] text-white rounded-xl font-bold text-xs transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <CreditCard className="w-4 h-4" />
+              Regularizar Assinatura / Ver Planos
+            </button>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="w-full py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl font-semibold text-xs transition-all cursor-pointer"
+            >
+              Sair da Conta
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={handleLogout}
-            className="w-full py-3 px-4 bg-slate-800 hover:bg-slate-700 text-white rounded-xl font-bold text-xs transition-all cursor-pointer"
-          >
-            Sair da Conta
-          </button>
         </div>
+
+        {/* Modal de Planos para auto-regularização */}
+        <BillingPlansModal
+          isOpen={isBillingPlansOpen}
+          onClose={() => setIsBillingPlansOpen(false)}
+          currentClient={currentTenant}
+          currentUser={currentUser}
+          onClientUpdated={(updated) => {
+            const freshClients = StorageService.getClients();
+            setClients(freshClients);
+            const freshWs = StorageService.getWorkspaces();
+            setWorkspaces(freshWs);
+          }}
+          onShowToast={showToast}
+        />
       </div>
     );
   }
@@ -1662,6 +1719,7 @@ export default function App() {
         onOpenUserProfile={() => setIsUserProfileModalOpen(true)}
         onOpenMasterPanel={() => setIsMasterModalOpen(true)}
         onOpenRegisterUserModal={() => setIsRegisterUserOpen(true)}
+        onOpenBillingPlans={() => setIsBillingPlansOpen(true)}
       />
 
       {/* Conteúdo Principal */}
@@ -1730,6 +1788,49 @@ export default function App() {
             setIsTaskModalOpen(true);
           }}
         />
+
+        {/* Banner de Aviso de Cobrança / Período Trial */}
+        {currentTenant && (currentTenant.paymentStatus === 'past_due' || currentTenant.paymentStatus === 'trialing' || currentTenant.status === 'trial') && !isDismissedBillingWarning && (
+          <div className={`px-4 sm:px-6 py-2 text-xs flex items-center justify-between gap-3 shrink-0 ${
+            currentTenant.paymentStatus === 'past_due'
+              ? 'bg-amber-500 text-slate-950 font-semibold'
+              : 'bg-[#173653] text-white border-b border-[#34B1AC]/30'
+          }`}>
+            <div className="flex items-center gap-2">
+              {currentTenant.paymentStatus === 'past_due' ? (
+                <AlertTriangle className="w-4 h-4 text-slate-950 shrink-0" />
+              ) : (
+                <Sparkles className="w-4 h-4 text-[#34B1AC] shrink-0" />
+              )}
+              <span>
+                {currentTenant.paymentStatus === 'past_due'
+                  ? `Fatura pendente da empresa ${currentTenant.name}. Regularize para evitar suspensão do acesso da equipe.`
+                  : `Plano Trial Ativo (Empresa ${currentTenant.name} · Limite de ${currentTenant.maxUsers || 5} membros). Aproveite todos os recursos liberados.`}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIsBillingPlansOpen(true)}
+                className={`px-3 py-1 rounded-lg font-bold text-[11px] transition-colors cursor-pointer ${
+                  currentTenant.paymentStatus === 'past_due'
+                    ? 'bg-slate-950 text-white hover:bg-slate-800'
+                    : 'bg-[#34B1AC] hover:bg-[#2da09c] text-white shadow-xs'
+                }`}
+              >
+                {currentTenant.paymentStatus === 'past_due' ? 'Pagar Fatura' : 'Ver Planos & Upgrade'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsDismissedBillingWarning(true)}
+                className="p-1 hover:opacity-75 cursor-pointer"
+                title="Dispensar aviso"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Banner de Instalação PWA (Dispensável / Smart Prompt) */}
         <PWAInstallPrompt variant="banner" />
@@ -2048,6 +2149,25 @@ export default function App() {
             message: `Usuário ${newUser.name} cadastrado com sucesso! Conta ativa e link liberado para acesso imediato.`,
           });
         }}
+      />
+
+      {/* Modal de Planos & Cobrança (Stripe Billing) */}
+      <BillingPlansModal
+        isOpen={isBillingPlansOpen}
+        onClose={() => setIsBillingPlansOpen(false)}
+        currentClient={currentTenant}
+        currentUser={currentUser}
+        onClientUpdated={(updated) => {
+          const freshClients = StorageService.getClients();
+          setClients(freshClients);
+          const freshWs = StorageService.getWorkspaces();
+          setWorkspaces(freshWs);
+          const updatedCurrentWs = freshWs.find((w) => w.id === currentWorkspace.id);
+          if (updatedCurrentWs) {
+            setCurrentWorkspace(updatedCurrentWs);
+          }
+        }}
+        onShowToast={showToast}
       />
 
       {/* Notificação Flutuante / Toast de Feedback */}

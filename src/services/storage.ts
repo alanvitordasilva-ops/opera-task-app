@@ -15,6 +15,8 @@ import {
   ClientCompany,
   ClientStatus,
   ClientPlan,
+  PaymentStatus,
+  PLAN_CONFIGS,
   SupportModeState,
 } from '../types/index.ts';
 import { SupabaseService } from './supabaseService.ts';
@@ -163,6 +165,7 @@ export const DEFAULT_CLIENTS: ClientCompany[] = [
     legalName: 'OperaTask Tecnologia & Gestão',
     status: 'active',
     plan: 'enterprise',
+    paymentStatus: 'paid',
     primaryWorkspaceId: 'ws-principal',
     workspaceIds: ['ws-principal'],
     ownerId: MASTER_USER.id,
@@ -170,6 +173,9 @@ export const DEFAULT_CLIENTS: ClientCompany[] = [
     ownerEmail: MASTER_USER.email,
     createdAt: '2026-01-01T00:00:00.000Z',
     lastAccessAt: new Date().toISOString(),
+    planStartDate: '2026-01-01T00:00:00.000Z',
+    planExpiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+    nextBillingDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
     maxUsers: 999,
     monthlyFee: 0,
     notes: 'Empresa Matriz principal da plataforma OperaTask (Super Administrador)',
@@ -1063,7 +1069,8 @@ export const StorageService = {
             name: ws.name || 'Nova Empresa',
             legalName: ws.description || ws.name,
             status: ws.clientStatus || 'active',
-            plan: ws.clientPlan || 'pro',
+            plan: ws.clientPlan || 'profissional',
+            paymentStatus: (ws.clientStatus === 'suspended' ? 'past_due' : 'paid') as PaymentStatus,
             primaryWorkspaceId: ws.id,
             workspaceIds: [ws.id],
             ownerId: ws.ownerId || MASTER_USER.id,
@@ -1072,7 +1079,10 @@ export const StorageService = {
             ownerPhone: ownerUser?.phone,
             createdAt: ws.createdAt || new Date().toISOString(),
             lastAccessAt: ws.lastAccessAt || new Date().toISOString(),
-            maxUsers: 15,
+            planStartDate: ws.createdAt || new Date().toISOString(),
+            planExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+            nextBillingDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+            maxUsers: 30,
             notes: `Workspace autovinculado: ${ws.name}`,
           };
           list.push(newClient);
@@ -1201,7 +1211,14 @@ export const StorageService = {
 
       await this.createWorkspaceAsync(newWs);
 
-      // 3. Cria registro ClientCompany
+      // 3. Cria registro ClientCompany / Tenant
+      const initialPaymentStatus: PaymentStatus =
+        params.status === 'trial' ? 'trialing' : params.status === 'suspended' ? 'past_due' : 'paid';
+      const trialDays = 14;
+      const initialExpiresAt = params.status === 'trial'
+        ? new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000).toISOString()
+        : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+
       const newClient: ClientCompany = {
         id: clientId,
         name: cleanCompanyName,
@@ -1209,6 +1226,7 @@ export const StorageService = {
         cnpjOrDoc: params.cnpjOrDoc?.trim(),
         status: params.status,
         plan: params.plan,
+        paymentStatus: initialPaymentStatus,
         primaryWorkspaceId: workspaceId,
         workspaceIds: [workspaceId],
         ownerId: finalUser.id,
@@ -1217,8 +1235,11 @@ export const StorageService = {
         ownerPhone: params.ownerPhone?.trim(),
         createdAt: new Date().toISOString(),
         lastAccessAt: new Date().toISOString(),
-        maxUsers: params.maxUsers || (params.plan === 'enterprise' ? 999 : params.plan === 'pro' ? 25 : 5),
-        monthlyFee: params.monthlyFee,
+        planStartDate: new Date().toISOString(),
+        planExpiresAt: initialExpiresAt,
+        nextBillingDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+        maxUsers: params.maxUsers || (PLAN_CONFIGS[params.plan]?.maxUsers ?? (params.plan === 'enterprise' ? 9999 : params.plan === 'profissional' ? 30 : params.plan === 'basico' ? 10 : 5)),
+        monthlyFee: params.monthlyFee ?? PLAN_CONFIGS[params.plan]?.priceMonthly ?? 0,
         notes: params.notes?.trim(),
       };
 
@@ -1280,10 +1301,21 @@ export const StorageService = {
     const idx = clients.findIndex((c) => c.id === clientId);
     if (idx === -1) return null;
 
+    const planConfig = PLAN_CONFIGS[plan];
+    const calculatedMaxUsers =
+      maxUsers !== undefined
+        ? maxUsers
+        : planConfig?.maxUsers || (plan === 'enterprise' ? 9999 : plan === 'profissional' ? 30 : plan === 'basico' ? 10 : 5);
+
     clients[idx] = {
       ...clients[idx],
       plan,
-      ...(maxUsers !== undefined ? { maxUsers } : {}),
+      maxUsers: calculatedMaxUsers,
+      monthlyFee: planConfig?.priceMonthly ?? clients[idx].monthlyFee ?? 0,
+      paymentStatus: clients[idx].paymentStatus === 'past_due' ? 'paid' : (clients[idx].paymentStatus || 'paid'),
+      planStartDate: clients[idx].planStartDate || new Date().toISOString(),
+      planExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+      nextBillingDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
       ...(notes !== undefined ? { notes } : {}),
     };
     this.saveClients(clients, true);
@@ -1295,7 +1327,7 @@ export const StorageService = {
     const updatedWs = workspaces.map((w) => {
       if (wsIds.includes(w.id) || w.companyId === clientId) {
         wsModified = true;
-        return { ...w, clientPlan: plan };
+        return { ...w, clientPlan: plan, paymentStatus: clients[idx].paymentStatus };
       }
       return w;
     });
@@ -1305,6 +1337,82 @@ export const StorageService = {
     }
 
     return clients[idx];
+  },
+
+  updateClientPaymentStatus(
+    clientId: string,
+    paymentStatus: PaymentStatus,
+    extra?: Partial<ClientCompany>
+  ): ClientCompany | null {
+    const clients = this.getClients();
+    const idx = clients.findIndex((c) => c.id === clientId);
+    if (idx === -1) return null;
+
+    const newClientStatus: ClientStatus =
+      paymentStatus === 'past_due' || paymentStatus === 'canceled'
+        ? 'suspended'
+        : paymentStatus === 'trialing'
+        ? 'trial'
+        : 'active';
+
+    clients[idx] = {
+      ...clients[idx],
+      paymentStatus,
+      status: newClientStatus,
+      ...extra,
+      lastAccessAt: new Date().toISOString(),
+    };
+    this.saveClients(clients, true);
+
+    // Sincroniza status nos workspaces vinculados
+    const workspaces = this.getWorkspaces();
+    const wsIds = clients[idx].workspaceIds || [clients[idx].primaryWorkspaceId];
+    let wsModified = false;
+    const updatedWs = workspaces.map((w) => {
+      if (wsIds.includes(w.id) || w.companyId === clientId) {
+        wsModified = true;
+        return { ...w, clientStatus: newClientStatus, paymentStatus };
+      }
+      return w;
+    });
+
+    if (wsModified) {
+      this.saveWorkspaces(updatedWs, true);
+    }
+
+    return clients[idx];
+  },
+
+  getCurrentTenant(user?: User, currentWsId?: string): ClientCompany | null {
+    const clients = this.getClients();
+    if (!clients.length) return null;
+
+    if (currentWsId) {
+      const matchWs = clients.find(
+        (c) =>
+          c.primaryWorkspaceId === currentWsId ||
+          (Array.isArray(c.workspaceIds) && c.workspaceIds.includes(currentWsId)) ||
+          c.id === currentWsId
+      );
+      if (matchWs) return matchWs;
+    }
+
+    if (user) {
+      const isMaster = user.systemRole === 'master' || user.email.toLowerCase().includes('alanvitordasilva');
+      if (isMaster) {
+        const matriz = clients.find((c) => c.id === 'client-matriz' || c.primaryWorkspaceId === 'ws-principal');
+        return matriz || clients[0];
+      }
+      const userTenant = clients.find(
+        (c) =>
+          c.ownerId === user.id ||
+          c.ownerEmail?.toLowerCase() === user.email?.toLowerCase() ||
+          (user.tenantId && c.id === user.tenantId)
+      );
+      if (userTenant) return userTenant;
+    }
+
+    return clients[0] || null;
   },
 
   async deleteClient(clientId: string): Promise<{ success: boolean; error?: string }> {
