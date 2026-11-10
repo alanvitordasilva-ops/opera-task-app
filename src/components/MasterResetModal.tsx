@@ -74,14 +74,11 @@ WHERE id != 'ws-principal';
 DELETE FROM public.tenants 
 WHERE id NOT IN ('tenant-matriz', 'client-matriz');
 
--- 7. Apagar Perfis de Utilizadores de teste na tabela profiles
+-- 7. Apagar Perfis de Utilizadores de teste na tabela profiles (mantendo o Master)
 DELETE FROM public.profiles 
-WHERE id NOT IN (
-  'user-master-alan',
-  COALESCE((SELECT id FROM auth.users WHERE email = 'alanvitordasilva@gmail.com.br'), '00000000-0000-0000-0000-000000000000'::uuid),
-  COALESCE((SELECT id FROM auth.users WHERE email = 'alanvitordasilva@gmail.com'), '00000000-0000-0000-0000-000000000000'::uuid)
-)
-AND email NOT IN ('alanvitordasilva@gmail.com.br', 'alanvitordasilva@gmail.com');
+WHERE email NOT IN ('alanvitordasilva@gmail.com.br', 'alanvitordasilva@gmail.com')
+  AND tipo != 'master'
+  AND id::text != 'user-master-alan';
 
 -- 8. Garantir que a Matriz e o Workspace Principal estão ativos
 INSERT INTO public.tenants (id, name, legal_name, plan, status, payment_status, owner_id, owner_name, owner_email, max_users)

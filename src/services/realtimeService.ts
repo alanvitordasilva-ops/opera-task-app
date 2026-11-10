@@ -272,6 +272,20 @@ class RealtimeServiceImpl {
             }
           }
         )
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'tenants' },
+          async () => {
+            if (SupabaseService.isConfigured()) {
+              const cloudRes = await StorageService.fetchClientsCloud();
+              if (cloudRes.success && Array.isArray(cloudRes.clients)) {
+                this.notifyEntityListeners('clients', cloudRes.clients, {
+                  action: 'supabase_tenants_changed',
+                });
+              }
+            }
+          }
+        )
         .subscribe((status: string) => {
           if (status === 'SUBSCRIBED') {
             this.setStatus('connected');

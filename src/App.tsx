@@ -332,6 +332,15 @@ export default function App() {
         } catch (e) {
           console.warn('[OperaTask] Aviso ao carregar tarefas do Supabase:', e);
         }
+
+        try {
+          const cloudClients = await StorageService.fetchClientsCloud();
+          if (cloudClients.success && Array.isArray(cloudClients.clients) && cloudClients.clients.length > 0) {
+            setClients(cloudClients.clients);
+          }
+        } catch (e) {
+          console.warn('[OperaTask] Aviso ao carregar clientes do Supabase:', e);
+        }
       }
 
       await StorageService.syncWithServer();
@@ -340,10 +349,12 @@ export default function App() {
       const freshProjects = StorageService.getProjects();
       const freshTasks = StorageService.getTasks();
       const freshTags = StorageService.getTags();
+      const freshClients = StorageService.getClients();
 
       setUsers(freshUsers);
       setWorkspaces(freshWorkspaces);
       setProjects(freshProjects);
+      setClients(freshClients);
       if (!SupabaseService.isConfigured()) {
         setTasks(freshTasks);
       }
@@ -1866,7 +1877,16 @@ export default function App() {
         onResetData={handleResetData}
         onOpenSyncSettings={() => setIsSyncSettingsOpen(true)}
         onOpenUserProfile={() => setIsUserProfileModalOpen(true)}
-        onOpenMasterPanel={() => setIsMasterModalOpen(true)}
+        onOpenMasterPanel={() => {
+          const localClients = StorageService.getClients();
+          setClients(localClients);
+          StorageService.fetchClientsCloud().then((res) => {
+            if (res.success && res.clients.length > 0) {
+              setClients(res.clients);
+            }
+          });
+          setIsMasterModalOpen(true);
+        }}
         onOpenRegisterUserModal={() => {
           const check = StorageService.validateWorkspaceLimit(currentWorkspace.id, 'invite_member');
           if (!check.allowed) {

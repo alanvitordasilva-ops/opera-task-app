@@ -15,6 +15,8 @@ import {
   BoardColumn,
   SubscriptionPlan,
   DEFAULT_SUBSCRIPTION_PLANS,
+  ClientCompany,
+  PaymentStatus,
 } from '../types/index.ts';
 
 const SUPABASE_CONFIG_KEY = 'operatask_supabase_config_v1';
@@ -225,7 +227,12 @@ export class SupabaseService {
       };
 
       const tipo: ProfileTipo = (profile?.tipo as ProfileTipo) || 'membro';
-      const isMaster = tipo === 'master' || authUser.email === 'alanvitordasilva@gmail.com.br';
+      const isMaster =
+        tipo === 'master' ||
+        authUser.email === 'alanvitordasilva@gmail.com.br' ||
+        authUser.email === 'alanvitordasilva@gmail.com' ||
+        authUser.email?.startsWith('alanvitordasilva@') ||
+        cleanIdentWithoutAt === 'alan';
 
       const userObj: User = {
         id: authUser.id,
@@ -1275,6 +1282,190 @@ export class SupabaseService {
       return { success: true };
     } catch (err: any) {
       console.warn('[SupabaseService] Erro ao limpar dados de teste no Supabase:', err);
+      return { success: false, error: err.message };
+    }
+  }
+
+  // ==========================================================================
+  // GESTÃO DE TENANTS / CLIENTES NO SUPABASE (MULTI-TENANT REAL & SINCRONIZAÇÃO)
+  // ==========================================================================
+
+  /**
+   * Buscar lista completa de Tenants (Empresas / Clientes) no Supabase
+   */
+  static async fetchTenants(): Promise<{ success: boolean; clients: ClientCompany[]; error?: string }> {
+    const client = this.getClient();
+    if (!client) {
+      return { success: false, clients: [], error: 'Supabase não conectado' };
+    }
+
+    try {
+      const { data: tenantRows, error: tErr } = await client
+        .from('tenants')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (tErr) {
+        if (!tErr.message?.includes('does not exist')) {
+          console.warn('[SupabaseService] Erro ao buscar tenants:', tErr);
+        }
+        return { success: false, clients: [], error: tErr.message };
+      }
+
+      // Busca workspaces para mapear workspaceIds vinculados
+      let workspaceRows: any[] = [];
+      try {
+        const { data: wsData } = await client.from('workspaces').select('id, tenant_id, company_id');
+        if (wsData) workspaceRows = wsData;
+      } catch {}
+
+      const clients: ClientCompany[] = (tenantRows || []).map((row: any) => {
+        const linkedWsIds = workspaceRows
+          .filter((w: any) => w.tenant_id === row.id || w.company_id === row.id)
+          .map((w: any) => String(w.id));
+
+        const primaryWsId =
+          row.primary_workspace_id ||
+          linkedWsIds[0] ||
+          (row.id === 'tenant-matriz' || row.id === 'client-matriz' ? 'ws-principal' : `ws-${row.id}`);
+        const wsIds = Array.from(new Set([primaryWsId, ...linkedWsIds]));
+
+        return {
+          id: String(row.id),
+          name: row.name || 'Empresa',
+          legalName: row.legal_name || row.name,
+          cnpjOrDoc: row.cnpj_or_doc || undefined,
+          plan: row.plan || 'profissional',
+          status: row.status || 'active',
+          paymentStatus: (row.payment_status || 'paid') as PaymentStatus,
+          primaryWorkspaceId: primaryWsId,
+          workspaceIds: wsIds,
+          ownerId: row.owner_id || 'user-master-alan',
+          ownerName: row.owner_name || 'Administrador',
+          ownerEmail: row.owner_email || 'admin@empresa.com',
+          ownerPhone: row.owner_phone || undefined,
+          createdAt: row.created_at || new Date().toISOString(),
+          lastAccessAt: row.updated_at || row.created_at || new Date().toISOString(),
+          planStartDate: row.plan_start_date || row.created_at || new Date().toISOString(),
+          planExpiresAt: row.plan_expires_at || undefined,
+          nextBillingDate: row.next_billing_date || undefined,
+          stripeCustomerId: row.stripe_customer_id || undefined,
+          stripeSubscriptionId: row.stripe_subscription_id || undefined,
+          maxUsers: row.max_users || 30,
+          monthlyFee: 0,
+          notes: row.notes || undefined,
+        };
+      });
+
+      return { success: true, clients };
+    } catch (err: any) {
+      console.warn('[SupabaseService] Erro inesperado ao buscar tenants:', err);
+      return { success: false, clients: [], error: err.message };
+    }
+  }
+
+  /**
+   * Salvar ou atualizar um Tenant individual no Supabase
+   */
+  static async saveTenant(tenant: ClientCompany): Promise<{ success: boolean; error?: string }> {
+    const client = this.getClient();
+    if (!client) return { success: false, error: 'Supabase não conectado' };
+
+    try {
+      const payload = {
+        id: tenant.id,
+        name: tenant.name,
+        legal_name: tenant.legalName || tenant.name,
+        cnpj_or_doc: tenant.cnpjOrDoc || null,
+        plan: tenant.plan || 'profissional',
+        status: tenant.status || 'active',
+        payment_status: tenant.paymentStatus || 'paid',
+        owner_id: tenant.ownerId,
+        owner_name: tenant.ownerName,
+        owner_email: tenant.ownerEmail,
+        owner_phone: tenant.ownerPhone || null,
+        primary_workspace_id: tenant.primaryWorkspaceId,
+        max_users: tenant.maxUsers || 30,
+        plan_start_date: tenant.planStartDate || new Date().toISOString(),
+        plan_expires_at: tenant.planExpiresAt || null,
+        next_billing_date: tenant.nextBillingDate || null,
+        stripe_customer_id: tenant.stripeCustomerId || null,
+        stripe_subscription_id: tenant.stripeSubscriptionId || null,
+        notes: tenant.notes || null,
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error } = await client.from('tenants').upsert(payload);
+      if (error) {
+        console.warn('[SupabaseService] Erro ao fazer upsert em tenants:', error);
+        return { success: false, error: error.message };
+      }
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  /**
+   * Sincronizar múltiplos tenants no Supabase
+   */
+  static async upsertTenants(tenants: ClientCompany[]): Promise<{ success: boolean; error?: string }> {
+    const client = this.getClient();
+    if (!client || !tenants.length) return { success: false, error: 'Supabase não conectado' };
+
+    try {
+      const payloads = tenants.map((tenant) => ({
+        id: tenant.id,
+        name: tenant.name,
+        legal_name: tenant.legalName || tenant.name,
+        cnpj_or_doc: tenant.cnpjOrDoc || null,
+        plan: tenant.plan || 'profissional',
+        status: tenant.status || 'active',
+        payment_status: tenant.paymentStatus || 'paid',
+        owner_id: tenant.ownerId,
+        owner_name: tenant.ownerName,
+        owner_email: tenant.ownerEmail,
+        owner_phone: tenant.ownerPhone || null,
+        primary_workspace_id: tenant.primaryWorkspaceId,
+        max_users: tenant.maxUsers || 30,
+        plan_start_date: tenant.planStartDate || new Date().toISOString(),
+        plan_expires_at: tenant.planExpiresAt || null,
+        next_billing_date: tenant.nextBillingDate || null,
+        stripe_customer_id: tenant.stripeCustomerId || null,
+        stripe_subscription_id: tenant.stripeSubscriptionId || null,
+        notes: tenant.notes || null,
+        updated_at: new Date().toISOString(),
+      }));
+
+      const { error } = await client.from('tenants').upsert(payloads);
+      if (error) {
+        console.warn('[SupabaseService] Erro ao sincronizar lista de tenants:', error);
+        return { success: false, error: error.message };
+      }
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  /**
+   * Excluir Tenant no Supabase
+   */
+  static async deleteTenant(tenantId: string): Promise<{ success: boolean; error?: string }> {
+    const client = this.getClient();
+    if (!client) return { success: false, error: 'Supabase não conectado' };
+    if (tenantId === 'tenant-matriz' || tenantId === 'client-matriz') {
+      return { success: false, error: 'A Matriz não pode ser excluída.' };
+    }
+
+    try {
+      const { error } = await client.from('tenants').delete().eq('id', tenantId);
+      if (error) {
+        console.warn('[SupabaseService] Erro ao excluir tenant:', error);
+        return { success: false, error: error.message };
+      }
+      return { success: true };
+    } catch (err: any) {
       return { success: false, error: err.message };
     }
   }

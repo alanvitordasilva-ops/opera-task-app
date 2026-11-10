@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { User, Workspace, Project, Task, SystemRole, WorkspaceRole, ClientCompany } from '../types/index.ts';
 import { UserAvatar } from './UserAvatar.tsx';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
@@ -80,7 +80,24 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'clientes' | 'usuarios' | 'workspaces' | 'quadros' | 'planos' | 'sistema'>('clientes');
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
-  const clientsList = propClients || StorageService.getClients();
+
+  useEffect(() => {
+    if (isOpen) {
+      StorageService.fetchClientsCloud().then((res) => {
+        if (res.success && res.clients.length > 0 && onUpdateClients) {
+          onUpdateClients(res.clients);
+        }
+      });
+    }
+  }, [isOpen]);
+
+  const clientsList = useMemo(() => {
+    const local = StorageService.getClients();
+    if (propClients && propClients.length >= local.length) {
+      return propClients;
+    }
+    return local;
+  }, [propClients]);
 
   // Filtros de busca
   const [userSearch, setUserSearch] = useState('');

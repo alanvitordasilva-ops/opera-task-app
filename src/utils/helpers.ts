@@ -129,11 +129,22 @@ export const ROLE_CONFIG: Record<
 
 export function isUserMaster(user?: Partial<User> | null): boolean {
   if (!user) return false;
+  const email = (user.email || '').trim().toLowerCase();
+  const username = (user.username || '').trim().toLowerCase();
+  const id = (user.id || '').trim().toLowerCase();
+
   return (
     user.systemRole === 'master' ||
     user.isSuperAdmin === true ||
-    user.email?.trim().toLowerCase() === 'alanvitordasilva@gmail.com.br' ||
-    user.username?.trim().toLowerCase() === 'alan'
+    (user as any).tipo === 'master' ||
+    id === 'user-master-alan' ||
+    email === 'alanvitordasilva@gmail.com' ||
+    email === 'alanvitordasilva@gmail.com.br' ||
+    email.startsWith('alanvitordasilva@') ||
+    username === 'alan' ||
+    username === 'alanvitordasilva' ||
+    username === 'alanvitordasilva@gmail.com' ||
+    username === 'alanvitordasilva@gmail.com.br'
   );
 }
 

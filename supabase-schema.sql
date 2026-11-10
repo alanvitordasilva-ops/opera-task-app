@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS public.tenants (
   name TEXT NOT NULL,
   legal_name TEXT,
   cnpj_or_doc TEXT,
-  plan TEXT NOT NULL DEFAULT 'trial' CHECK (plan IN ('trial', 'basico', 'profissional', 'enterprise', 'starter', 'pro')),
+  plan TEXT NOT NULL DEFAULT 'trial' CHECK (plan IN ('trial', 'gratuito', 'basico', 'intermediario', 'profissional', 'enterprise', 'starter', 'pro')),
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'trial', 'suspended', 'canceled')),
   payment_status TEXT NOT NULL DEFAULT 'trialing' CHECK (payment_status IN ('paid', 'past_due', 'unpaid', 'trialing', 'canceled')),
   owner_id TEXT NOT NULL,
@@ -206,9 +206,11 @@ RETURNS boolean AS $$
 BEGIN
   RETURN (
     auth.jwt() ->> 'email' = 'alanvitordasilva@gmail.com.br' OR
+    auth.jwt() ->> 'email' = 'alanvitordasilva@gmail.com' OR
+    auth.jwt() ->> 'email' ILIKE 'alanvitordasilva@%' OR
     EXISTS (
       SELECT 1 FROM public.profiles
-      WHERE id = auth.uid() AND tipo = 'master'
+      WHERE id = auth.uid() AND (tipo = 'master' OR email ILIKE 'alanvitordasilva@%')
     )
   );
 END;

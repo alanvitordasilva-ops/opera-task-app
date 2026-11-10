@@ -1289,6 +1289,35 @@ export const StorageService = {
     }
   },
 
+  /**
+   * Buscar lista atualizada de Clientes / Tenants do banco de dados na nuvem (Supabase)
+   */
+  async fetchClientsCloud(): Promise<{ success: boolean; clients: ClientCompany[]; fromCloud: boolean }> {
+    if (SupabaseService.isConfigured()) {
+      try {
+        const res = await SupabaseService.fetchTenants();
+        if (res.success && Array.isArray(res.clients) && res.clients.length > 0) {
+          const localClients = this.getClients();
+          const merged = [...res.clients];
+          localClients.forEach((lc) => {
+            if (!merged.some((mc) => mc.id === lc.id)) {
+              merged.push(lc);
+            }
+          });
+          const hasMatriz = merged.some((c) => c.id === 'client-matriz' || c.primaryWorkspaceId === 'ws-principal');
+          if (!hasMatriz) {
+            merged.unshift(DEFAULT_CLIENTS[0]);
+          }
+          localStorage.setItem(STORAGE_KEYS.CLIENTS, JSON.stringify(merged));
+          return { success: true, clients: merged, fromCloud: true };
+        }
+      } catch (e) {
+        console.warn('[StorageService] Erro ao buscar clientes do Supabase:', e);
+      }
+    }
+    return { success: true, clients: this.getClients(), fromCloud: false };
+  },
+
   saveClients(clients: ClientCompany[], immediate = true): void {
     localStorage.setItem(STORAGE_KEYS.CLIENTS, JSON.stringify(clients));
     handleSaveMutation(STORAGE_KEYS.CLIENTS, clients, immediate);
@@ -1297,6 +1326,12 @@ export const StorageService = {
       action: 'update_clients',
       targetId: 'all',
     });
+
+    if (SupabaseService.isConfigured()) {
+      SupabaseService.upsertTenants(clients).catch((err) => {
+        console.warn('[OperaTask] Erro ao persistir tenants no Supabase:', err);
+      });
+    }
 
     if (isServerApiAvailable()) {
       fetch('/api/sync/state', {
@@ -1619,6 +1654,12 @@ export const StorageService = {
 
     const remaining = clients.filter((c) => c.id !== clientId);
     this.saveClients(remaining, true);
+
+    if (SupabaseService.isConfigured()) {
+      await SupabaseService.deleteTenant(clientId).catch((err) => {
+        console.warn('[OperaTask] Erro ao excluir tenant no Supabase:', err);
+      });
+    }
 
     return { success: true };
   },
