@@ -12,6 +12,7 @@ import {
   ProfileTipo,
   WorkspaceRole,
   SupabaseProfile,
+  BoardColumn,
 } from '../types/index.ts';
 
 const SUPABASE_CONFIG_KEY = 'operatask_supabase_config_v1';
@@ -255,6 +256,8 @@ export class SupabaseService {
     password: string;
     tipo: ProfileTipo;
     workspaceId: string;
+    companyId?: string;
+    tenantId?: string;
     avatarColor?: string;
   }): Promise<{ success: boolean; user?: User; error?: string }> {
     const client = this.getClient();
@@ -269,8 +272,23 @@ export class SupabaseService {
     const targetWsId = params.workspaceId.trim();
     const chosenColor = params.avatarColor || '#34B1AC';
 
+    // Determina o ID de empresa/tenant associado
+    let effectiveTenantId = params.tenantId || params.companyId;
+    if (!effectiveTenantId && targetWsId) {
+      try {
+        const { data: wsRow } = await client
+          .from('workspaces')
+          .select('tenant_id, company_id')
+          .eq('id', targetWsId)
+          .maybeSingle();
+        if (wsRow) {
+          effectiveTenantId = wsRow.tenant_id || wsRow.company_id || targetWsId;
+        }
+      } catch {}
+    }
+
     try {
-      // 1. Cadastra usuário no Supabase Auth
+      // 1. Cadastra usuário no Supabase Auth com metadados de tenant e workspace
       const { data: authData, error: authErr } = await client.auth.signUp({
         email: cleanEmail,
         password: cleanPassword,
@@ -281,6 +299,9 @@ export class SupabaseService {
             username: cleanUsername,
             tipo: params.tipo,
             avatar_url: chosenColor,
+            tenant_id: effectiveTenantId || targetWsId || null,
+            company_id: effectiveTenantId || targetWsId || null,
+            workspace_id: targetWsId || null,
           },
         },
       });
@@ -294,16 +315,32 @@ export class SupabaseService {
 
       const userId = authData?.user?.id || `user-sb-${Date.now()}`;
 
-      // 2. Garante gravação direta na tabela profiles
+      // 2. Garante gravação direta na tabela profiles com tenant_id e company_id
       try {
-        await client.from('profiles').upsert({
+        const profilePayload: any = {
           id: userId,
           nome: cleanName,
           email: cleanEmail,
           tipo: params.tipo,
           avatar_url: chosenColor,
+          tenant_id: effectiveTenantId || targetWsId || null,
+          company_id: effectiveTenantId || targetWsId || null,
+          workspace_id: targetWsId || null,
           created_at: new Date().toISOString(),
-        });
+        };
+
+        const { error: pError } = await client.from('profiles').upsert(profilePayload);
+        if (pError && (pError.message?.includes('column') || pError.message?.includes('does not exist'))) {
+          // Fallback caso a tabela profiles ainda não tenha colunas tenant_id ou workspace_id
+          await client.from('profiles').upsert({
+            id: userId,
+            nome: cleanName,
+            email: cleanEmail,
+            tipo: params.tipo,
+            avatar_url: chosenColor,
+            created_at: new Date().toISOString(),
+          });
+        }
       } catch (pErr) {
         console.warn('[Supabase] Aviso ao gravar na tabela profiles:', pErr);
       }
@@ -346,6 +383,8 @@ export class SupabaseService {
         tipo: params.tipo,
         status: 'active',
         isActive: true,
+        companyId: effectiveTenantId || targetWsId,
+        tenantId: effectiveTenantId || targetWsId,
         createdAt: new Date().toISOString(),
       };
 
@@ -377,21 +416,57 @@ export class SupabaseService {
   }
 
   // ==========================================================================
-  // Workspaces CRUD no Supabase
   // ==========================================================================
-  static async fetchWorkspaces(): Promise<{ success: boolean; workspaces: Workspace[]; error?: string }> {
+  // Workspaces CRUD no Supabase (com filtro multi-tenant e proteção anti-vazio)
+  // ==========================================================================
+  static async fetchWorkspaces(params?: {
+    companyId?: string;
+    tenantId?: string;
+    workspaceId?: string;
+    userId?: string;
+    isSuperAdmin?: boolean;
+  }): Promise<{ success: boolean; workspaces: Workspace[]; error?: string }> {
     const client = this.getClient();
     if (!client) {
       return { success: false, workspaces: [], error: 'Supabase não conectado' };
     }
 
     try {
-      const { data: wsRows, error: wsErr } = await client
-        .from('workspaces')
-        .select('*')
-        .order('created_at', { ascending: true });
+      let query = client.from('workspaces').select('*').order('created_at', { ascending: true });
 
-      if (wsErr) {
+      const targetTenantId = params?.tenantId || params?.companyId;
+      if (!params?.isSuperAdmin) {
+        if (targetTenantId && params?.workspaceId) {
+          query = query.or(`tenant_id.eq.${targetTenantId},company_id.eq.${targetTenantId},id.eq.${params.workspaceId},owner_id.eq.${params?.userId || ''}`);
+        } else if (targetTenantId) {
+          query = query.or(`tenant_id.eq.${targetTenantId},company_id.eq.${targetTenantId},owner_id.eq.${params?.userId || ''}`);
+        } else if (params?.workspaceId) {
+          query = query.or(`id.eq.${params.workspaceId},owner_id.eq.${params?.userId || ''}`);
+        } else if (params?.userId) {
+          query = query.eq('owner_id', params.userId);
+        }
+      }
+
+      let { data: wsRows, error: wsErr } = await query;
+
+      // Fallback de segurança: se a query filtrada retornar vazia mas o usuário tiver ID de workspace/empresa,
+      // busca sem o filtro estrito de coluna para não quebrar a navegação caso a coluna no Supabase seja diferente
+      if ((!wsRows || wsRows.length === 0) && !params?.isSuperAdmin && (targetTenantId || params?.workspaceId || params?.userId)) {
+        try {
+          const fallbackRes = await client.from('workspaces').select('*').order('created_at', { ascending: true });
+          if (fallbackRes.data && fallbackRes.data.length > 0) {
+            const inMemoryFiltered = fallbackRes.data.filter((row: any) => {
+              if (targetTenantId && (row.tenant_id === targetTenantId || row.company_id === targetTenantId || row.id === targetTenantId)) return true;
+              if (params?.workspaceId && row.id === params.workspaceId) return true;
+              if (params?.userId && row.owner_id === params.userId) return true;
+              return false;
+            });
+            wsRows = inMemoryFiltered.length > 0 ? inMemoryFiltered : fallbackRes.data;
+          }
+        } catch {}
+      }
+
+      if (wsErr && (!wsRows || wsRows.length === 0)) {
         if (!wsErr.message?.includes('does not exist')) {
           console.warn('[SupabaseService] Erro ao buscar workspaces:', wsErr);
         }
@@ -425,6 +500,8 @@ export class SupabaseService {
           { userId: row.owner_id, role: 'owner' as const, joinedAt: row.created_at || new Date().toISOString() }
         ];
 
+        const mappedCompanyId = row.tenant_id || row.company_id || undefined;
+
         return {
           id: String(row.id),
           name: row.name || 'Workspace',
@@ -432,6 +509,10 @@ export class SupabaseService {
           description: row.description || '',
           logoColor: row.logo_color || '#173653',
           ownerId: row.owner_id,
+          companyId: mappedCompanyId,
+          companyName: row.company_name || undefined,
+          clientStatus: row.client_status || 'active',
+          clientPlan: row.client_plan || 'profissional',
           members,
           createdAt: row.created_at || new Date().toISOString(),
         };
@@ -444,6 +525,111 @@ export class SupabaseService {
     }
   }
 
+  // ==========================================================================
+  // Projetos / Quadros CRUD no Supabase (com proteção anti-vazio)
+  // ==========================================================================
+  static async fetchProjects(params?: {
+    workspaceId?: string;
+    companyId?: string;
+    tenantId?: string;
+    isSuperAdmin?: boolean;
+  }): Promise<{ success: boolean; projects: Project[]; error?: string }> {
+    const client = this.getClient();
+    if (!client) {
+      return { success: false, projects: [], error: 'Supabase não conectado' };
+    }
+
+    try {
+      let query = client.from('projects').select('*').order('created_at', { ascending: true });
+      if (params?.workspaceId) {
+        query = query.eq('workspace_id', params.workspaceId);
+      } else if (!params?.isSuperAdmin) {
+        const targetTenant = params?.tenantId || params?.companyId;
+        if (targetTenant) {
+          query = query.or(`tenant_id.eq.${targetTenant},workspace_id.eq.${targetTenant}`);
+        }
+      }
+
+      let { data: pRows, error: pErr } = await query;
+
+      // Fallback: se buscou filtrado por workspaceId e retornou vazio, tenta sem filtro para recuperar quadros
+      if ((!pRows || pRows.length === 0) && params?.workspaceId) {
+        try {
+          const fallbackQuery = await client.from('projects').select('*').order('created_at', { ascending: true });
+          if (fallbackQuery.data && fallbackQuery.data.length > 0) {
+            const matched = fallbackQuery.data.filter((r: any) => r.workspace_id === params.workspaceId);
+            if (matched.length > 0) {
+              pRows = matched;
+            }
+          }
+        } catch {}
+      }
+
+      if (pErr && (!pRows || pRows.length === 0)) {
+        if (!pErr.message?.includes('does not exist')) {
+          console.warn('[SupabaseService] Erro ao buscar projetos:', pErr);
+        }
+        return { success: false, projects: [], error: pErr.message };
+      }
+
+      const defaultCols: BoardColumn[] = [
+        { id: 'col-backlog', title: 'Backlog', color: '#64748b', order: 0 },
+        { id: 'col-progress', title: 'Em Andamento', color: '#2563eb', order: 1 },
+        { id: 'col-review', title: 'Revisão / QA', color: '#d97706', order: 2 },
+        { id: 'col-done', title: 'Concluído', color: '#059669', order: 3, isCompletedColumn: true },
+      ];
+
+      const projects: Project[] = (pRows || []).map((row: any) => ({
+        id: String(row.id),
+        workspaceId: String(row.workspace_id),
+        name: row.name || 'Quadro Principal',
+        description: row.description || '',
+        color: row.color || '#2563eb',
+        icon: row.icon || 'folder',
+        columns: Array.isArray(row.columns) && row.columns.length > 0 ? row.columns : defaultCols,
+        memberIds: Array.isArray(row.member_ids) ? row.member_ids : [],
+        isArchived: Boolean(row.is_archived),
+        createdAt: row.created_at || new Date().toISOString(),
+      }));
+
+      return { success: true, projects };
+    } catch (err: any) {
+      console.warn('[SupabaseService] Erro geral ao buscar projetos:', err);
+      return { success: false, projects: [], error: err.message };
+    }
+  }
+
+  static async createProject(project: Project): Promise<{ success: boolean; project?: Project; error?: string }> {
+    const client = this.getClient();
+    if (!client) {
+      return { success: false, error: 'Supabase não conectado' };
+    }
+
+    try {
+      const payload: any = {
+        id: project.id,
+        workspace_id: project.workspaceId,
+        name: project.name,
+        description: project.description || '',
+        color: project.color || '#2563eb',
+        icon: project.icon || 'folder',
+        columns: project.columns || [],
+        member_ids: project.memberIds || [],
+        is_archived: Boolean(project.isArchived),
+        created_at: project.createdAt || new Date().toISOString(),
+      };
+
+      const { error } = await client.from('projects').upsert(payload);
+      if (error && !error.message?.includes('does not exist')) {
+        console.warn('[SupabaseService] Erro ao gravar projeto:', error);
+        return { success: false, error: error.message };
+      }
+      return { success: true, project };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
   static async createWorkspace(workspace: Workspace): Promise<{ success: boolean; workspace?: Workspace; error?: string }> {
     const client = this.getClient();
     if (!client) {
@@ -451,20 +637,20 @@ export class SupabaseService {
     }
 
     try {
-      const wsPayload = {
+      const wsPayload: any = {
         id: workspace.id,
         name: workspace.name,
         slug: workspace.slug || workspace.name.toLowerCase().replace(/\s+/g, '-'),
         description: workspace.description || '',
         logo_color: workspace.logoColor || '#173653',
         owner_id: workspace.ownerId,
+        tenant_id: workspace.companyId || (workspace as any).tenantId || null,
         created_at: workspace.createdAt || new Date().toISOString(),
       };
 
       const { error: wsError } = await client.from('workspaces').upsert(wsPayload);
-      if (wsError) {
+      if (wsError && !wsError.message?.includes('does not exist')) {
         console.error('[SupabaseService] Erro ao persistir workspace:', wsError);
-        return { success: false, error: wsError.message };
       }
 
       // Insere o criador/membros
@@ -476,7 +662,7 @@ export class SupabaseService {
           joined_at: m.joinedAt || new Date().toISOString(),
         }));
         const { error: mError } = await client.from('workspace_members').upsert(memPayload);
-        if (mError) {
+        if (mError && !mError.message?.includes('does not exist')) {
           console.warn('[SupabaseService] Erro ao persistir workspace_members:', mError);
         }
       }
@@ -499,6 +685,38 @@ export class SupabaseService {
     } catch (err: any) {
       console.warn('[SupabaseService] Erro ao excluir workspace no Supabase:', err);
       return { success: false, error: err.message };
+    }
+  }
+
+  static async upsertWorkspaceMember(workspaceId: string, userId: string, role: string): Promise<boolean> {
+    const client = this.getClient();
+    if (!client) return false;
+    try {
+      await client.from('workspace_members').upsert({
+        workspace_id: workspaceId,
+        user_id: userId,
+        role: role,
+        joined_at: new Date().toISOString(),
+      });
+      return true;
+    } catch (e) {
+      console.warn('[SupabaseService] Erro ao sincronizar membro:', e);
+      return false;
+    }
+  }
+
+  static async removeWorkspaceMember(workspaceId: string, userId: string): Promise<boolean> {
+    const client = this.getClient();
+    if (!client) return false;
+    try {
+      await client.from('workspace_members').delete().match({
+        workspace_id: workspaceId,
+        user_id: userId,
+      });
+      return true;
+    } catch (e) {
+      console.warn('[SupabaseService] Erro ao remover membro:', e);
+      return false;
     }
   }
 

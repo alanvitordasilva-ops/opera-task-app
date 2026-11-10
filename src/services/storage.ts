@@ -869,11 +869,21 @@ export const StorageService = {
       // 3. Se for o dono do workspace
       if (workspace.ownerId === u.id) return true;
 
-      // 4. Se pertencer à mesma empresa/tenant
+      // 4. Se pertencer à mesma empresa/tenant do workspace
       if (wsCompanyId) {
-        if (u.companyId && u.companyId === wsCompanyId) return true;
-        if (u.tenantId && u.tenantId === wsCompanyId) return true;
+        if (u.companyId && (u.companyId === wsCompanyId || u.companyId === workspace.id)) return true;
+        if (u.tenantId && (u.tenantId === wsCompanyId || u.tenantId === workspace.id)) return true;
       }
+
+      // 5. Se pertencer à mesma empresa/tenant do usuário atual (equipe da mesma empresa)
+      const viewerCompanyId = currentViewingUser.companyId || currentViewingUser.tenantId;
+      if (viewerCompanyId) {
+        if (u.companyId && u.companyId === viewerCompanyId) return true;
+        if (u.tenantId && u.tenantId === viewerCompanyId) return true;
+      }
+
+      // 6. O próprio usuário atual
+      if (u.id === currentViewingUser.id) return true;
 
       // Master visualizando pode ver a si próprio
       if (isViewerMaster && isUserMaster(u)) {
@@ -1026,7 +1036,19 @@ export const StorageService = {
   async fetchWorkspacesCloud(): Promise<{ success: boolean; workspaces: Workspace[]; fromCloud: boolean }> {
     if (SupabaseService.isConfigured()) {
       try {
-        const res = await SupabaseService.fetchWorkspaces();
+        const user = this.getCurrentUser();
+        const isMaster = isUserMaster(user);
+        const companyId = user?.companyId || user?.tenantId;
+        const currentWs = this.getCurrentWorkspace();
+
+        const res = await SupabaseService.fetchWorkspaces({
+          companyId,
+          tenantId: companyId,
+          workspaceId: currentWs?.id,
+          userId: user?.id,
+          isSuperAdmin: isMaster,
+        });
+
         if (res.success && Array.isArray(res.workspaces) && res.workspaces.length > 0) {
           const localWs = this.getWorkspaces();
           const merged = [...res.workspaces];
@@ -1046,6 +1068,78 @@ export const StorageService = {
   },
 
   /**
+   * Buscar projetos/quadros da nuvem do Supabase com fallback seguro anti-vazio
+   */
+  async fetchProjectsCloud(workspaceId?: string): Promise<{ success: boolean; projects: Project[]; fromCloud: boolean }> {
+    if (SupabaseService.isConfigured()) {
+      try {
+        const user = this.getCurrentUser();
+        const isMaster = isUserMaster(user);
+        const companyId = user?.companyId || user?.tenantId;
+
+        const res = await SupabaseService.fetchProjects({
+          workspaceId,
+          companyId,
+          tenantId: companyId,
+          isSuperAdmin: isMaster,
+        });
+
+        if (res.success && Array.isArray(res.projects) && res.projects.length > 0) {
+          const localProjects = this.getProjects();
+          let merged: Project[];
+          if (workspaceId) {
+            const others = localProjects.filter((p) => p.workspaceId !== workspaceId);
+            merged = [...others, ...res.projects];
+          } else {
+            merged = res.projects;
+          }
+          this.saveProjects(merged, true);
+          return { success: true, projects: merged, fromCloud: true };
+        }
+      } catch (err) {
+        console.warn('[StorageService] Falha ao carregar projetos do Supabase:', err);
+      }
+    }
+    const localProjects = this.getProjects();
+    const filtered = workspaceId ? localProjects.filter((p) => p.workspaceId === workspaceId) : localProjects;
+    return { success: false, projects: filtered, fromCloud: false };
+  },
+
+  /**
+   * Garante que um Workspace possua um projeto/quadro ativo com colunas Kanban
+   */
+  ensureWorkspaceProject(workspaceId: string, workspaceName?: string): Project {
+    const projects = this.getProjects();
+    const existing = projects.find((p) => p.workspaceId === workspaceId && !p.isArchived);
+    if (existing) return existing;
+
+    const newProj: Project = {
+      id: `proj-${workspaceId}-principal`,
+      workspaceId,
+      name: 'Quadro Principal',
+      description: `Quadro de tarefas e fluxo operacional do espaço ${workspaceName || 'Workspace'}`,
+      color: '#2563eb',
+      icon: 'folder',
+      columns: [
+        { id: `col-${workspaceId}-backlog`, title: 'Backlog', color: '#64748b', order: 0 },
+        { id: `col-${workspaceId}-progress`, title: 'Em Andamento', color: '#2563eb', order: 1 },
+        { id: `col-${workspaceId}-review`, title: 'Revisão / QA', color: '#d97706', order: 2 },
+        { id: `col-${workspaceId}-done`, title: 'Concluído', color: '#059669', order: 3, isCompletedColumn: true },
+      ],
+      memberIds: [],
+      isArchived: false,
+      createdAt: new Date().toISOString(),
+    };
+
+    const updated = [...projects, newProj];
+    this.saveProjects(updated, true);
+    if (SupabaseService.isConfigured()) {
+      SupabaseService.createProject(newProj).catch(() => {});
+    }
+    return newProj;
+  },
+
+  /**
    * Criar Workspace com persistência imediata local, no servidor e no Supabase
    */
   async createWorkspaceAsync(workspace: Workspace): Promise<{ success: boolean; workspace: Workspace; error?: string }> {
@@ -1055,14 +1149,17 @@ export const StorageService = {
     this.saveWorkspaces(nextList, true);
     this.setCurrentWorkspaceId(workspace.id);
 
-    // 2. Transmite via Realtime para todos os dispositivos conectados
+    // 2. Garante Quadro Principal inicial ativo
+    this.ensureWorkspaceProject(workspace.id, workspace.name);
+
+    // 3. Transmite via Realtime para todos os dispositivos conectados
     RealtimeService.broadcast('workspaces', nextList, {
       action: 'create_workspace',
       targetId: workspace.id,
       userName: workspace.name,
     });
 
-    // 3. Salva no servidor de sincronização centralizado
+    // 4. Salva no servidor de sincronização centralizado
     if (isServerApiAvailable()) {
       fetch('/api/sync/state', {
         method: 'POST',
@@ -1071,7 +1168,7 @@ export const StorageService = {
       }).catch(() => {});
     }
 
-    // 4. Salva imediatamente no banco de dados (Supabase) se configurado
+    // 5. Salva imediatamente no banco de dados (Supabase) se configurado
     if (SupabaseService.isConfigured()) {
       try {
         const cloudRes = await SupabaseService.createWorkspace(workspace);
@@ -1548,13 +1645,34 @@ export const StorageService = {
   getProjects(): Project[] {
     try {
       const data = localStorage.getItem(STORAGE_KEYS.PROJECTS);
-      if (!data) {
-        this.saveProjects(DEFAULT_PROJECTS);
-        return DEFAULT_PROJECTS;
+      let list: Project[] = data ? JSON.parse(data) : [];
+      if (!Array.isArray(list)) list = [];
+
+      // Garante que exista ao menos 1 quadro padrão caso a lista esteja vazia
+      if (list.length === 0) {
+        const defaultProj: Project = {
+          id: 'proj-principal-default',
+          workspaceId: 'ws-principal',
+          name: 'Quadro Principal',
+          description: 'Quadro operacional e gestão de tarefas',
+          color: '#2563eb',
+          icon: 'folder',
+          columns: [
+            { id: 'col-backlog', title: 'Backlog', color: '#64748b', order: 0 },
+            { id: 'col-progress', title: 'Em Andamento', color: '#2563eb', order: 1 },
+            { id: 'col-review', title: 'Revisão / QA', color: '#d97706', order: 2 },
+            { id: 'col-done', title: 'Concluído', color: '#059669', order: 3, isCompletedColumn: true },
+          ],
+          memberIds: [],
+          isArchived: false,
+          createdAt: new Date().toISOString(),
+        };
+        list = [defaultProj];
+        this.saveProjects(list, true);
       }
-      return JSON.parse(data);
+      return list;
     } catch {
-      return DEFAULT_PROJECTS;
+      return [];
     }
   },
 
@@ -1616,7 +1734,7 @@ export const StorageService = {
             merged = res.tasks;
           }
           this.saveTasks(merged, true);
-          return { success: true, tasks: res.tasks, fromCloud: true };
+          return { success: true, tasks: merged, fromCloud: true };
         }
       } catch (err) {
         console.warn('[StorageService] Falha ao carregar tarefas do Supabase:', err);
@@ -1937,6 +2055,8 @@ export const StorageService = {
     role: WorkspaceRole;
     workspaceId?: string;
     workspaceIds?: string[];
+    companyId?: string;
+    tenantId?: string;
   }): Promise<{ success: boolean; user?: User; error?: string }> {
     const cleanName = params.name.trim();
     const rawUsername = (params.username || params.usernameOrEmail || '').trim().toLowerCase();
@@ -2018,7 +2138,7 @@ export const StorageService = {
 
     const allWorkspaces = this.getWorkspaces();
     const primaryWs = allWorkspaces.find((w) => targetWorkspaceIds.includes(w.id));
-    const assignedCompanyId = primaryWs?.companyId || (primaryWs as any)?.tenantId;
+    const assignedCompanyId = params.companyId || params.tenantId || primaryWs?.companyId || (primaryWs as any)?.tenantId || primaryWs?.id;
 
     let newUser: User = {
       id: `user-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
@@ -2047,6 +2167,8 @@ export const StorageService = {
             password: cleanPassword,
             tipo: (params.role as any) || 'membro',
             workspaceId: wsId,
+            companyId: assignedCompanyId,
+            tenantId: assignedCompanyId,
             avatarColor: chosenColor,
           });
           if (sbResult.success && sbResult.user) {
@@ -2121,6 +2243,11 @@ export const StorageService = {
     }
     if (workspacesChanged) {
       this.saveWorkspaces(workspaces, true);
+      if (SupabaseService.isConfigured()) {
+        for (const wsId of targetWorkspaceIds) {
+          SupabaseService.upsertWorkspaceMember(wsId, newUser.id, params.role).catch(() => {});
+        }
+      }
     }
 
     return { success: true, user: newUser };

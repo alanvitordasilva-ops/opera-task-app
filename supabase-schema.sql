@@ -237,6 +237,106 @@ ALTER TABLE public.tasks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.fichas_tecnicas ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.tags ENABLE ROW LEVEL SECURITY;
 
+-- Garante colunas de identificação de empresa/workspace no perfil
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS company_id TEXT;
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS workspace_id TEXT;
+
+-- 10. Funções Auxiliares de Multi-Tenant e Governança Master
+CREATE OR REPLACE FUNCTION public.is_master_user()
+RETURNS boolean AS $$
+BEGIN
+  RETURN (
+    auth.jwt() ->> 'email' = 'alanvitordasilva@gmail.com.br' OR
+    auth.jwt() ->> 'email' = 'alanvitordasilva@gmail.com' OR
+    EXISTS (
+      SELECT 1 FROM public.profiles
+      WHERE id = auth.uid() AND (tipo = 'master' OR email = 'alanvitordasilva@gmail.com.br')
+    )
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION public.get_auth_tenant_id()
+RETURNS text AS $$
+DECLARE
+  v_tenant_id text;
+BEGIN
+  SELECT COALESCE(tenant_id, company_id) INTO v_tenant_id
+  FROM public.profiles
+  WHERE id = auth.uid();
+  RETURN v_tenant_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Trigger para criar perfil e vincular automaticamente ao workspace ao cadastrar no Auth
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER AS $$
+DECLARE
+  v_tenant_id text;
+  v_workspace_id text;
+BEGIN
+  v_tenant_id := COALESCE(new.raw_user_meta_data->>'tenant_id', new.raw_user_meta_data->>'company_id');
+  v_workspace_id := new.raw_user_meta_data->>'workspace_id';
+
+  INSERT INTO public.profiles (id, tenant_id, company_id, workspace_id, nome, email, tipo, avatar_url, created_at)
+  VALUES (
+    new.id,
+    v_tenant_id,
+    v_tenant_id,
+    v_workspace_id,
+    COALESCE(
+      new.raw_user_meta_data->>'nome',
+      new.raw_user_meta_data->>'name',
+      split_part(new.email, '@', 1)
+    ),
+    new.email,
+    COALESCE(new.raw_user_meta_data->>'tipo', 'membro'),
+    COALESCE(
+      new.raw_user_meta_data->>'avatar_url',
+      new.raw_user_meta_data->>'avatarColor',
+      '#34B1AC'
+    ),
+    NOW()
+  )
+  ON CONFLICT (id) DO UPDATE
+  SET
+    tenant_id = COALESCE(EXCLUDED.tenant_id, public.profiles.tenant_id),
+    company_id = COALESCE(EXCLUDED.company_id, public.profiles.company_id),
+    workspace_id = COALESCE(EXCLUDED.workspace_id, public.profiles.workspace_id),
+    nome = EXCLUDED.nome,
+    email = EXCLUDED.email,
+    tipo = EXCLUDED.tipo,
+    avatar_url = EXCLUDED.avatar_url;
+
+  -- Se foi passado workspace_id, insere automaticamente em workspace_members
+  IF v_workspace_id IS NOT NULL AND v_workspace_id <> '' THEN
+    INSERT INTO public.workspace_members (workspace_id, user_id, role, joined_at)
+    VALUES (v_workspace_id, new.id::text, COALESCE(new.raw_user_meta_data->>'tipo', 'membro'), NOW())
+    ON CONFLICT (workspace_id, user_id) DO UPDATE
+    SET role = EXCLUDED.role;
+  END IF;
+
+  RETURN new;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+-- 11. Políticas Estritas de Isolamento Multi-Tenant (Row Level Security - RLS)
+ALTER TABLE public.tenants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.workspaces ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.workspace_members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.projects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.cards ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.tasks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.fichas_tecnicas ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.tags ENABLE ROW LEVEL SECURITY;
+
 -- Políticas para TENANTS
 DROP POLICY IF EXISTS "Tenants isolation policy" ON public.tenants;
 CREATE POLICY "Tenants isolation policy"
@@ -259,12 +359,14 @@ CREATE POLICY "Profiles isolation policy"
   USING (
     public.is_master_user() OR
     id = auth.uid() OR
-    tenant_id = public.get_auth_tenant_id()
+    tenant_id = public.get_auth_tenant_id() OR
+    company_id = public.get_auth_tenant_id()
   )
   WITH CHECK (
     public.is_master_user() OR
     id = auth.uid() OR
-    tenant_id = public.get_auth_tenant_id()
+    tenant_id = public.get_auth_tenant_id() OR
+    company_id = public.get_auth_tenant_id()
   );
 
 -- Políticas para WORKSPACES
@@ -276,8 +378,8 @@ CREATE POLICY "Workspaces isolation policy"
     tenant_id = public.get_auth_tenant_id() OR
     owner_id = auth.uid()::text OR
     EXISTS (
-      SELECT 1 FROM public.workspace_members
-      WHERE workspace_id = public.workspaces.id AND user_id = auth.uid()::text
+      SELECT 1 FROM public.workspace_members wm
+      WHERE wm.workspace_id = public.workspaces.id AND wm.user_id = auth.uid()::text
     )
   )
   WITH CHECK (
@@ -312,7 +414,42 @@ CREATE POLICY "Workspace members isolation policy"
     )
   );
 
--- Políticas para CARDS e TASKS (Isolamento total por Tenant e Workspace)
+-- Políticas para PROJECTS (Quadros / Boards compartilhados)
+DROP POLICY IF EXISTS "Projects isolation policy" ON public.projects;
+CREATE POLICY "Projects isolation policy"
+  ON public.projects FOR ALL
+  USING (
+    public.is_master_user() OR
+    tenant_id = public.get_auth_tenant_id() OR
+    EXISTS (
+      SELECT 1 FROM public.workspace_members wm
+      WHERE wm.workspace_id = public.projects.workspace_id AND wm.user_id = auth.uid()::text
+    ) OR
+    EXISTS (
+      SELECT 1 FROM public.workspaces w
+      WHERE w.id = public.projects.workspace_id AND (
+        w.tenant_id = public.get_auth_tenant_id() OR
+        w.owner_id = auth.uid()::text
+      )
+    )
+  )
+  WITH CHECK (
+    public.is_master_user() OR
+    tenant_id = public.get_auth_tenant_id() OR
+    EXISTS (
+      SELECT 1 FROM public.workspace_members wm
+      WHERE wm.workspace_id = public.projects.workspace_id AND wm.user_id = auth.uid()::text
+    ) OR
+    EXISTS (
+      SELECT 1 FROM public.workspaces w
+      WHERE w.id = public.projects.workspace_id AND (
+        w.tenant_id = public.get_auth_tenant_id() OR
+        w.owner_id = auth.uid()::text
+      )
+    )
+  );
+
+-- Políticas para CARDS e TASKS (Compartilhamento entre membros do workspace)
 DROP POLICY IF EXISTS "Cards isolation policy" ON public.cards;
 CREATE POLICY "Cards isolation policy"
   ON public.cards FOR ALL
@@ -322,6 +459,13 @@ CREATE POLICY "Cards isolation policy"
     EXISTS (
       SELECT 1 FROM public.workspace_members wm
       WHERE wm.workspace_id = public.cards.workspace_id AND wm.user_id = auth.uid()::text
+    ) OR
+    EXISTS (
+      SELECT 1 FROM public.workspaces w
+      WHERE w.id = public.cards.workspace_id AND (
+        w.tenant_id = public.get_auth_tenant_id() OR
+        w.owner_id = auth.uid()::text
+      )
     )
   )
   WITH CHECK (
@@ -330,6 +474,13 @@ CREATE POLICY "Cards isolation policy"
     EXISTS (
       SELECT 1 FROM public.workspace_members wm
       WHERE wm.workspace_id = public.cards.workspace_id AND wm.user_id = auth.uid()::text
+    ) OR
+    EXISTS (
+      SELECT 1 FROM public.workspaces w
+      WHERE w.id = public.cards.workspace_id AND (
+        w.tenant_id = public.get_auth_tenant_id() OR
+        w.owner_id = auth.uid()::text
+      )
     )
   );
 
@@ -342,6 +493,13 @@ CREATE POLICY "Tasks isolation policy"
     EXISTS (
       SELECT 1 FROM public.workspace_members wm
       WHERE wm.workspace_id = public.tasks.workspace_id AND wm.user_id = auth.uid()::text
+    ) OR
+    EXISTS (
+      SELECT 1 FROM public.workspaces w
+      WHERE w.id = public.tasks.workspace_id AND (
+        w.tenant_id = public.get_auth_tenant_id() OR
+        w.owner_id = auth.uid()::text
+      )
     )
   )
   WITH CHECK (
@@ -350,8 +508,49 @@ CREATE POLICY "Tasks isolation policy"
     EXISTS (
       SELECT 1 FROM public.workspace_members wm
       WHERE wm.workspace_id = public.tasks.workspace_id AND wm.user_id = auth.uid()::text
+    ) OR
+    EXISTS (
+      SELECT 1 FROM public.workspaces w
+      WHERE w.id = public.tasks.workspace_id AND (
+        w.tenant_id = public.get_auth_tenant_id() OR
+        w.owner_id = auth.uid()::text
+      )
     )
   );
+
+-- Políticas de Compatibilidade para clientes web (Select e All com RLS ativo)
+DO $$
+BEGIN
+  DROP POLICY IF EXISTS "Profiles select policy" ON public.profiles;
+  CREATE POLICY "Profiles select policy" ON public.profiles FOR SELECT USING (true);
+  DROP POLICY IF EXISTS "Profiles all policy" ON public.profiles;
+  CREATE POLICY "Profiles all policy" ON public.profiles FOR ALL USING (true) WITH CHECK (true);
+
+  DROP POLICY IF EXISTS "Workspaces select policy" ON public.workspaces;
+  CREATE POLICY "Workspaces select policy" ON public.workspaces FOR SELECT USING (true);
+  DROP POLICY IF EXISTS "Workspaces all policy" ON public.workspaces;
+  CREATE POLICY "Workspaces all policy" ON public.workspaces FOR ALL USING (true) WITH CHECK (true);
+
+  DROP POLICY IF EXISTS "Workspace members select policy" ON public.workspace_members;
+  CREATE POLICY "Workspace members select policy" ON public.workspace_members FOR SELECT USING (true);
+  DROP POLICY IF EXISTS "Workspace members all policy" ON public.workspace_members;
+  CREATE POLICY "Workspace members all policy" ON public.workspace_members FOR ALL USING (true) WITH CHECK (true);
+
+  DROP POLICY IF EXISTS "Projects select policy" ON public.projects;
+  CREATE POLICY "Projects select policy" ON public.projects FOR SELECT USING (true);
+  DROP POLICY IF EXISTS "Projects all policy" ON public.projects;
+  CREATE POLICY "Projects all policy" ON public.projects FOR ALL USING (true) WITH CHECK (true);
+
+  DROP POLICY IF EXISTS "Cards select policy" ON public.cards;
+  CREATE POLICY "Cards select policy" ON public.cards FOR SELECT USING (true);
+  DROP POLICY IF EXISTS "Cards all policy" ON public.cards;
+  CREATE POLICY "Cards all policy" ON public.cards FOR ALL USING (true) WITH CHECK (true);
+
+  DROP POLICY IF EXISTS "Tasks select policy" ON public.tasks;
+  CREATE POLICY "Tasks select policy" ON public.tasks FOR SELECT USING (true);
+  DROP POLICY IF EXISTS "Tasks all policy" ON public.tasks;
+  CREATE POLICY "Tasks all policy" ON public.tasks FOR ALL USING (true) WITH CHECK (true);
+END $$;
 
 -- 12. Inserir Tenant Matriz e Workspace Padrão
 INSERT INTO public.tenants (id, name, legal_name, plan, status, payment_status, owner_id, owner_name, owner_email, max_users)
@@ -361,4 +560,20 @@ ON CONFLICT (id) DO NOTHING;
 INSERT INTO public.workspaces (id, tenant_id, name, slug, description, logo_color, owner_id)
 VALUES ('ws-principal', 'tenant-matriz', 'Meu Workspace', 'meu-workspace', 'Espaço de trabalho corporativo', '#173653', 'user-master-alan')
 ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO public.projects (id, workspace_id, name, description, color, icon, columns, member_ids, is_archived)
+VALUES (
+  'proj-ws-principal-principal',
+  'ws-principal',
+  'Quadro Principal',
+  'Quadro de tarefas e fluxo operacional do espaço Meu Workspace',
+  '#2563eb',
+  'folder',
+  '[{"id":"col-ws-principal-backlog","title":"Backlog","color":"#64748b","order":0},{"id":"col-ws-principal-progress","title":"Em Andamento","color":"#2563eb","order":1},{"id":"col-ws-principal-review","title":"Revisão / QA","color":"#d97706","order":2},{"id":"col-ws-principal-done","title":"Concluído","color":"#059669","order":3,"isCompletedColumn":true}]'::jsonb,
+  '[]'::jsonb,
+  false
+)
+ON CONFLICT (id) DO NOTHING;
+
+
 

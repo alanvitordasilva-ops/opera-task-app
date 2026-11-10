@@ -233,6 +233,10 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
     setIsSubmitting(true);
 
     try {
+      const targetWorkspaces = availableWorkspaces.filter((w) => selectedWorkspaceIds.includes(w.id));
+      const firstTargetWs = targetWorkspaces[0];
+      const assignedCompId = firstTargetWs?.companyId || (firstTargetWs as any)?.tenantId || activeUser?.companyId || activeUser?.tenantId || firstTargetWs?.id;
+
       const result = await StorageService.registerUser({
         name: cleanName,
         username: cleanUsername,
@@ -241,6 +245,8 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
         role,
         workspaceIds: selectedWorkspaceIds,
         workspaceId: selectedWorkspaceIds[0],
+        companyId: assignedCompId,
+        tenantId: assignedCompId,
       });
 
       setIsSubmitting(false);
@@ -250,7 +256,6 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
         return;
       }
 
-      const targetWorkspaces = availableWorkspaces.filter((w) => selectedWorkspaceIds.includes(w.id));
       const targetWsNames = targetWorkspaces.map((w) => w.name);
       const combinedWsName = targetWsNames.join(', ') || 'Workspaces Vinculados';
 

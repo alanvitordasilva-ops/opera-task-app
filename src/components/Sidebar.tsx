@@ -150,19 +150,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
         }
       }
 
-      // 2. Deve pertencer ao workspace ativo ou à empresa/tenant ativa
+      // 2. Deve pertencer ao workspace ativo ou à mesma empresa/equipe
       const isMember = currentWorkspace?.members?.some((member) => member.userId === u.id);
       const isOwner = currentWorkspace?.ownerId === u.id;
       const wsCompanyId = currentWorkspace?.companyId || (currentWorkspace as any)?.tenantId;
       const isSameCompany = Boolean(
-        wsCompanyId && (u.companyId === wsCompanyId || u.tenantId === wsCompanyId)
+        wsCompanyId && (u.companyId === wsCompanyId || u.tenantId === wsCompanyId || u.companyId === currentWorkspace?.id)
+      );
+      const userCompanyId = currentUser.companyId || currentUser.tenantId;
+      const isSameUserCompany = Boolean(
+        userCompanyId && (u.companyId === userCompanyId || u.tenantId === userCompanyId)
       );
 
+      if (u.id === currentUser.id) return true;
       if (isMaster && isUserMaster(u)) return true;
 
-      return Boolean(isMember || isOwner || isSameCompany);
+      return Boolean(isMember || isOwner || isSameCompany || isSameUserCompany);
     });
-  }, [allUsers, currentWorkspace, isMaster]);
+  }, [allUsers, currentWorkspace, isMaster, currentUser]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
