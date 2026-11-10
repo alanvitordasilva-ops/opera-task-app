@@ -575,5 +575,114 @@ VALUES (
 )
 ON CONFLICT (id) DO NOTHING;
 
+-- 13. Tabela de Planos de Assinatura Editáveis (subscription_plans)
+CREATE TABLE IF NOT EXISTS public.subscription_plans (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  badge TEXT,
+  description TEXT,
+  price_monthly NUMERIC DEFAULT 0,
+  price_annual NUMERIC DEFAULT 0,
+  stripe_monthly_price_id TEXT,
+  stripe_annual_price_id TEXT,
+  max_users INTEGER DEFAULT 5,
+  max_boards INTEGER DEFAULT 3,
+  features JSONB DEFAULT '[]'::jsonb,
+  modules JSONB DEFAULT '{}'::jsonb,
+  popular BOOLEAN DEFAULT false,
+  is_active BOOLEAN DEFAULT true,
+  order_index INTEGER DEFAULT 0,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE public.subscription_plans ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+  DROP POLICY IF EXISTS "Subscription plans read policy" ON public.subscription_plans;
+  CREATE POLICY "Subscription plans read policy" ON public.subscription_plans FOR SELECT USING (true);
+
+  DROP POLICY IF EXISTS "Subscription plans write policy" ON public.subscription_plans;
+  CREATE POLICY "Subscription plans write policy" ON public.subscription_plans FOR ALL USING (true) WITH CHECK (true);
+END $$;
+
+-- 14. Inserir Planos Pré-definidos Editáveis (Gratuito, Básico, Intermediário, Profissional)
+INSERT INTO public.subscription_plans (id, name, badge, description, price_monthly, price_annual, max_users, max_boards, features, modules, popular, is_active, order_index)
+VALUES
+(
+  'gratuito',
+  'Gratuito',
+  'Para Conhecer',
+  'Acesso essencial para conhecer e testar a plataforma OperaTask',
+  0,
+  0,
+  3,
+  1,
+  '["Até 3 membros na equipe", "1 quadro (board) operacional", "Visualização Kanban e Lista", "Cards com checklists e anexos básicos", "Fichas técnicas essenciais", "Suporte via FAQ e comunidade"]'::jsonb,
+  '{"advancedReports": false, "customAttachments": false, "automations": false, "unlimitedFichas": false, "exportData": false, "auditLog": false, "prioritySupport": false}'::jsonb,
+  false,
+  true,
+  0
+),
+(
+  'basico',
+  'Básico',
+  'Início da Operação',
+  'Estruturação ideal para pequenas equipes e fluxos operacionais',
+  97,
+  970,
+  8,
+  3,
+  '["Até 8 membros na equipe", "Até 3 quadros (boards) operacionais", "Fichas técnicas padrão", "Filtros avançados e tags personalizadas", "Histórico de atividades recentes", "Exportação básica de relatórios", "Suporte por e-mail em horário comercial"]'::jsonb,
+  '{"advancedReports": false, "customAttachments": true, "automations": false, "unlimitedFichas": false, "exportData": true, "auditLog": false, "prioritySupport": false}'::jsonb,
+  false,
+  true,
+  1
+),
+(
+  'intermediario',
+  'Intermediário',
+  'Mais Popular',
+  'Controle completo de produção para empresas em expansão',
+  197,
+  1970,
+  20,
+  8,
+  '["Até 20 membros na equipe", "Até 8 quadros (boards) simultâneos", "Fichas técnicas completas com cálculo de custos", "Relatórios de produtividade e métricas avançadas", "Anexos de mídias e fotos ilimitados", "Exportação de dados em PDF / Excel", "Suporte prioritário via WhatsApp"]'::jsonb,
+  '{"advancedReports": true, "customAttachments": true, "automations": true, "unlimitedFichas": true, "exportData": true, "auditLog": true, "prioritySupport": true}'::jsonb,
+  true,
+  true,
+  2
+),
+(
+  'profissional',
+  'Profissional',
+  'Máxima Potência',
+  'Escala corporativa com automações, auditoria e suporte VIP',
+  347,
+  3470,
+  50,
+  25,
+  '["Até 50 membros na equipe", "Até 25 quadros (boards) de projetos", "Automações e gatilhos de produção", "Dashboard macro com BI e indicadores operacionais", "Registro de auditoria e conformidade", "Fichas técnicas e ordens ilimitadas", "Gerente de contas dedicado e suporte 24/7"]'::jsonb,
+  '{"advancedReports": true, "customAttachments": true, "automations": true, "unlimitedFichas": true, "exportData": true, "auditLog": true, "prioritySupport": true}'::jsonb,
+  false,
+  true,
+  3
+)
+ON CONFLICT (id) DO UPDATE SET
+  name = EXCLUDED.name,
+  badge = EXCLUDED.badge,
+  description = EXCLUDED.description,
+  price_monthly = EXCLUDED.price_monthly,
+  price_annual = EXCLUDED.price_annual,
+  max_users = EXCLUDED.max_users,
+  max_boards = EXCLUDED.max_boards,
+  features = EXCLUDED.features,
+  modules = EXCLUDED.modules,
+  popular = EXCLUDED.popular,
+  is_active = EXCLUDED.is_active,
+  order_index = EXCLUDED.order_index;
+
+
 
 

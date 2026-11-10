@@ -13,6 +13,8 @@ import {
   WorkspaceRole,
   SupabaseProfile,
   BoardColumn,
+  SubscriptionPlan,
+  DEFAULT_SUBSCRIPTION_PLANS,
 } from '../types/index.ts';
 
 const SUPABASE_CONFIG_KEY = 'operatask_supabase_config_v1';
@@ -1109,6 +1111,172 @@ export class SupabaseService {
   static async syncTask(task: Task): Promise<boolean> {
     const res = await this.createTask(task);
     return res.success;
+  }
+
+  // ==========================================================================
+  // Planos de Assinatura (Subscription Plans) CRUD
+  // ==========================================================================
+  static async fetchSubscriptionPlans(): Promise<{ success: boolean; plans: SubscriptionPlan[]; error?: string }> {
+    const client = this.getClient();
+    if (!client) {
+      return { success: false, plans: DEFAULT_SUBSCRIPTION_PLANS, error: 'Supabase não conectado' };
+    }
+
+    try {
+      const { data, error } = await client
+        .from('subscription_plans')
+        .select('*')
+        .order('order_index', { ascending: true });
+
+      if (error) {
+        if (!error.message?.includes('does not exist')) {
+          console.warn('[SupabaseService] Erro ao buscar planos de assinatura:', error);
+        }
+        return { success: false, plans: DEFAULT_SUBSCRIPTION_PLANS, error: error.message };
+      }
+
+      if (!data || data.length === 0) {
+        await this.seedDefaultSubscriptionPlans();
+        return { success: true, plans: DEFAULT_SUBSCRIPTION_PLANS };
+      }
+
+      const mapped: SubscriptionPlan[] = data.map((row: any) => ({
+        id: row.id,
+        name: row.name,
+        badge: row.badge || '',
+        description: row.description || '',
+        priceMonthly: Number(row.price_monthly ?? 0),
+        priceAnnual: Number(row.price_annual ?? 0),
+        stripeMonthlyPriceId: row.stripe_monthly_price_id || '',
+        stripeAnnualPriceId: row.stripe_annual_price_id || '',
+        maxUsers: Number(row.max_users ?? 5),
+        maxBoards: Number(row.max_boards ?? 3),
+        features: Array.isArray(row.features) ? row.features : [],
+        modules: typeof row.modules === 'object' && row.modules !== null ? row.modules : {
+          advancedReports: false,
+          customAttachments: false,
+          automations: false,
+          unlimitedFichas: false,
+          exportData: false,
+          auditLog: false,
+          prioritySupport: false,
+        },
+        popular: Boolean(row.popular),
+        isActive: row.is_active !== false,
+        orderIndex: Number(row.order_index ?? 0),
+        updatedAt: row.updated_at || new Date().toISOString(),
+      }));
+
+      return { success: true, plans: mapped };
+    } catch (err: any) {
+      console.warn('[SupabaseService] Erro ao buscar subscription_plans:', err);
+      return { success: false, plans: DEFAULT_SUBSCRIPTION_PLANS, error: err.message };
+    }
+  }
+
+  static async seedDefaultSubscriptionPlans(): Promise<void> {
+    const client = this.getClient();
+    if (!client) return;
+    try {
+      for (const p of DEFAULT_SUBSCRIPTION_PLANS) {
+        await client.from('subscription_plans').upsert({
+          id: p.id,
+          name: p.name,
+          badge: p.badge,
+          description: p.description,
+          price_monthly: p.priceMonthly,
+          price_annual: p.priceAnnual,
+          stripe_monthly_price_id: p.stripeMonthlyPriceId || null,
+          stripe_annual_price_id: p.stripeAnnualPriceId || null,
+          max_users: p.maxUsers,
+          max_boards: p.maxBoards,
+          features: p.features,
+          modules: p.modules,
+          popular: p.popular || false,
+          is_active: p.isActive,
+          order_index: p.orderIndex,
+          updated_at: new Date().toISOString(),
+        });
+      }
+    } catch (e) {
+      console.warn('[SupabaseService] Aviso ao semear planos padrões no Supabase:', e);
+    }
+  }
+
+  static async saveSubscriptionPlan(plan: SubscriptionPlan): Promise<{ success: boolean; error?: string }> {
+    const client = this.getClient();
+    if (!client) return { success: false, error: 'Supabase não conectado' };
+
+    try {
+      const payload: any = {
+        id: plan.id,
+        name: plan.name,
+        badge: plan.badge,
+        description: plan.description,
+        price_monthly: plan.priceMonthly,
+        price_annual: plan.priceAnnual,
+        stripe_monthly_price_id: plan.stripeMonthlyPriceId || null,
+        stripe_annual_price_id: plan.stripeAnnualPriceId || null,
+        max_users: plan.maxUsers,
+        max_boards: plan.maxBoards,
+        features: plan.features,
+        modules: plan.modules,
+        popular: Boolean(plan.popular),
+        is_active: plan.isActive,
+        order_index: plan.orderIndex,
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error } = await client.from('subscription_plans').upsert(payload);
+      if (error) {
+        console.warn('[SupabaseService] Erro ao salvar subscription_plan:', error);
+        return { success: false, error: error.message };
+      }
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  /**
+   * Limpeza em cascata de dados de teste no Supabase (Preservando Master e Matriz)
+   */
+  static async resetTestDataOnSupabase(): Promise<{ success: boolean; error?: string }> {
+    const client = this.getClient();
+    if (!client) return { success: false, error: 'Supabase não conectado' };
+
+    try {
+      // 1. Apaga tarefas/cards de teste (não pertencentes a ws-principal)
+      await client.from('tasks').delete().neq('workspace_id', 'ws-principal');
+      await client.from('cards').delete().neq('workspace_id', 'ws-principal');
+
+      // 2. Apaga projetos que não sejam o principal
+      await client.from('projects').delete().neq('workspace_id', 'ws-principal');
+
+      // 3. Apaga membros que não sejam o Master
+      await client.from('workspace_members').delete().neq('user_id', 'user-master-alan');
+
+      // 4. Apaga workspaces de teste (mantendo ws-principal)
+      await client.from('workspaces').delete().neq('id', 'ws-principal');
+
+      // 5. Apaga tenants de teste (mantendo tenant-matriz)
+      await client.from('tenants').delete().neq('id', 'tenant-matriz');
+
+      // 6. Apaga perfis de teste na tabela profiles (mantendo master)
+      await client
+        .from('profiles')
+        .delete()
+        .neq('id', 'user-master-alan')
+        .not('email', 'in', '("alanvitordasilva@gmail.com.br","alanvitordasilva@gmail.com")');
+
+      // 7. Apaga fichas técnicas de teste vinculadas a outros workspaces
+      await client.from('fichas_tecnicas').delete().neq('workspace_id', 'ws-principal');
+
+      return { success: true };
+    } catch (err: any) {
+      console.warn('[SupabaseService] Erro ao limpar dados de teste no Supabase:', err);
+      return { success: false, error: err.message };
+    }
   }
 
   // Gerar SQL completo para criação de tabelas no Supabase SQL Editor

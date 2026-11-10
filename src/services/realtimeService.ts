@@ -18,7 +18,8 @@ export type SyncEntity =
   | 'users'
   | 'tags'
   | 'activities'
-  | 'clients';
+  | 'clients'
+  | 'subscription_plans';
 
 export interface SyncMessage<T = any> {
   type: 'SYNC_UPDATE' | 'INITIAL_STATE' | 'PING' | 'PONG';
@@ -373,6 +374,7 @@ class RealtimeServiceImpl {
       tags: 'operatask_clean_v1_tags',
       activities: 'operatask_clean_v1_activities',
       clients: 'operatask_clean_v1_clients',
+      subscription_plans: 'operatask_clean_v1_subscription_plans',
     };
     const storageKey = entityToKey[entity];
     if (storageKey && typeof window !== 'undefined' && data) {

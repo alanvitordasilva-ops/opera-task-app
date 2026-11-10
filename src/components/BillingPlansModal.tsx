@@ -22,6 +22,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { StripeService } from '../services/stripeService.ts';
+import { StorageService } from '../services/storage.ts';
 
 interface BillingPlansModalProps {
   isOpen: boolean;
@@ -47,7 +48,7 @@ export const BillingPlansModal: React.FC<BillingPlansModalProps> = ({
 
   const currentPlanKey = normalizePlan(currentClient.plan);
 
-  const handleSelectPlan = async (targetPlanKey: 'trial' | 'basico' | 'profissional' | 'enterprise') => {
+  const handleSelectPlan = async (targetPlanKey: string) => {
     if (targetPlanKey === currentPlanKey && currentClient.paymentStatus === 'paid') {
       onShowToast({
         type: 'info',
@@ -59,8 +60,9 @@ export const BillingPlansModal: React.FC<BillingPlansModalProps> = ({
     setIsProcessing(targetPlanKey);
 
     try {
+      const selectedPlan = StorageService.getPlanById(targetPlanKey);
       const res = await StripeService.createCheckoutSession({
-        planId: targetPlanKey,
+        planId: targetPlanKey as any,
         tenantId: currentClient.id,
         customerEmail: currentClient.ownerEmail || currentUser.email,
         companyName: currentClient.name,
@@ -71,13 +73,13 @@ export const BillingPlansModal: React.FC<BillingPlansModalProps> = ({
           onClientUpdated(res.client);
         } else {
           // Busca versão atualizada
-          const updated = await StripeService.updateTenantBilling(currentClient.id, targetPlanKey, 'paid');
+          const updated = await StripeService.updateTenantBilling(currentClient.id, targetPlanKey as any, 'paid');
           if (updated) onClientUpdated(updated);
         }
 
         onShowToast({
           type: 'success',
-          message: `Plano ${PLAN_CONFIGS[targetPlanKey].name} ativado com sucesso!`,
+          message: `Plano ${selectedPlan.name} ativado com sucesso!`,
         });
 
         // Se for URL externa do Stripe real, redireciona
@@ -148,12 +150,7 @@ export const BillingPlansModal: React.FC<BillingPlansModalProps> = ({
     }
   };
 
-  const availablePlans: Array<'trial' | 'basico' | 'profissional' | 'enterprise'> = [
-    'trial',
-    'basico',
-    'profissional',
-    'enterprise',
-  ];
+  const subscriptionPlans = StorageService.getSubscriptionPlans().filter((p) => p.isActive);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-sm overflow-y-auto">
@@ -273,21 +270,21 @@ export const BillingPlansModal: React.FC<BillingPlansModalProps> = ({
             </div>
           </div>
 
-          {/* Cards dos Planos */}
+          {/* Cards dos Planos Dinâmicos */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-            {availablePlans.map((planKey) => {
-              const plan = PLAN_CONFIGS[planKey];
-              const isCurrent = currentPlanKey === planKey;
+            {subscriptionPlans.map((plan) => {
+              const isCurrent = currentPlanKey === plan.id || (currentPlanKey === 'gratuito' && plan.id === 'trial');
               const isPopular = plan.popular;
 
               // Preço com desconto anual se aplicável
-              const monthlyPrice = billingCycle === 'yearly' && plan.priceMonthly > 0
-                ? Math.round(plan.priceMonthly * 0.83)
-                : plan.priceMonthly;
+              const monthlyPrice =
+                billingCycle === 'yearly' && plan.priceAnnual > 0
+                  ? Math.round(plan.priceAnnual / 12)
+                  : plan.priceMonthly;
 
               return (
                 <div
-                  key={planKey}
+                  key={plan.id}
                   className={`relative flex flex-col rounded-2xl border transition-all duration-200 ${
                     isCurrent
                       ? 'border-[#34B1AC] bg-[#34B1AC]/5 dark:bg-[#34B1AC]/10 shadow-lg ring-2 ring-[#34B1AC]'
@@ -303,11 +300,11 @@ export const BillingPlansModal: React.FC<BillingPlansModalProps> = ({
                     </div>
                   ) : isPopular ? (
                     <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-[#173653] text-white text-[11px] font-bold px-3 py-0.5 rounded-full shadow-xs uppercase tracking-wider">
-                      {plan.badge}
+                      {plan.badge || 'MAIS POPULAR'}
                     </div>
                   ) : (
                     <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 text-[10px] font-semibold px-2.5 py-0.5 rounded-full">
-                      {plan.badge}
+                      {plan.badge || plan.name.toUpperCase()}
                     </div>
                   )}
 
@@ -328,8 +325,13 @@ export const BillingPlansModal: React.FC<BillingPlansModalProps> = ({
                         </span>
                         <span className="text-xs text-slate-500">/mês</span>
                       </div>
-                      <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 font-medium">
-                        {plan.maxUsers >= 9999 ? 'Usuários Ilimitados' : `Até ${plan.maxUsers} usuários`}
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 font-medium space-y-0.5">
+                        <div>
+                          {plan.maxUsers >= 9999 ? 'Usuários Ilimitados' : `Até ${plan.maxUsers} usuários`}
+                        </div>
+                        <div className="text-[10px] text-slate-400 dark:text-slate-500">
+                          {plan.maxBoards >= 9999 ? 'Quadros Ilimitados' : `Até ${plan.maxBoards} quadros`}
+                        </div>
                       </div>
                     </div>
 
@@ -345,7 +347,7 @@ export const BillingPlansModal: React.FC<BillingPlansModalProps> = ({
 
                     {/* Botão de Ação */}
                     <button
-                      onClick={() => handleSelectPlan(planKey)}
+                      onClick={() => handleSelectPlan(plan.id)}
                       disabled={isProcessing !== null || (isCurrent && currentClient.paymentStatus === 'paid')}
                       className={`w-full py-2.5 px-4 rounded-xl text-xs font-semibold transition-all duration-150 flex items-center justify-center gap-1.5 cursor-pointer ${
                         isCurrent && currentClient.paymentStatus === 'paid'
@@ -355,7 +357,7 @@ export const BillingPlansModal: React.FC<BillingPlansModalProps> = ({
                           : 'bg-[#173653] hover:bg-[#1f476d] text-white shadow-sm'
                       }`}
                     >
-                      {isProcessing === planKey ? (
+                      {isProcessing === plan.id ? (
                         <>
                           <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                           Processando...
@@ -367,7 +369,7 @@ export const BillingPlansModal: React.FC<BillingPlansModalProps> = ({
                           'Pagar Assinatura'
                         )
                       ) : plan.priceMonthly === 0 ? (
-                        'Testar 14 Dias'
+                        'Plano Gratuito'
                       ) : (
                         <>
                           Assinar Plano

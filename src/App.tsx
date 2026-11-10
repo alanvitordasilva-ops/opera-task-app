@@ -52,6 +52,7 @@ import { WelcomeEmptyState } from './components/WelcomeEmptyState.tsx';
 import { UserProfileModal } from './components/UserProfileModal.tsx';
 import { MasterAdminModal } from './components/MasterAdminModal.tsx';
 import { BillingPlansModal } from './components/BillingPlansModal.tsx';
+import { PlanLimitExceededModal } from './components/PlanLimitExceededModal.tsx';
 import { AlertTriangle, X, CheckCircle2, Info, Headphones, LogOut, ShieldAlert, CreditCard, Sparkles } from 'lucide-react';
 
 export default function App() {
@@ -230,6 +231,31 @@ export default function App() {
   const [isRegisterUserOpen, setIsRegisterUserOpen] = useState(false);
   const [isBillingPlansOpen, setIsBillingPlansOpen] = useState(false);
   const [isDismissedBillingWarning, setIsDismissedBillingWarning] = useState(false);
+  const [planLimitState, setPlanLimitState] = useState<{
+    isOpen: boolean;
+    limitType: 'create_board' | 'invite_member' | 'feature_locked';
+    currentCount?: number;
+    maxLimit?: number;
+    planName?: string;
+    customMessage?: string;
+  } | null>(null);
+
+  const handleOpenCreateBoard = () => {
+    const check = StorageService.validateWorkspaceLimit(currentWorkspace.id, 'create_board');
+    if (!check.allowed) {
+      setPlanLimitState({
+        isOpen: true,
+        limitType: 'create_board',
+        currentCount: check.currentCount,
+        maxLimit: check.maxLimit,
+        planName: check.planName,
+        customMessage: check.reason,
+      });
+      return;
+    }
+    setProjectToEdit(null);
+    setIsProjectModalOpen(true);
+  };
 
   const handleUpdateUser = (updatedUser: User) => {
     const updatedUsers = users.map((u) => (u.id === updatedUser.id ? updatedUser : u));
@@ -1440,6 +1466,20 @@ export default function App() {
   };
 
   const handleInviteMember = async (email: string, role: WorkspaceRole) => {
+    // Valida limite de membros do plano da empresa
+    const limitCheck = StorageService.validateWorkspaceLimit(currentWorkspace.id, 'invite_member');
+    if (!limitCheck.allowed) {
+      setPlanLimitState({
+        isOpen: true,
+        limitType: 'invite_member',
+        currentCount: limitCheck.currentCount,
+        maxLimit: limitCheck.maxLimit,
+        planName: limitCheck.planName,
+        customMessage: limitCheck.reason,
+      });
+      return;
+    }
+
     // Procura se usuário já existe com esse e-mail ou cria um novo perfil no banco remoto
     let targetUser = users.find((u) => u.email.toLowerCase() === email.toLowerCase());
     const companyId = currentWorkspace.companyId || (currentWorkspace as any).tenantId || currentWorkspace.id;
@@ -1809,10 +1849,7 @@ export default function App() {
         }}
         theme={theme}
         onToggleTheme={handleToggleTheme}
-        onOpenNewProjectModal={() => {
-          setProjectToEdit(null);
-          setIsProjectModalOpen(true);
-        }}
+        onOpenNewProjectModal={handleOpenCreateBoard}
         onEditProject={(p) => {
           setProjectToEdit(p);
           setIsProjectModalOpen(true);
@@ -1830,7 +1867,21 @@ export default function App() {
         onOpenSyncSettings={() => setIsSyncSettingsOpen(true)}
         onOpenUserProfile={() => setIsUserProfileModalOpen(true)}
         onOpenMasterPanel={() => setIsMasterModalOpen(true)}
-        onOpenRegisterUserModal={() => setIsRegisterUserOpen(true)}
+        onOpenRegisterUserModal={() => {
+          const check = StorageService.validateWorkspaceLimit(currentWorkspace.id, 'invite_member');
+          if (!check.allowed) {
+            setPlanLimitState({
+              isOpen: true,
+              limitType: 'invite_member',
+              currentCount: check.currentCount,
+              maxLimit: check.maxLimit,
+              planName: check.planName,
+              customMessage: check.reason,
+            });
+            return;
+          }
+          setIsRegisterUserOpen(true);
+        }}
         onOpenBillingPlans={() => setIsBillingPlansOpen(true)}
       />
 
@@ -1981,10 +2032,7 @@ export default function App() {
           <div className="max-w-7xl mx-auto h-full">
             {workspaceProjects.length === 0 ? (
               <WelcomeEmptyState
-                onCreateFirstBoard={() => {
-                  setProjectToEdit(null);
-                  setIsProjectModalOpen(true);
-                }}
+                onCreateFirstBoard={handleOpenCreateBoard}
                 onLoadSampleBoard={handleLoadSampleBoard}
                 workspaceName={currentWorkspace.name}
               />
@@ -2281,6 +2329,23 @@ export default function App() {
         }}
         onShowToast={showToast}
       />
+
+      {/* Modal de Alerta / Limite de Plano Atingido */}
+      {planLimitState?.isOpen && (
+        <PlanLimitExceededModal
+          isOpen={planLimitState.isOpen}
+          onClose={() => setPlanLimitState(null)}
+          limitType={planLimitState.limitType}
+          currentCount={planLimitState.currentCount}
+          maxLimit={planLimitState.maxLimit}
+          planName={planLimitState.planName}
+          customMessage={planLimitState.customMessage}
+          onOpenUpgradeModal={() => {
+            setPlanLimitState(null);
+            setIsBillingPlansOpen(true);
+          }}
+        />
+      )}
 
       {/* Notificação Flutuante / Toast de Feedback */}
       {toast && (

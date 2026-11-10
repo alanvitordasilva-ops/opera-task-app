@@ -4,6 +4,8 @@ import { UserAvatar } from './UserAvatar.tsx';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
 import { ColorPicker } from './ColorPicker.tsx';
 import { MasterClientsTab } from './MasterClientsTab.tsx';
+import { MasterPlansTab } from './MasterPlansTab.tsx';
+import { MasterResetModal } from './MasterResetModal.tsx';
 import { generateUserAccessMessage, formatUserProfileRole, OFFICIAL_APP_ACCESS_URL } from '../utils/userAccessMessage.ts';
 import {
   X,
@@ -32,6 +34,8 @@ import {
   Copy,
   Check,
   MessageSquare,
+  Sliders,
+  Terminal,
 } from 'lucide-react';
 import { StorageService } from '../services/storage.ts';
 import { getProductionAppUrl } from '../utils/appUrl.ts';
@@ -74,7 +78,8 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
   onEnterSupportMode,
   onShowToast,
 }) => {
-  const [activeTab, setActiveTab] = useState<'clientes' | 'usuarios' | 'workspaces' | 'quadros' | 'sistema'>('clientes');
+  const [activeTab, setActiveTab] = useState<'clientes' | 'usuarios' | 'workspaces' | 'quadros' | 'planos' | 'sistema'>('clientes');
+  const [isResetModalOpen, setIsResetModalOpen] = useState(false);
   const clientsList = propClients || StorageService.getClients();
 
   // Filtros de busca
@@ -508,6 +513,19 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
 
           <button
             type="button"
+            onClick={() => setActiveTab('planos')}
+            className={`flex items-center gap-2 py-3.5 px-3.5 text-xs font-bold border-b-2 transition-all cursor-pointer whitespace-nowrap ${
+              activeTab === 'planos'
+                ? 'border-[#34B1AC] text-[#173653] dark:text-[#34B1AC]'
+                : 'border-transparent text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+            }`}
+          >
+            <Sliders className="w-4 h-4" />
+            <span>Gestão de Planos & Limites</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => setActiveTab('sistema')}
             className={`flex items-center gap-2 py-3.5 px-3.5 text-xs font-bold border-b-2 transition-all cursor-pointer whitespace-nowrap ${
               activeTab === 'sistema'
@@ -861,7 +879,12 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
             </div>
           )}
 
-          {/* ================= ABA 4: MÉTRICAS & GOVERNANÇA ================= */}
+          {/* ================= ABA 4: PLANOS & TIERS ================= */}
+          {activeTab === 'planos' && (
+            <MasterPlansTab onShowToast={onShowToast} />
+          )}
+
+          {/* ================= ABA 5: MÉTRICAS & GOVERNANÇA ================= */}
           {activeTab === 'sistema' && (
             <div className="space-y-6">
               {/* Visão Analítica Global */}
@@ -929,14 +952,42 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
                 </div>
               </div>
 
-              {/* Ações Administrativas Críticas do Master */}
-              <div className="p-5 rounded-2xl bg-red-50/40 dark:bg-red-950/20 border border-red-200 dark:border-red-900/50 space-y-3">
-                <div className="flex items-center gap-2 text-xs font-bold text-red-900 dark:text-red-300">
-                  <AlertTriangle className="w-4 h-4 text-red-600 dark:text-red-400" />
-                  <span>Governança Master: Zerar Membros Cadastrados</span>
+              {/* PREPARAÇÃO PARA LANÇAMENTO: Reset Geral de Testes */}
+              <div className="p-5 rounded-2xl bg-red-50/60 dark:bg-red-950/30 border-2 border-red-300 dark:border-red-900/80 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-xs font-extrabold text-red-900 dark:text-red-200">
+                    <ShieldAlert className="w-5 h-5 text-red-600 dark:text-red-400" />
+                    <span>Preparação para Lançamento Oficial: Limpeza de Empresas e Testes</span>
+                  </div>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-200 dark:bg-red-900 text-red-800 dark:text-red-200">
+                    Ação Crítica
+                  </span>
+                </div>
+
+                <p className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
+                  Apaga todas as empresas, clientes, workspaces e usuários criados durante os testes do sistema, deixando o banco de dados limpo para iniciar as vendas comerciais. <strong>Preserva rigorosamente a conta Master, a Matriz e a tabela de planos de assinatura.</strong>
+                </p>
+
+                <div className="flex flex-wrap items-center gap-2.5 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsResetModalOpen(true)}
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold text-white bg-red-600 hover:bg-red-700 active:scale-98 shadow-sm transition-all cursor-pointer"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>Abrir Assistente de Limpeza & Reset de Teste</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Ações Administrativas Adicionais: Zerar apenas Membros */}
+              <div className="p-5 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 space-y-3">
+                <div className="flex items-center gap-2 text-xs font-bold text-slate-800 dark:text-slate-200">
+                  <Users className="w-4 h-4 text-slate-500" />
+                  <span>Governança Rápida: Zerar Apenas Membros Cadastrados</span>
                 </div>
                 <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-                  Remove todos os usuários/membros cadastrados no sistema, mantendo <strong>somente a conta Master</strong>. Toda a estrutura de Workspaces, Quadros, Colunas, Fichas Técnicas e Cards é 100% preservada.
+                  Remove todos os usuários/membros cadastrados no sistema, mantendo <strong>somente a conta Master</strong> e mantendo todos os workspaces e quadros existentes intactos.
                 </p>
                 <div className="pt-1">
                   <button
@@ -957,10 +1008,10 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
                         message: 'Membros cadastrados foram zerados! Apenas a conta Master permanece ativa.',
                       });
                     }}
-                    className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold text-white bg-red-600 hover:bg-red-700 active:scale-98 shadow-sm transition-all cursor-pointer"
+                    className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-600 transition-all cursor-pointer"
                   >
-                    <Trash2 className="w-4 h-4" />
-                    <span>Zerar Membros Cadastrados (Manter Apenas Master)</span>
+                    <Trash2 className="w-3.5 h-3.5 text-red-500" />
+                    <span>Zerar Apenas Membros (Manter Estrutura)</span>
                   </button>
                 </div>
               </div>
@@ -1384,6 +1435,24 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
           itemType="este quadro"
           message={`Tem certeza que deseja excluir o quadro "${deleteTargetProject.name}"? Todos os cards desta lista serão excluídos.`}
           confirmButtonText="Excluir Quadro"
+        />
+      )}
+
+      {/* Modal de Limpeza Geral de Dados de Teste */}
+      {isResetModalOpen && (
+        <MasterResetModal
+          isOpen={isResetModalOpen}
+          onClose={() => setIsResetModalOpen(false)}
+          onResetComplete={() => {
+            onUpdateUsers(StorageService.getUsers());
+            onUpdateWorkspaces(StorageService.getWorkspaces());
+            onUpdateProjects(StorageService.getProjects());
+            onUpdateTasks(StorageService.getTasks());
+            if (onUpdateClients) {
+              onUpdateClients(StorageService.getClients());
+            }
+          }}
+          onShowToast={onShowToast}
         />
       )}
     </div>

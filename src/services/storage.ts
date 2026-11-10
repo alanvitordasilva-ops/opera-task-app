@@ -18,6 +18,9 @@ import {
   PaymentStatus,
   PLAN_CONFIGS,
   SupportModeState,
+  SubscriptionPlan,
+  DEFAULT_SUBSCRIPTION_PLANS,
+  normalizePlan,
 } from '../types/index.ts';
 import { SupabaseService } from './supabaseService.ts';
 import { RealtimeService, SyncEntity } from './realtimeService.ts';
@@ -39,6 +42,7 @@ const STORAGE_KEYS = {
   FICHAS_TECNICAS: 'operatask_clean_v1_fichas_tecnicas',
   CLIENTS: 'operatask_clean_v1_clients',
   SUPPORT_MODE: 'operatask_clean_v1_support_mode',
+  SUBSCRIPTION_PLANS: 'operatask_clean_v1_subscription_plans',
 };
 
 export const MASTER_USER: User = {
@@ -1640,6 +1644,317 @@ export const StorageService = {
 
   clearSupportMode(): void {
     this.setSupportMode(null);
+  },
+
+  // ==========================================================================
+  // GESTÃO DINÂMICA DE PLANOS E ASSINATURAS (CONFIGURADOS PELO MASTER)
+  // ==========================================================================
+
+  getSubscriptionPlans(): SubscriptionPlan[] {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEYS.SUBSCRIPTION_PLANS);
+      let list: SubscriptionPlan[] = stored ? JSON.parse(stored) : [];
+
+      if (!Array.isArray(list) || list.length === 0) {
+        list = [...DEFAULT_SUBSCRIPTION_PLANS];
+        localStorage.setItem(STORAGE_KEYS.SUBSCRIPTION_PLANS, JSON.stringify(list));
+      }
+
+      // Garante que os 4 planos pré-definidos essenciais existam
+      const requiredPlanIds: ('gratuito' | 'basico' | 'intermediario' | 'profissional')[] = [
+        'gratuito',
+        'basico',
+        'intermediario',
+        'profissional',
+      ];
+
+      let modified = false;
+      for (const reqId of requiredPlanIds) {
+        if (!list.some((p) => p.id === reqId)) {
+          const defaultPlan = DEFAULT_SUBSCRIPTION_PLANS.find((dp) => dp.id === reqId);
+          if (defaultPlan) {
+            list.push(defaultPlan);
+            modified = true;
+          }
+        }
+      }
+
+      list.sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0));
+
+      if (modified) {
+        localStorage.setItem(STORAGE_KEYS.SUBSCRIPTION_PLANS, JSON.stringify(list));
+      }
+      return list;
+    } catch {
+      return DEFAULT_SUBSCRIPTION_PLANS;
+    }
+  },
+
+  saveSubscriptionPlans(plans: SubscriptionPlan[], immediate = true): void {
+    localStorage.setItem(STORAGE_KEYS.SUBSCRIPTION_PLANS, JSON.stringify(plans));
+    handleSaveMutation(STORAGE_KEYS.SUBSCRIPTION_PLANS, plans, immediate);
+
+    // 1. Broadcast em tempo real para sincronização instantânea
+    RealtimeService.broadcast('subscription_plans', plans, {
+      action: 'update_subscription_plans',
+      targetId: 'all',
+    });
+
+    // 2. Persiste em segundo plano no Supabase
+    if (SupabaseService.isConfigured()) {
+      for (const p of plans) {
+        SupabaseService.saveSubscriptionPlan(p).catch((err) => {
+          console.warn('[StorageService] Falha ao persistir plano no Supabase:', err);
+        });
+      }
+    }
+
+    // 3. Persiste no servidor backend se disponível
+    if (isServerApiAvailable()) {
+      fetch('/api/sync/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subscription_plans: plans }),
+      }).catch(() => {});
+    }
+  },
+
+  getPlanById(planId: string): SubscriptionPlan {
+    const plans = this.getSubscriptionPlans();
+    const normalized = normalizePlan(planId);
+    const found = plans.find((p) => p.id === normalized || p.id === planId);
+    if (found) return found;
+    return DEFAULT_SUBSCRIPTION_PLANS.find((p) => p.id === normalized) || DEFAULT_SUBSCRIPTION_PLANS[0];
+  },
+
+  getPlanForClient(client?: ClientCompany | null, workspaceId?: string): SubscriptionPlan {
+    if (client) {
+      return this.getPlanById(client.plan);
+    }
+    if (workspaceId) {
+      const tenant = this.getCurrentTenant(undefined, workspaceId);
+      if (tenant) return this.getPlanById(tenant.plan);
+      const workspaces = this.getWorkspaces();
+      const ws = workspaces.find((w) => w.id === workspaceId);
+      if (ws?.clientPlan) return this.getPlanById(ws.clientPlan);
+    }
+    return this.getPlanById('gratuito');
+  },
+
+  /**
+   * Validação estrita de limites do plano da empresa
+   * Chamado antes de criar novo quadro ou cadastrar novo membro
+   */
+  validateWorkspaceLimit(
+    workspaceId: string,
+    action: 'create_board' | 'invite_member'
+  ): {
+    allowed: boolean;
+    reason?: string;
+    currentCount: number;
+    maxLimit: number;
+    planName: string;
+    planId: string;
+  } {
+    const currentUser = this.getCurrentUser();
+    // Administrador Master tem acesso irrestrito
+    if (isUserMaster(currentUser)) {
+      return {
+        allowed: true,
+        currentCount: 0,
+        maxLimit: 9999,
+        planName: 'Master (Irrestrito)',
+        planId: 'master',
+      };
+    }
+
+    const tenant = this.getCurrentTenant(currentUser, workspaceId);
+    const plan = this.getPlanForClient(tenant, workspaceId);
+
+    if (action === 'create_board') {
+      const projects = this.getProjects();
+      const workspaceProjects = projects.filter((p) => p.workspaceId === workspaceId && !p.isArchived);
+      const currentCount = workspaceProjects.length;
+      const maxLimit = plan.maxBoards ?? 3;
+
+      if (currentCount >= maxLimit) {
+        return {
+          allowed: false,
+          reason: `Limite de quadros atingido: O plano ${plan.name} permite até ${maxLimit} quadros ativos por workspace. Você já possui ${currentCount}. Faça upgrade do seu plano para criar mais quadros.`,
+          currentCount,
+          maxLimit,
+          planName: plan.name,
+          planId: String(plan.id),
+        };
+      }
+
+      return {
+        allowed: true,
+        currentCount,
+        maxLimit,
+        planName: plan.name,
+        planId: String(plan.id),
+      };
+    }
+
+    if (action === 'invite_member') {
+      const workspaces = this.getWorkspaces();
+      const targetWs = workspaces.find((w) => w.id === workspaceId);
+      const members = Array.isArray(targetWs?.members) ? targetWs!.members : [];
+      const currentCount = members.length;
+      const maxLimit = plan.maxUsers ?? 5;
+
+      if (currentCount >= maxLimit) {
+        return {
+          allowed: false,
+          reason: `Limite de membros atingido: O plano ${plan.name} da sua empresa permite até ${maxLimit} usuários na equipe. A equipe atual já possui ${currentCount} membros. Faça upgrade para adicionar novos colaboradores.`,
+          currentCount,
+          maxLimit,
+          planName: plan.name,
+          planId: String(plan.id),
+        };
+      }
+
+      return {
+        allowed: true,
+        currentCount,
+        maxLimit,
+        planName: plan.name,
+        planId: String(plan.id),
+      };
+    }
+
+    return {
+      allowed: true,
+      currentCount: 0,
+      maxLimit: 9999,
+      planName: plan.name,
+      planId: String(plan.id),
+    };
+  },
+
+  /**
+   * Buscar planos de assinatura atualizados na nuvem do Supabase
+   */
+  async fetchSubscriptionPlansCloud(): Promise<{ success: boolean; plans: SubscriptionPlan[]; fromCloud: boolean }> {
+    if (SupabaseService.isConfigured()) {
+      try {
+        const res = await SupabaseService.fetchSubscriptionPlans();
+        if (res.success && Array.isArray(res.plans) && res.plans.length > 0) {
+          this.saveSubscriptionPlans(res.plans, true);
+          return { success: true, plans: res.plans, fromCloud: true };
+        }
+      } catch (err) {
+        console.warn('[StorageService] Falha ao carregar subscription_plans do Supabase:', err);
+      }
+    }
+    return { success: false, plans: this.getSubscriptionPlans(), fromCloud: false };
+  },
+
+  /**
+   * Limpeza Geral de Dados de Teste (Reset para Lançamento Oficial)
+   * Apaga todas as empresas, workspaces e usuários criados durante os testes.
+   * PRESERVA ESTREITAMENTE:
+   * - Master (Super Admin Alan Silva)
+   * - Empresa Matriz e Workspace Padrão
+   * - Configurações e Tabela de Planos de Assinatura
+   */
+  async resetTestDataToProduction(): Promise<{
+    success: boolean;
+    usersCount: number;
+    workspacesCount: number;
+    clientsCount: number;
+  }> {
+    // 1. Zera usuários deixando estritamente o Master
+    const masterOnlyUsers: User[] = [MASTER_USER];
+    this.saveUsers(masterOnlyUsers, true);
+    this.setCurrentUserId(MASTER_USER.id);
+
+    // 2. Reseta workspaces mantendo unicamente ws-principal com Master como owner
+    const initialWorkspace: Workspace = {
+      id: 'ws-principal',
+      name: 'Meu Workspace',
+      slug: 'meu-workspace',
+      description: 'Espaço de trabalho corporativo',
+      logoColor: '#173653',
+      ownerId: MASTER_USER.id,
+      companyId: 'client-matriz',
+      companyName: 'OperaTask Matriz',
+      clientPlan: 'profissional',
+      clientStatus: 'active',
+      members: [
+        { userId: MASTER_USER.id, role: 'owner', joinedAt: '2026-01-01T00:00:00.000Z' }
+      ],
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    const resetWorkspaces: Workspace[] = [initialWorkspace];
+    this.saveWorkspaces(resetWorkspaces, true);
+    this.setCurrentWorkspaceId(initialWorkspace.id);
+
+    // 3. Reseta projetos mantendo o Quadro Principal ativo no ws-principal
+    const initialProject: Project = {
+      id: 'proj-ws-principal-principal',
+      workspaceId: 'ws-principal',
+      name: 'Quadro Principal',
+      description: 'Quadro de tarefas e fluxo operacional do espaço Meu Workspace',
+      color: '#2563eb',
+      icon: 'folder',
+      columns: [
+        { id: 'col-ws-principal-backlog', title: 'Backlog', color: '#64748b', order: 0 },
+        { id: 'col-ws-principal-progress', title: 'Em Andamento', color: '#2563eb', order: 1 },
+        { id: 'col-ws-principal-review', title: 'Revisão / QA', color: '#d97706', order: 2 },
+        { id: 'col-ws-principal-done', title: 'Concluído', color: '#059669', order: 3, isCompletedColumn: true },
+      ],
+      memberIds: [MASTER_USER.id],
+      isArchived: false,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    this.saveProjects([initialProject], true);
+
+    // 4. Limpa tarefas, atividades e notificações
+    this.saveTasks([], true);
+    this.saveActivities([], true);
+    this.saveNotifications([], true);
+
+    // 5. Reseta empresas/clientes mantendo unicamente a Matriz
+    const matrizClient: ClientCompany = {
+      id: 'client-matriz',
+      name: 'OperaTask Matriz',
+      legalName: 'OperaTask Tecnologia Ltda',
+      status: 'active',
+      plan: 'profissional',
+      paymentStatus: 'paid',
+      primaryWorkspaceId: 'ws-principal',
+      workspaceIds: ['ws-principal'],
+      ownerId: MASTER_USER.id,
+      ownerName: 'Alan Silva (Master)',
+      ownerEmail: 'alanvitordasilva@gmail.com.br',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      planStartDate: '2026-01-01T00:00:00.000Z',
+      planExpiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+      maxUsers: 9999,
+      notes: 'Empresa Matriz Padrão da Plataforma',
+    };
+    this.saveClients([matrizClient], true);
+
+    // 6. Broadcast via WebSocket e eventos locais
+    RealtimeService.broadcast('users', masterOnlyUsers, { action: 'reset_test_data' });
+    RealtimeService.broadcast('workspaces', resetWorkspaces, { action: 'reset_test_data' });
+    RealtimeService.broadcast('clients', [matrizClient], { action: 'reset_test_data' });
+    RealtimeService.broadcast('projects', [initialProject], { action: 'reset_test_data' });
+    RealtimeService.broadcast('tasks', [], { action: 'reset_test_data' });
+
+    // 7. Sincroniza limpeza no Supabase se configurado
+    if (SupabaseService.isConfigured()) {
+      await SupabaseService.resetTestDataOnSupabase();
+    }
+
+    return {
+      success: true,
+      usersCount: 1,
+      workspacesCount: 1,
+      clientsCount: 1,
+    };
   },
 
   getProjects(): Project[] {
