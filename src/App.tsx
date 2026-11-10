@@ -1611,6 +1611,7 @@ export default function App() {
       setProjects((prev) =>
         prev.map((p) => (p.id === projectData.id ? { ...p, ...projectData } : p))
       );
+      StorageService.updateProjectAsync(projectData.id, projectData);
       recordActivity(`atualizou o projeto "${projectData.name}"`);
     } else {
       const newProj: Project = {
@@ -1631,6 +1632,7 @@ export default function App() {
       };
       setProjects((prev) => [...prev, newProj]);
       setSelectedProjectId(newProj.id);
+      StorageService.createProjectAsync(newProj);
       recordActivity(`criou o novo projeto "${newProj.name}"`);
     }
   };
@@ -1640,6 +1642,7 @@ export default function App() {
     setProjects((prev) => prev.filter((p) => p.id !== projectId));
     setTasks((prev) => prev.filter((t) => t.projectId !== projectId));
     if (selectedProjectId === projectId) setSelectedProjectId('all');
+    StorageService.deleteProjectAsync(projectId);
     if (proj) {
       recordActivity(`excluiu o projeto "${proj.name}"`);
       showToast({
@@ -1672,16 +1675,18 @@ export default function App() {
     );
 
     // Atualiza colunas do projeto
+    const updatedColumns = remainingCols.map((c, idx) => ({ ...c, order: idx }));
     setProjects((prev) =>
       prev.map((p) =>
         p.id === activeProject.id
           ? {
               ...p,
-              columns: remainingCols.map((c, idx) => ({ ...c, order: idx })),
+              columns: updatedColumns,
             }
           : p
       )
     );
+    StorageService.updateProjectAsync(activeProject.id, { columns: updatedColumns });
 
     recordActivity(`excluiu a coluna "${deletedCol?.title || 'Coluna'}" do projeto "${activeProject.name}"`);
     showToast({
@@ -1694,6 +1699,7 @@ export default function App() {
     setProjects((prev) =>
       prev.map((p) => (p.id === projectId ? { ...p, isArchived } : p))
     );
+    StorageService.updateProjectAsync(projectId, { isArchived });
     const proj = projects.find((p) => p.id === projectId);
     recordActivity(`${isArchived ? 'arquivou' : 'desarquivou'} o projeto "${proj?.name}"`);
   };

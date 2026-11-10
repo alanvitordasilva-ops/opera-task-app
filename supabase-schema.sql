@@ -552,6 +552,21 @@ BEGIN
   CREATE POLICY "Tasks select policy" ON public.tasks FOR SELECT USING (true);
   DROP POLICY IF EXISTS "Tasks all policy" ON public.tasks;
   CREATE POLICY "Tasks all policy" ON public.tasks FOR ALL USING (true) WITH CHECK (true);
+
+  DROP POLICY IF EXISTS "Tenants select policy" ON public.tenants;
+  CREATE POLICY "Tenants select policy" ON public.tenants FOR SELECT USING (true);
+  DROP POLICY IF EXISTS "Tenants all policy" ON public.tenants;
+  CREATE POLICY "Tenants all policy" ON public.tenants FOR ALL USING (true) WITH CHECK (true);
+
+  DROP POLICY IF EXISTS "Fichas select policy" ON public.fichas_tecnicas;
+  CREATE POLICY "Fichas select policy" ON public.fichas_tecnicas FOR SELECT USING (true);
+  DROP POLICY IF EXISTS "Fichas all policy" ON public.fichas_tecnicas;
+  CREATE POLICY "Fichas all policy" ON public.fichas_tecnicas FOR ALL USING (true) WITH CHECK (true);
+
+  DROP POLICY IF EXISTS "Plans select policy" ON public.subscription_plans;
+  CREATE POLICY "Plans select policy" ON public.subscription_plans FOR SELECT USING (true);
+  DROP POLICY IF EXISTS "Plans all policy" ON public.subscription_plans;
+  CREATE POLICY "Plans all policy" ON public.subscription_plans FOR ALL USING (true) WITH CHECK (true);
 END $$;
 
 -- 12. Inserir Tenant Matriz e Workspace Padrão

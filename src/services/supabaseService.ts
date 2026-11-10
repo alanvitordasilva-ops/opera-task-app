@@ -639,6 +639,55 @@ export class SupabaseService {
     }
   }
 
+  static async updateProject(projectId: string, updates: Partial<Project>): Promise<{ success: boolean; error?: string }> {
+    const client = this.getClient();
+    if (!client) {
+      return { success: false, error: 'Supabase não conectado' };
+    }
+
+    try {
+      const payload: any = {
+        updated_at: new Date().toISOString(),
+      };
+      if (updates.name !== undefined) payload.name = updates.name;
+      if (updates.description !== undefined) payload.description = updates.description;
+      if (updates.color !== undefined) payload.color = updates.color;
+      if (updates.icon !== undefined) payload.icon = updates.icon;
+      if (updates.columns !== undefined) payload.columns = updates.columns;
+      if (updates.memberIds !== undefined) payload.member_ids = updates.memberIds;
+      if (updates.isArchived !== undefined) payload.is_archived = updates.isArchived;
+
+      const { error } = await client.from('projects').update(payload).eq('id', projectId);
+      if (error && !error.message?.includes('does not exist')) {
+        console.warn('[SupabaseService] Erro ao atualizar projeto:', error);
+        return { success: false, error: error.message };
+      }
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  static async deleteProject(projectId: string): Promise<{ success: boolean; error?: string }> {
+    const client = this.getClient();
+    if (!client) return { success: false, error: 'Supabase não conectado' };
+
+    try {
+      // Limpa cards/tarefas vinculadas ao projeto
+      await client.from('cards').delete().eq('project_id', projectId);
+      await client.from('tasks').delete().eq('project_id', projectId);
+      const { error } = await client.from('projects').delete().eq('id', projectId);
+      if (error && !error.message?.includes('does not exist')) {
+        console.warn('[SupabaseService] Erro ao excluir projeto no Supabase:', error);
+        return { success: false, error: error.message };
+      }
+      return { success: true };
+    } catch (err: any) {
+      console.warn('[SupabaseService] Erro ao excluir projeto no Supabase:', err);
+      return { success: false, error: err.message };
+    }
+  }
+
   static async createWorkspace(workspace: Workspace): Promise<{ success: boolean; workspace?: Workspace; error?: string }> {
     const client = this.getClient();
     if (!client) {
@@ -688,8 +737,13 @@ export class SupabaseService {
     if (!client) return { success: false, error: 'Supabase não conectado' };
 
     try {
-      await client.from('workspaces').delete().eq('id', workspaceId);
+      // Limpeza em cascata no banco de dados para evitar registros órfãos
+      await client.from('cards').delete().eq('workspace_id', workspaceId);
+      await client.from('tasks').delete().eq('workspace_id', workspaceId);
+      await client.from('fichas_tecnicas').delete().eq('workspace_id', workspaceId);
+      await client.from('projects').delete().eq('workspace_id', workspaceId);
       await client.from('workspace_members').delete().eq('workspace_id', workspaceId);
+      await client.from('workspaces').delete().eq('id', workspaceId);
       return { success: true };
     } catch (err: any) {
       console.warn('[SupabaseService] Erro ao excluir workspace no Supabase:', err);

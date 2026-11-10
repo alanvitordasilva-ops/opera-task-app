@@ -1144,6 +1144,119 @@ export const StorageService = {
   },
 
   /**
+   * Criar Projeto / Quadro com persistência imediata local, no servidor e no Supabase
+   */
+  async createProjectAsync(project: Project): Promise<{ success: boolean; project: Project; error?: string }> {
+    const current = this.getProjects();
+    const nextList = [...current.filter((p) => p.id !== project.id), project];
+    this.saveProjects(nextList, true);
+
+    RealtimeService.broadcast('projects', nextList, {
+      action: 'create_project',
+      targetId: project.id,
+      userName: project.name,
+    });
+
+    if (isServerApiAvailable()) {
+      fetch('/api/sync/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projects: nextList }),
+      }).catch(() => {});
+    }
+
+    if (SupabaseService.isConfigured()) {
+      try {
+        const cloudRes = await SupabaseService.createProject(project);
+        if (cloudRes.success && cloudRes.project) {
+          return { success: true, project: cloudRes.project };
+        }
+      } catch (e: any) {
+        console.warn('[StorageService] Falha ao criar projeto no Supabase:', e);
+      }
+    }
+
+    return { success: true, project };
+  },
+
+  /**
+   * Atualizar Projeto / Quadro com persistência imediata local, no servidor e no Supabase
+   */
+  async updateProjectAsync(projectId: string, updates: Partial<Project>): Promise<{ success: boolean; error?: string }> {
+    const current = this.getProjects();
+    const nextList = current.map((p) => (p.id === projectId ? { ...p, ...updates } : p));
+    this.saveProjects(nextList, true);
+
+    RealtimeService.broadcast('projects', nextList, {
+      action: 'update_project',
+      targetId: projectId,
+    });
+
+    if (isServerApiAvailable()) {
+      fetch('/api/sync/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projects: nextList }),
+      }).catch(() => {});
+    }
+
+    if (SupabaseService.isConfigured()) {
+      try {
+        await SupabaseService.updateProject(projectId, updates);
+      } catch (e: any) {
+        console.warn('[StorageService] Falha ao atualizar projeto no Supabase:', e);
+      }
+    }
+
+    return { success: true };
+  },
+
+  /**
+   * Excluir Projeto / Quadro com remoção imediata de tarefas locais e no Supabase
+   */
+  async deleteProjectAsync(projectId: string): Promise<{ success: boolean; error?: string }> {
+    // 1. Remove do estado local de projetos
+    const current = this.getProjects();
+    const filteredProjects = current.filter((p) => p.id !== projectId);
+    this.saveProjects(filteredProjects, true);
+
+    // 2. Remove tarefas associadas ao projeto
+    const currentTasks = this.getTasks();
+    const filteredTasks = currentTasks.filter((t) => t.projectId !== projectId);
+    this.saveTasks(filteredTasks, true);
+
+    // 3. Notifica em tempo real
+    RealtimeService.broadcast('projects', filteredProjects, {
+      action: 'delete_project',
+      targetId: projectId,
+    });
+    RealtimeService.broadcast('tasks', filteredTasks, {
+      action: 'delete_project_tasks',
+      targetId: projectId,
+    });
+
+    // 4. Atualiza servidor central
+    if (isServerApiAvailable()) {
+      fetch('/api/sync/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projects: filteredProjects, tasks: filteredTasks }),
+      }).catch(() => {});
+    }
+
+    // 5. Exclui no Supabase
+    if (SupabaseService.isConfigured()) {
+      try {
+        await SupabaseService.deleteProject(projectId);
+      } catch (e: any) {
+        console.warn('[StorageService] Falha ao excluir projeto no Supabase:', e);
+      }
+    }
+
+    return { success: true };
+  },
+
+  /**
    * Criar Workspace com persistência imediata local, no servidor e no Supabase
    */
   async createWorkspaceAsync(workspace: Workspace): Promise<{ success: boolean; workspace: Workspace; error?: string }> {
@@ -1199,8 +1312,25 @@ export const StorageService = {
       this.setCurrentWorkspaceId(filtered[0].id);
     }
 
+    // Remove também quadros e tarefas associados a este workspace no estado local
+    const currentProjects = this.getProjects();
+    const filteredProjects = currentProjects.filter((p) => p.workspaceId !== workspaceId);
+    this.saveProjects(filteredProjects, true);
+
+    const currentTasks = this.getTasks();
+    const filteredTasks = currentTasks.filter((t) => t.workspaceId !== workspaceId);
+    this.saveTasks(filteredTasks, true);
+
     RealtimeService.broadcast('workspaces', filtered, {
       action: 'delete_workspace',
+      targetId: workspaceId,
+    });
+    RealtimeService.broadcast('projects', filteredProjects, {
+      action: 'delete_workspace_projects',
+      targetId: workspaceId,
+    });
+    RealtimeService.broadcast('tasks', filteredTasks, {
+      action: 'delete_workspace_tasks',
       targetId: workspaceId,
     });
 
@@ -1208,7 +1338,7 @@ export const StorageService = {
       fetch('/api/sync/state', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaces: filtered }),
+        body: JSON.stringify({ workspaces: filtered, projects: filteredProjects, tasks: filteredTasks }),
       }).catch(() => {});
     }
 
