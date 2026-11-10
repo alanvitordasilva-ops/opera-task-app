@@ -196,7 +196,17 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               StorageService.saveUsers(data.allUsers, true);
             }
             if (Array.isArray(data.workspaces) && data.workspaces.length > 0) {
-              StorageService.saveWorkspaces(data.workspaces, true);
+              const currentWs = StorageService.getWorkspaces();
+              const merged = [...currentWs];
+              data.workspaces.forEach((rw: any) => {
+                const idx = merged.findIndex((w) => w.id === rw.id);
+                if (idx !== -1) {
+                  merged[idx] = { ...merged[idx], ...rw };
+                } else {
+                  merged.push(rw);
+                }
+              });
+              StorageService.saveWorkspaces(merged, true);
             }
             StorageService.setCurrentUserId(data.user.id);
             StorageService.setAuthenticated(true);

@@ -297,8 +297,18 @@ export class SupabaseService {
     }
 
     try {
+      const config = this.getConfig();
+      // Cria um cliente isolado sem persistência de sessão para não alterar nem deslogar o Administrador
+      const isolatedAuthClient = createClient(config.url, config.anonKey, {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+          detectSessionInUrl: false,
+        },
+      });
+
       // 1. Cadastra usuário no Supabase Auth com metadados de tenant e workspace
-      const { data: authData, error: authErr } = await client.auth.signUp({
+      const { data: authData, error: authErr } = await isolatedAuthClient.auth.signUp({
         email: cleanEmail,
         password: cleanPassword,
         options: {
@@ -441,30 +451,56 @@ export class SupabaseService {
     }
 
     try {
+      let memberWsIds: string[] = [];
+      if (params?.userId && !params?.isSuperAdmin) {
+        try {
+          const { data: memberRows } = await client
+            .from('workspace_members')
+            .select('workspace_id')
+            .eq('user_id', params.userId);
+          if (memberRows && memberRows.length > 0) {
+            memberWsIds = memberRows.map((r: any) => String(r.workspace_id)).filter(Boolean);
+          }
+        } catch (e) {
+          console.warn('[SupabaseService] Erro ao buscar vínculos em workspace_members:', e);
+        }
+      }
+
       let query = client.from('workspaces').select('*').order('created_at', { ascending: true });
 
       const targetTenantId = params?.tenantId || params?.companyId;
       if (!params?.isSuperAdmin) {
-        if (targetTenantId && params?.workspaceId) {
-          query = query.or(`tenant_id.eq.${targetTenantId},company_id.eq.${targetTenantId},id.eq.${params.workspaceId},owner_id.eq.${params?.userId || ''}`);
-        } else if (targetTenantId) {
-          query = query.or(`tenant_id.eq.${targetTenantId},company_id.eq.${targetTenantId},owner_id.eq.${params?.userId || ''}`);
-        } else if (params?.workspaceId) {
-          query = query.or(`id.eq.${params.workspaceId},owner_id.eq.${params?.userId || ''}`);
-        } else if (params?.userId) {
-          query = query.eq('owner_id', params.userId);
+        const orClauses: string[] = [];
+        if (memberWsIds.length > 0) {
+          orClauses.push(`id.in.(${memberWsIds.join(',')})`);
+        }
+        if (params?.userId) {
+          orClauses.push(`owner_id.eq.${params.userId}`);
+        }
+        if (targetTenantId) {
+          orClauses.push(`tenant_id.eq.${targetTenantId}`);
+          orClauses.push(`company_id.eq.${targetTenantId}`);
+          orClauses.push(`id.eq.${targetTenantId}`);
+        }
+        if (params?.workspaceId) {
+          orClauses.push(`id.eq.${params.workspaceId}`);
+        }
+
+        if (orClauses.length > 0) {
+          query = query.or(orClauses.join(','));
         }
       }
 
       let { data: wsRows, error: wsErr } = await query;
 
-      // Fallback de segurança: se a query filtrada retornar vazia mas o usuário tiver ID de workspace/empresa,
+      // Fallback de segurança: se a query filtrada retornar vazia mas o usuário tiver ID de workspace/empresa/membro,
       // busca sem o filtro estrito de coluna para não quebrar a navegação caso a coluna no Supabase seja diferente
-      if ((!wsRows || wsRows.length === 0) && !params?.isSuperAdmin && (targetTenantId || params?.workspaceId || params?.userId)) {
+      if ((!wsRows || wsRows.length === 0) && !params?.isSuperAdmin && (targetTenantId || params?.workspaceId || params?.userId || memberWsIds.length > 0)) {
         try {
           const fallbackRes = await client.from('workspaces').select('*').order('created_at', { ascending: true });
           if (fallbackRes.data && fallbackRes.data.length > 0) {
             const inMemoryFiltered = fallbackRes.data.filter((row: any) => {
+              if (memberWsIds.includes(String(row.id))) return true;
               if (targetTenantId && (row.tenant_id === targetTenantId || row.company_id === targetTenantId || row.id === targetTenantId)) return true;
               if (params?.workspaceId && row.id === params.workspaceId) return true;
               if (params?.userId && row.owner_id === params.userId) return true;

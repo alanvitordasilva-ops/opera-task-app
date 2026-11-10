@@ -671,11 +671,25 @@ export const StorageService = {
             });
             localStorage.setItem(STORAGE_KEYS.WORKSPACES, JSON.stringify(mergedWs));
           }
-          if (Array.isArray(data.projects)) {
-            localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify(data.projects));
+          if (Array.isArray(data.projects) && data.projects.length > 0) {
+            const currentProj = this.getProjects();
+            const mergedProj = [...data.projects];
+            currentProj.forEach((cp) => {
+              if (!mergedProj.some((mp) => mp.id === cp.id)) {
+                mergedProj.push(cp);
+              }
+            });
+            localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify(mergedProj));
           }
-          if (Array.isArray(data.tasks)) {
-            localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(data.tasks));
+          if (Array.isArray(data.tasks) && data.tasks.length > 0) {
+            const currentTasks = this.getTasks();
+            const mergedTasks = [...data.tasks];
+            currentTasks.forEach((ct) => {
+              if (!mergedTasks.some((mt) => mt.id === ct.id)) {
+                mergedTasks.push(ct);
+              }
+            });
+            localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(mergedTasks));
           }
           if (Array.isArray(data.tags)) {
             localStorage.setItem(STORAGE_KEYS.TAGS, JSON.stringify(data.tags));
@@ -741,9 +755,13 @@ export const StorageService = {
         if (Array.isArray(data.users)) {
           this.saveUsers(data.users, true);
         }
-        if (Array.isArray(data.workspaces)) {
-          this.saveWorkspaces(data.workspaces, true);
-        }
+        // Remove o membro excluído dos workspaces locais sem sobrescrever a lista inteira
+        const currentWs = this.getWorkspaces();
+        const updatedWs = currentWs.map((w) => ({
+          ...w,
+          members: (w.members || []).filter((m) => m.userId !== userId),
+        }));
+        this.saveWorkspaces(updatedWs, true);
         return true;
       } else if (resp.status === 404) {
         setServerApiAvailable(false);
@@ -992,7 +1010,7 @@ export const StorageService = {
               m.userId !== 'user-master-alan' &&
               m.userId !== 'master-alan'
           );
-          if (filteredMembers.length !== originalLen) {
+          if (filteredMembers.length > 0 && filteredMembers.length !== originalLen) {
             sanitized = true;
             return { ...w, members: filteredMembers };
           }
@@ -2682,6 +2700,8 @@ export const StorageService = {
             workspaceId: targetWorkspaceIds[0],
             workspaceIds: targetWorkspaceIds,
             avatarColor: chosenColor,
+            tenantId: assignedCompanyId,
+            companyId: assignedCompanyId,
           }),
         });
 
@@ -2692,9 +2712,6 @@ export const StorageService = {
           }
           if (Array.isArray(resData.users)) {
             this.saveUsers(resData.users, true);
-          }
-          if (Array.isArray(resData.workspaces)) {
-            this.saveWorkspaces(resData.workspaces, true);
           }
         }
       } catch (e) {

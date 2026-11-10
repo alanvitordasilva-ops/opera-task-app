@@ -291,7 +291,7 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
         rawPassword: cleanPassword,
         role: newUserWorkspaceRole,
         workspaceName: combinedWsNames,
-        accessLink: OFFICIAL_APP_ACCESS_URL,
+        accessLink: getProductionAppUrl(),
       });
 
       setIsSubmittingNewUser(false);
@@ -314,7 +314,7 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
       password: createdResult.rawPassword,
       workspaceName: createdResult.workspaceName,
       role: createdResult.role,
-      customLink: OFFICIAL_APP_ACCESS_URL,
+      customLink: createdResult.accessLink || getProductionAppUrl(),
     });
   };
 

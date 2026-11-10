@@ -493,7 +493,16 @@ export const WorkspaceModal: React.FC<WorkspaceModalProps> = ({
         onClose={() => setIsRegisterUserOpen(false)}
         workspaceId={workspace.id}
         onUserCreated={(newUser, newRole) => {
-          onInviteMember(newUser.email, newRole);
+          // O usuário já foi cadastrado e associado ao workspace no RegisterUserModal.
+          // Sincroniza a lista de membros do workspace atual sem duplicar o cadastro ou sobrescrever o estado global.
+          const memberExists = (workspace.members || []).some((m) => m.userId === newUser.id);
+          if (!memberExists && onSaveWorkspace) {
+            const updatedMembers = [
+              ...(workspace.members || []),
+              { userId: newUser.id, role: newRole, joinedAt: new Date().toISOString() },
+            ];
+            onSaveWorkspace({ members: updatedMembers });
+          }
         }}
       />
     </div>

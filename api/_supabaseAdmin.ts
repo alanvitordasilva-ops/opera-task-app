@@ -56,6 +56,8 @@ export async function adminRegisterOrSyncUser(userData: {
   role: string;
   workspaceIds?: string[];
   avatarColor?: string;
+  tenantId?: string;
+  companyId?: string;
 }): Promise<{ success: boolean; userId?: string; error?: string }> {
   const adminClient = getSupabaseAdminClient();
   if (!adminClient) {
@@ -80,6 +82,8 @@ export async function adminRegisterOrSyncUser(userData: {
           username: userData.username,
           tipo: userData.role,
           avatar_url: userData.avatarColor || '#34B1AC',
+          tenant_id: userData.tenantId || userData.companyId || null,
+          company_id: userData.companyId || userData.tenantId || null,
         },
       });
 
@@ -106,6 +110,8 @@ export async function adminRegisterOrSyncUser(userData: {
                 username: userData.username,
                 tipo: userData.role,
                 avatar_url: userData.avatarColor || '#34B1AC',
+                tenant_id: userData.tenantId || userData.companyId || null,
+                company_id: userData.companyId || userData.tenantId || null,
               },
             });
           }
@@ -117,22 +123,27 @@ export async function adminRegisterOrSyncUser(userData: {
 
     const finalUserId = authUserId || userData.id;
     if (finalUserId) {
-      // Grava no profiles
+      const wsList =
+        userData.workspaceIds && userData.workspaceIds.length > 0
+          ? userData.workspaceIds
+          : ['ws-principal'];
+
+      const resolvedTenant = userData.tenantId || userData.companyId || (wsList[0] !== 'ws-principal' ? wsList[0] : null);
+
+      // Grava no profiles com tenant_id, company_id e workspace_id
       await adminClient.from('profiles').upsert({
         id: finalUserId,
         nome: userData.name,
         email: cleanEmail,
         tipo: userData.role,
         avatar_url: userData.avatarColor || '#34B1AC',
+        tenant_id: resolvedTenant,
+        company_id: resolvedTenant,
+        workspace_id: wsList[0] || null,
         created_at: new Date().toISOString(),
       });
 
       // Vincula aos workspaces selecionados
-      const wsList =
-        userData.workspaceIds && userData.workspaceIds.length > 0
-          ? userData.workspaceIds
-          : ['ws-principal'];
-
       for (const wsId of wsList) {
         await adminClient.from('workspace_members').upsert({
           workspace_id: wsId,

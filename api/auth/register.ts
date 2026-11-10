@@ -21,7 +21,7 @@ export default async function handler(req: any, res: any) {
   }
 
   const body = req.body || {};
-  const { name, username, email, password, role, workspaceId, workspaceIds, avatarColor } = body;
+  const { name, username, email, password, role, workspaceId, workspaceIds, avatarColor, tenantId, companyId } = body;
 
   const cleanName = (name || '').trim();
   const rawUsername = (username || '').trim().toLowerCase();
@@ -48,6 +48,8 @@ export default async function handler(req: any, res: any) {
     ? workspaceIds
     : workspaceId ? [workspaceId] : ['ws-principal'];
 
+  const resolvedTenantId = tenantId || companyId || (targetWsIds[0] !== 'ws-principal' ? targetWsIds[0] : undefined);
+
   // 1. Executa criação administrativa no Supabase se SUPABASE_SERVICE_ROLE_KEY estiver definida
   let supabaseUserId: string | undefined;
   try {
@@ -60,6 +62,8 @@ export default async function handler(req: any, res: any) {
       role: role || 'producao',
       workspaceIds: targetWsIds,
       avatarColor: avatarColor || '#34B1AC',
+      tenantId: resolvedTenantId,
+      companyId: resolvedTenantId,
     });
     if (adminResult?.success && adminResult.userId) {
       supabaseUserId = adminResult.userId;
@@ -83,7 +87,7 @@ export default async function handler(req: any, res: any) {
 
   store.users.push(newUser);
 
-  // Vincula aos workspaces
+  // Vincula aos workspaces no store local
   targetWsIds.forEach((wsId) => {
     const ws = store.workspaces.find((w) => w.id === wsId);
     if (ws) {
@@ -101,7 +105,6 @@ export default async function handler(req: any, res: any) {
     success: true,
     user: newUser,
     users: store.users,
-    workspaces: store.workspaces,
   });
 }
 

@@ -1423,13 +1423,18 @@ export default function App() {
 
   const handleCreateWorkspace = async (name: string, description: string, color: string) => {
     try {
+      const newWsId = `ws-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+      const assignedCompId = currentUser.companyId || currentUser.tenantId || newWsId;
       const newWs: Workspace = {
-        id: `ws-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        id: newWsId,
         name,
         slug: name.toLowerCase().replace(/\s+/g, '-'),
         description,
         logoColor: color || '#173653',
         ownerId: currentUser.id,
+        companyId: assignedCompId,
+        clientStatus: 'active',
+        clientPlan: 'profissional',
         members: [{ userId: currentUser.id, role: 'owner' as const, joinedAt: new Date().toISOString() }],
         createdAt: new Date().toISOString(),
       };
@@ -1464,10 +1469,15 @@ export default function App() {
 
   const handleSaveWorkspace = (data: Partial<Workspace>) => {
     const updatedWs = { ...currentWorkspace, ...data };
-    const all = workspaces.map((w) => (w.id === currentWorkspace.id ? updatedWs : w));
-    setWorkspaces(all);
+    setWorkspaces((prev) => {
+      const exists = prev.some((w) => w.id === currentWorkspace.id);
+      const all = exists
+        ? prev.map((w) => (w.id === currentWorkspace.id ? updatedWs : w))
+        : [...prev, updatedWs];
+      StorageService.saveWorkspaces(all, true);
+      return all;
+    });
     setCurrentWorkspace(updatedWs);
-    StorageService.saveWorkspaces(all, true);
     if (SupabaseService.isConfigured()) {
       SupabaseService.createWorkspace(updatedWs).catch((err) => {
         console.warn('[OperaTask] Erro ao sincronizar workspace com Supabase:', err);

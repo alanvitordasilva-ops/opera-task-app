@@ -46,6 +46,7 @@ import {
 } from 'lucide-react';
 import { StorageService } from '../services/storage.ts';
 import { generateUserAccessMessage, OFFICIAL_APP_ACCESS_URL } from '../utils/userAccessMessage.ts';
+import { getProductionAppUrl } from '../utils/appUrl.ts';
 
 interface MasterClientsTabProps {
   clients: ClientCompany[];
@@ -417,7 +418,7 @@ export const MasterClientsTab: React.FC<MasterClientsTabProps> = ({
       password: shareResult.rawPassword,
       workspaceName: shareResult.workspace.name,
       role: 'Dono',
-      customLink: OFFICIAL_APP_ACCESS_URL,
+      customLink: getProductionAppUrl(),
     });
   };
 

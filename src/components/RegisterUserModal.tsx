@@ -259,13 +259,15 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
       const targetWsNames = targetWorkspaces.map((w) => w.name);
       const combinedWsName = targetWsNames.join(', ') || 'Workspaces Vinculados';
 
+      const appLink = getProductionAppUrl();
+
       setCreatedResult({
         user: result.user,
         rawPassword: password,
         role,
         workspaceName: combinedWsName,
         workspaceNames: targetWsNames,
-        accessLink: OFFICIAL_APP_ACCESS_URL,
+        accessLink: appLink,
       });
 
       if (onUserCreated) {
@@ -286,7 +288,7 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
       password: createdResult.rawPassword,
       workspaceName: createdResult.workspaceName,
       role: createdResult.role,
-      customLink: OFFICIAL_APP_ACCESS_URL,
+      customLink: createdResult.accessLink || getProductionAppUrl(),
     });
   };
 

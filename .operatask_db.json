@@ -122,7 +122,46 @@
       "createdAt": "2026-01-01T00:00:00.000Z"
     }
   ],
-  "projects": [],
+  "projects": [
+    {
+      "id": "proj-principal-default",
+      "workspaceId": "ws-principal",
+      "name": "Quadro Principal",
+      "description": "Quadro operacional e gestão de tarefas",
+      "color": "#2563eb",
+      "icon": "folder",
+      "columns": [
+        {
+          "id": "col-backlog",
+          "title": "Backlog",
+          "color": "#64748b",
+          "order": 0
+        },
+        {
+          "id": "col-progress",
+          "title": "Em Andamento",
+          "color": "#2563eb",
+          "order": 1
+        },
+        {
+          "id": "col-review",
+          "title": "Revisão / QA",
+          "color": "#d97706",
+          "order": 2
+        },
+        {
+          "id": "col-done",
+          "title": "Concluído",
+          "color": "#059669",
+          "order": 3,
+          "isCompletedColumn": true
+        }
+      ],
+      "memberIds": [],
+      "isArchived": false,
+      "createdAt": "2026-11-10T17:16:25.585Z"
+    }
+  ],
   "tasks": [],
   "tags": [
     {
@@ -158,5 +197,6 @@
   ],
   "activities": [],
   "notifications": [],
-  "fichas_tecnicas": []
+  "fichas_tecnicas": [],
+  "clients": []
 }
