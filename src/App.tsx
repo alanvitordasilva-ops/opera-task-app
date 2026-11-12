@@ -181,42 +181,40 @@ export default function App() {
       : null;
     const activeWs = targetInvitedWs || (allowedWorkspaces.length > 0 ? allowedWorkspaces[0] : null);
 
-    if (activeWs) {
+    let resolvedActiveWs = activeWs;
+    if (resolvedActiveWs) {
       setWorkspaces(freshWorkspaces);
-      setCurrentWorkspace(activeWs);
-      StorageService.setCurrentWorkspaceId(activeWs.id);
-      StorageService.ensureWorkspaceProject(activeWs.id, activeWs.name);
+      setCurrentWorkspace(resolvedActiveWs);
+      StorageService.setCurrentWorkspaceId(resolvedActiveWs.id);
+      StorageService.ensureWorkspaceProject(resolvedActiveWs.id, resolvedActiveWs.name);
+      setProjects(StorageService.getProjects());
     } else {
+      const wsId = `ws-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
       const newWs: Workspace = {
-        id: `ws-${Date.now()}`,
+        id: wsId,
         name: user.name ? `Workspace de ${user.name.split(' ')[0]}` : 'Meu Workspace',
-        slug: 'meu-workspace',
+        slug: `meu-workspace-${wsId.slice(-5)}`,
         description: 'Espaço de trabalho corporativo',
         logoColor: '#173653',
         ownerId: user.id,
         companyId: userCompany,
-        members: [
-          { userId: user.id, role: 'owner', joinedAt: new Date().toISOString() },
-          ...(user.email && user.email !== user.id ? [{ userId: user.email, role: 'owner' as const, joinedAt: new Date().toISOString() }] : []),
-        ],
+        members: [{ userId: user.id, role: 'owner', joinedAt: new Date().toISOString() }],
         createdAt: new Date().toISOString(),
       };
-      const updatedAll = [...freshWorkspaces, newWs];
-      setWorkspaces(updatedAll);
-      setCurrentWorkspace(newWs);
-      StorageService.saveWorkspaces(updatedAll, true);
-      StorageService.setCurrentWorkspaceId(newWs.id);
-      StorageService.ensureWorkspaceProject(newWs.id, newWs.name);
-      if (SupabaseService.isConfigured()) {
-        StorageService.createWorkspaceAsync(newWs).catch((e) => console.warn(e));
-      }
+      resolvedActiveWs = newWs;
+      const res = await StorageService.createWorkspaceAsync(newWs);
+      const createdWs = res.workspace || newWs;
+      resolvedActiveWs = createdWs;
+      setWorkspaces(StorageService.getWorkspaces());
+      setCurrentWorkspace(createdWs);
+      setProjects(StorageService.getProjects());
     }
 
     StorageService.setAuthenticated(true);
     setIsAuthenticated(true);
 
     // Carregar projetos e tarefas da nuvem do Supabase para o Workspace ativo
-    const finalActiveWs = activeWs || freshWorkspaces[freshWorkspaces.length - 1];
+    const finalActiveWs = resolvedActiveWs;
     if (SupabaseService.isConfigured() && finalActiveWs) {
       StorageService.fetchProjectsCloud(finalActiveWs.id).then((pRes) => {
         if (pRes.success && Array.isArray(pRes.projects) && pRes.projects.length > 0) {
@@ -456,7 +454,11 @@ export default function App() {
   // Recarregar projetos e tarefas da nuvem do Supabase ao trocar de Workspace
   useEffect(() => {
     if (currentWorkspace?.id) {
-      StorageService.ensureWorkspaceProject(currentWorkspace.id, currentWorkspace.name);
+      const ensuredProj = StorageService.ensureWorkspaceProject(currentWorkspace.id, currentWorkspace.name);
+      setProjects((prev) => {
+        if (prev.some((p) => p.id === ensuredProj.id)) return prev;
+        return StorageService.getProjects();
+      });
       if (SupabaseService.isConfigured()) {
         StorageService.fetchProjectsCloud(currentWorkspace.id).then((res) => {
           if (res.success && Array.isArray(res.projects) && res.projects.length > 0) {
@@ -1537,44 +1539,47 @@ export default function App() {
     try {
       const newWsId = `ws-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
       const assignedCompId = currentUser.companyId || currentUser.tenantId || newWsId;
+      const baseSlug =
+        name
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-|-$/g, '') || 'workspace';
       const newWs: Workspace = {
         id: newWsId,
         name,
-        slug: name.toLowerCase().replace(/\s+/g, '-'),
+        slug: `${baseSlug}-${newWsId.slice(-5)}`,
         description,
         logoColor: color || '#173653',
         ownerId: currentUser.id,
         companyId: assignedCompId,
         clientStatus: 'active',
         clientPlan: 'profissional',
-        members: [
-          { userId: currentUser.id, role: 'owner' as const, joinedAt: new Date().toISOString() },
-          ...(currentUser.email && currentUser.email !== currentUser.id ? [{ userId: currentUser.email, role: 'owner' as const, joinedAt: new Date().toISOString() }] : []),
-          ...(currentUser.username && currentUser.username !== currentUser.id ? [{ userId: currentUser.username, role: 'owner' as const, joinedAt: new Date().toISOString() }] : []),
-        ],
+        members: [{ userId: currentUser.id, role: 'owner' as const, joinedAt: new Date().toISOString() }],
         createdAt: new Date().toISOString(),
       };
 
-      // 1. Salva imediatamente no banco de dados Supabase e no cache local
-      await StorageService.createWorkspaceAsync(newWs);
+      // 1. Salva imediatamente no cache local e no banco de dados Supabase (workspace antes do projeto)
+      const res = await StorageService.createWorkspaceAsync(newWs);
+      const createdWs = res.workspace || newWs;
 
-      // 2. Atualiza estado da aplicação e seleciona o workspace criado
+      // 2. Atualiza estados React (workspaces, workspace ativo, quadros e clientes)
       setWorkspaces((prev) => {
-        const exists = prev.some((w) => w.id === newWs.id);
-        const next = exists ? prev.map((w) => (w.id === newWs.id ? newWs : w)) : [...prev, newWs];
-        StorageService.saveWorkspaces(next, true);
-        return next;
+        const exists = prev.some((w) => w.id === createdWs.id);
+        return exists ? prev.map((w) => (w.id === createdWs.id ? createdWs : w)) : [...prev, createdWs];
       });
-      setCurrentWorkspace(newWs);
-      StorageService.setCurrentWorkspaceId(newWs.id);
-      StorageService.ensureWorkspaceProject(newWs.id, newWs.name);
-      setSelectedProjectId('all');
+      setCurrentWorkspace(createdWs);
+      StorageService.setCurrentWorkspaceId(createdWs.id);
+      setProjects(StorageService.getProjects());
+      setClients(StorageService.getClients());
+      setSelectedProjectId(res.project?.id || 'all');
 
-      recordActivity(`criou o workspace "${newWs.name}"`);
+      recordActivity(`criou o workspace "${createdWs.name}"`);
 
       showToast({
         type: 'success',
-        message: `Workspace "${newWs.name}" criado com sucesso!`,
+        message: `Workspace "${createdWs.name}" criado com sucesso!`,
       });
     } catch (err: any) {
       console.error('[OperaTask] Erro ao criar workspace:', err);

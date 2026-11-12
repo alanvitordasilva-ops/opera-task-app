@@ -1135,7 +1135,7 @@ export const StorageService = {
   /**
    * Garante que um Workspace possua um projeto/quadro ativo com colunas Kanban
    */
-  ensureWorkspaceProject(workspaceId: string, workspaceName?: string): Project {
+  ensureWorkspaceProject(workspaceId: string, workspaceName?: string, skipCloudPush = false): Project {
     const projects = this.getProjects();
     const existing = projects.find((p) => p.workspaceId === workspaceId && !p.isArchived);
     if (existing) return existing;
@@ -1159,9 +1159,14 @@ export const StorageService = {
     };
 
     const updated = [...projects, newProj];
-    this.saveProjects(updated, true);
-    if (SupabaseService.isConfigured()) {
-      SupabaseService.createProject(newProj).catch(() => {});
+    if (skipCloudPush) {
+      localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify(updated));
+      writeIndexedDB(STORAGE_KEYS.PROJECTS, updated).catch(() => {});
+    } else {
+      this.saveProjects(updated, true);
+      if (SupabaseService.isConfigured()) {
+        SupabaseService.createProject(newProj).catch(() => {});
+      }
     }
     return newProj;
   },
@@ -1282,45 +1287,61 @@ export const StorageService = {
   /**
    * Criar Workspace com persistência imediata local, no servidor e no Supabase
    */
-  async createWorkspaceAsync(workspace: Workspace): Promise<{ success: boolean; workspace: Workspace; error?: string }> {
-    // 1. Atualiza lista local imediatamente
+  async createWorkspaceAsync(
+    workspace: Workspace
+  ): Promise<{ success: boolean; workspace: Workspace; project?: Project; error?: string }> {
+    let savedWorkspace = workspace;
+
+    // 1. Grava imediatamente em localStorage/IndexedDB para resposta instantânea sem disparar sync paralelo ainda
     const current = this.getWorkspaces();
-    const nextList = [...current.filter((w) => w.id !== workspace.id), workspace];
-    this.saveWorkspaces(nextList, true);
-    this.setCurrentWorkspaceId(workspace.id);
+    let nextList = [...current.filter((w) => w.id !== workspace.id), savedWorkspace];
+    localStorage.setItem(STORAGE_KEYS.WORKSPACES, JSON.stringify(nextList));
+    writeIndexedDB(STORAGE_KEYS.WORKSPACES, nextList).catch(() => {});
+    this.setCurrentWorkspaceId(savedWorkspace.id);
 
-    // 2. Garante Quadro Principal inicial ativo
-    this.ensureWorkspaceProject(workspace.id, workspace.name);
+    // 2. Cria Quadro Principal inicial localmente (sem push antecipado antes do workspace existir no banco)
+    const initialProject = this.ensureWorkspaceProject(savedWorkspace.id, savedWorkspace.name, true);
 
-    // 3. Transmite via Realtime para todos os dispositivos conectados
-    RealtimeService.broadcast('workspaces', nextList, {
-      action: 'create_workspace',
-      targetId: workspace.id,
-      userName: workspace.name,
-    });
-
-    // 4. Salva no servidor de sincronização centralizado
-    if (isServerApiAvailable()) {
-      fetch('/api/sync/state', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaces: nextList }),
-      }).catch(() => {});
-    }
-
-    // 5. Salva imediatamente no banco de dados (Supabase) se configurado
+    // 3. Persiste primeiro o Workspace no Supabase, e somente depois o seu Quadro Principal (evita erro de FK)
     if (SupabaseService.isConfigured()) {
       try {
-        const cloudRes = await SupabaseService.createWorkspace(workspace);
-        if (!cloudRes.success) {
+        const cloudRes = await SupabaseService.createWorkspace(savedWorkspace);
+        if (cloudRes.success && cloudRes.workspace) {
+          savedWorkspace = cloudRes.workspace;
+          nextList = [...current.filter((w) => w.id !== savedWorkspace.id), savedWorkspace];
+          localStorage.setItem(STORAGE_KEYS.WORKSPACES, JSON.stringify(nextList));
+        } else if (!cloudRes.success) {
           console.warn('[StorageService] Falha na nuvem ao criar workspace:', cloudRes.error);
         }
+        await SupabaseService.createProject(initialProject).catch((projErr) => {
+          console.warn('[StorageService] Aviso ao criar quadro inicial no Supabase:', projErr);
+        });
       } catch (e: any) {
         console.warn('[StorageService] Erro ao gravar workspace no Supabase:', e);
       }
     }
 
-    return { success: true, workspace };
+    // 4. Transmite via Realtime para todos os dispositivos conectados e atualiza o servidor central
+    RealtimeService.broadcast('workspaces', nextList, {
+      action: 'create_workspace',
+      targetId: savedWorkspace.id,
+      userName: savedWorkspace.name,
+    });
+    RealtimeService.broadcast('projects', this.getProjects(), {
+      action: 'create_project',
+      targetId: initialProject.id,
+      userName: initialProject.name,
+    });
+
+    if (isServerApiAvailable()) {
+      fetch('/api/sync/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaces: nextList, projects: this.getProjects() }),
+      }).catch(() => {});
+    }
+
+    return { success: true, workspace: savedWorkspace, project: initialProject };
   },
 
   /**

@@ -725,47 +725,96 @@ export class SupabaseService {
 
     try {
       const targetCompId = workspace.companyId || (workspace as any).tenantId || workspace.id;
+      const baseSlug = (workspace.slug || workspace.name || 'workspace')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '') || 'workspace';
+      const safeSlug = `${baseSlug}-${workspace.id.slice(-5)}`;
 
-      // 1. Garante que o Tenant / Empresa existe na tabela tenants para evitar erro de Foreign Key
+      // 1. Garante que o Tenant / Empresa existe na tabela tenants SEM sobrescrever empresa já existente
       try {
-        await client.from('tenants').upsert({
-          id: targetCompId,
-          name: workspace.name,
-          owner_id: workspace.ownerId,
-          owner_name: workspace.name,
-          owner_email: 'contato@operatask.com',
-          primary_workspace_id: workspace.id,
-          status: 'active',
-          plan: 'profissional',
-          payment_status: 'paid',
-          updated_at: new Date().toISOString(),
-        });
+        const { data: existingTenant } = await client
+          .from('tenants')
+          .select('id')
+          .eq('id', targetCompId)
+          .maybeSingle();
+
+        if (!existingTenant) {
+          const { error: tErr } = await client.from('tenants').upsert({
+            id: targetCompId,
+            name: workspace.name,
+            owner_id: workspace.ownerId,
+            owner_name: workspace.name,
+            owner_email: 'contato@operatask.com',
+            primary_workspace_id: workspace.id,
+            status: workspace.clientStatus || 'active',
+            plan: workspace.clientPlan || 'profissional',
+            payment_status: 'paid',
+            updated_at: new Date().toISOString(),
+          });
+          if (tErr) {
+            console.warn('[SupabaseService] Aviso ao criar tenant para workspace:', tErr.message);
+          }
+        }
       } catch (tErr) {
         console.warn('[SupabaseService] Aviso ao garantir tenant para workspace:', tErr);
       }
 
-      // 2. Monta payload do Workspace gravando tanto tenant_id quanto company_id
-      const wsPayload: any = {
-        id: workspace.id,
-        name: workspace.name,
-        slug: workspace.slug || workspace.name.toLowerCase().replace(/\s+/g, '-'),
-        description: workspace.description || '',
-        logo_color: workspace.logoColor || '#173653',
-        owner_id: workspace.ownerId,
-        tenant_id: targetCompId,
-        company_id: targetCompId,
-        created_at: workspace.createdAt || new Date().toISOString(),
+      // 2. Monta payload do Workspace gravando tanto tenant_id quanto company_id com fallbacks progressivos
+      const buildWsPayload = (includeCompanyId: boolean, includeTenantId: boolean, slugVal: string, minimal = false): any => {
+        if (minimal) {
+          return {
+            id: workspace.id,
+            name: workspace.name,
+            slug: slugVal,
+            owner_id: workspace.ownerId,
+            created_at: workspace.createdAt || new Date().toISOString(),
+          };
+        }
+        const payload: any = {
+          id: workspace.id,
+          name: workspace.name,
+          slug: slugVal,
+          description: workspace.description || '',
+          logo_color: workspace.logoColor || '#173653',
+          owner_id: workspace.ownerId,
+          created_at: workspace.createdAt || new Date().toISOString(),
+        };
+        if (includeTenantId) payload.tenant_id = targetCompId;
+        if (includeCompanyId) payload.company_id = targetCompId;
+        return payload;
       };
 
-      let wsResult = await client.from('workspaces').upsert(wsPayload);
+      let currentSlug = safeSlug;
+      let wsResult = await client.from('workspaces').upsert(buildWsPayload(true, true, currentSlug));
+
       if (wsResult.error && wsResult.error.message?.includes('company_id')) {
-        // Se a coluna company_id ainda não existir no schema remoto do Supabase, retenta apenas com tenant_id
-        delete wsPayload.company_id;
-        wsResult = await client.from('workspaces').upsert(wsPayload);
+        wsResult = await client.from('workspaces').upsert(buildWsPayload(false, true, currentSlug));
+      }
+
+      if (
+        wsResult.error &&
+        (wsResult.error.message?.includes('tenant_id') ||
+          wsResult.error.message?.includes('foreign key') ||
+          wsResult.error.code === '23503')
+      ) {
+        wsResult = await client.from('workspaces').upsert(buildWsPayload(false, false, currentSlug));
+      }
+
+      if (wsResult.error && (wsResult.error.code === '23505' || wsResult.error.message?.includes('slug'))) {
+        currentSlug = `${baseSlug}-${Date.now().toString(36)}`;
+        wsResult = await client.from('workspaces').upsert(buildWsPayload(false, false, currentSlug));
+      }
+
+      if (wsResult.error && wsResult.error.message?.includes('column')) {
+        wsResult = await client.from('workspaces').upsert(buildWsPayload(false, false, currentSlug, true));
       }
 
       if (wsResult.error && !wsResult.error.message?.includes('does not exist')) {
         console.error('[SupabaseService] Erro ao persistir workspace no Supabase:', wsResult.error);
+        return { success: false, workspace, error: wsResult.error.message };
       }
 
       // 3. VINCULAÇÃO AUTOMÁTICA OBRIGATÓRIA NO CADASTRO/CRIAÇÃO:
@@ -795,24 +844,37 @@ export class SupabaseService {
       }
 
       if (membersToUpsert.length > 0) {
-        const { error: mError } = await client.from('workspace_members').upsert(membersToUpsert);
+        const { error: mError } = await client
+          .from('workspace_members')
+          .upsert(membersToUpsert, { onConflict: 'workspace_id,user_id' });
         if (mError && !mError.message?.includes('does not exist')) {
-          console.warn('[SupabaseService] Erro ao vincular membros em workspace_members:', mError);
+          console.warn('[SupabaseService] Erro no upsert em lote de workspace_members, tentando individualmente:', mError.message);
+          for (const memberRow of membersToUpsert) {
+            try {
+              await client.from('workspace_members').upsert(memberRow, { onConflict: 'workspace_id,user_id' });
+            } catch {}
+          }
         }
       }
 
-      // 4. Atualiza perfil do criador/dono com o ID do workspace e da empresa
-      if (workspace.ownerId) {
+      // 4. Atualiza perfil do criador/dono com o ID do workspace e da empresa (apenas se ownerId for UUID válido)
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        workspace.ownerId || ''
+      );
+      if (isUuid) {
         try {
-          await client.from('profiles').update({
-            workspace_id: workspace.id,
-            tenant_id: targetCompId,
-            company_id: targetCompId,
-          }).eq('id', workspace.ownerId);
+          await client
+            .from('profiles')
+            .update({
+              workspace_id: workspace.id,
+              tenant_id: targetCompId,
+              company_id: targetCompId,
+            })
+            .eq('id', workspace.ownerId);
         } catch {}
       }
 
-      return { success: true, workspace };
+      return { success: true, workspace: { ...workspace, slug: currentSlug } };
     } catch (err: any) {
       console.error('[SupabaseService] Falha ao criar workspace no Supabase:', err);
       return { success: false, error: err.message };
@@ -910,6 +972,10 @@ export class SupabaseService {
           const fallbackWsPayload = wsPayload.map(({ company_id, ...rest }: any) => rest);
           wsErr = (await client.from('workspaces').upsert(fallbackWsPayload)).error;
         }
+        if (wsErr && (wsErr.message?.includes('tenant_id') || wsErr.message?.includes('foreign key') || wsErr.code === '23503')) {
+          const minimalPayload = wsPayload.map(({ company_id, tenant_id, ...rest }: any) => rest);
+          wsErr = (await client.from('workspaces').upsert(minimalPayload)).error;
+        }
         if (wsErr && !wsErr.message?.includes('does not exist')) {
           console.warn('Erro ao sincronizar workspaces no Supabase:', wsErr);
         }
@@ -938,7 +1004,7 @@ export class SupabaseService {
             });
           }
           if (membersList.length > 0) {
-            await client.from('workspace_members').upsert(membersList);
+            await client.from('workspace_members').upsert(membersList, { onConflict: 'workspace_id,user_id' });
           }
         }
       }

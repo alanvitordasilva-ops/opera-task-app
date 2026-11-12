@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, Building, AlertCircle, Loader2 } from 'lucide-react';
 import { COLOR_PALETTE } from '../utils/helpers.ts';
 import { ColorPicker } from './ColorPicker.tsx';
@@ -19,6 +19,16 @@ export const CreateWorkspaceModal: React.FC<CreateWorkspaceModalProps> = ({
   const [color, setColor] = useState(COLOR_PALETTE[0]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      setName('');
+      setDescription('');
+      setColor(COLOR_PALETTE[0]);
+      setIsSubmitting(false);
+      setErrorMessage(null);
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -46,7 +56,12 @@ export const CreateWorkspaceModal: React.FC<CreateWorkspaceModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs transition-opacity animate-in fade-in duration-200">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs transition-opacity animate-in fade-in duration-200"
+      onClick={() => {
+        if (!isSubmitting) onClose();
+      }}
+    >
       <div
         className="w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden"
         onClick={(e) => e.stopPropagation()}
