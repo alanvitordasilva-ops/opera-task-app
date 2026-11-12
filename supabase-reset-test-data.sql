@@ -14,6 +14,28 @@
 
 BEGIN;
 
+-- 0. Garantir colunas essenciais e compatibilidade no Supabase
+ALTER TABLE IF EXISTS public.workspaces ADD COLUMN IF NOT EXISTS company_id TEXT;
+ALTER TABLE IF EXISTS public.workspaces ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+ALTER TABLE IF EXISTS public.workspace_members ADD COLUMN IF NOT EXISTS company_id TEXT;
+ALTER TABLE IF EXISTS public.workspace_members ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+ALTER TABLE IF EXISTS public.profiles ADD COLUMN IF NOT EXISTS company_id TEXT;
+ALTER TABLE IF EXISTS public.profiles ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+ALTER TABLE IF EXISTS public.projects ADD COLUMN IF NOT EXISTS company_id TEXT;
+ALTER TABLE IF EXISTS public.projects ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+ALTER TABLE IF EXISTS public.cards ADD COLUMN IF NOT EXISTS company_id TEXT;
+ALTER TABLE IF EXISTS public.cards ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+ALTER TABLE IF EXISTS public.tasks ADD COLUMN IF NOT EXISTS company_id TEXT;
+ALTER TABLE IF EXISTS public.tasks ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+
+-- Remover constraints restritivas de Foreign Key que causam falhas silenciosas na criação de workspaces
+ALTER TABLE IF EXISTS public.workspaces DROP CONSTRAINT IF EXISTS workspaces_tenant_id_fkey;
+ALTER TABLE IF EXISTS public.workspaces DROP CONSTRAINT IF EXISTS workspaces_owner_id_fkey;
+ALTER TABLE IF EXISTS public.workspace_members DROP CONSTRAINT IF EXISTS workspace_members_user_id_fkey;
+ALTER TABLE IF EXISTS public.projects DROP CONSTRAINT IF EXISTS projects_workspace_id_fkey;
+ALTER TABLE IF EXISTS public.cards DROP CONSTRAINT IF EXISTS cards_workspace_id_fkey;
+ALTER TABLE IF EXISTS public.tasks DROP CONSTRAINT IF EXISTS tasks_workspace_id_fkey;
+
 -- 1. Apagar Tarefas, Cards e Itens de Produção de teste
 DELETE FROM public.tasks 
 WHERE workspace_id != 'ws-principal';

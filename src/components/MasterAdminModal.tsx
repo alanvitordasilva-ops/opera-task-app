@@ -38,7 +38,7 @@ import {
   Terminal,
 } from 'lucide-react';
 import { StorageService } from '../services/storage.ts';
-import { getProductionAppUrl } from '../utils/appUrl.ts';
+import { getProductionAppUrl, createInviteAccessUrl } from '../utils/appUrl.ts';
 import { isUserMaster } from '../utils/helpers.ts';
 
 interface MasterAdminModalProps {
@@ -127,6 +127,8 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
     role: string;
     workspaceName: string;
     accessLink: string;
+    companyId?: string;
+    workspaceId?: string;
   } | null>(null);
   const [copiedCredentials, setCopiedCredentials] = useState(false);
 
@@ -285,13 +287,26 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
 
       const targetWorkspaces = workspaces.filter((w) => newUserWorkspaceIds.includes(w.id));
       const combinedWsNames = targetWorkspaces.map((w) => w.name).join(', ') || 'Workspaces Vinculados';
+      const targetWsId = newUserWorkspaceIds[0];
+      const targetCompId = targetWorkspaces[0]?.companyId || result.user.companyId;
+      const userLogin = result.user.username || result.user.email;
+
+      const appLink = createInviteAccessUrl({
+        baseUrl: getProductionAppUrl(),
+        companyId: targetCompId,
+        workspaceId: targetWsId,
+        workspaceName: combinedWsNames,
+        login: userLogin,
+      });
 
       setCreatedResult({
         user: result.user,
         rawPassword: cleanPassword,
         role: newUserWorkspaceRole,
         workspaceName: combinedWsNames,
-        accessLink: getProductionAppUrl(),
+        accessLink: appLink,
+        companyId: targetCompId,
+        workspaceId: targetWsId,
       });
 
       setIsSubmittingNewUser(false);
@@ -314,7 +329,9 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
       password: createdResult.rawPassword,
       workspaceName: createdResult.workspaceName,
       role: createdResult.role,
-      customLink: createdResult.accessLink || getProductionAppUrl(),
+      companyId: createdResult.companyId,
+      workspaceId: createdResult.workspaceId,
+      customLink: createdResult.accessLink,
     });
   };
 

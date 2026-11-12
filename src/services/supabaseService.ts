@@ -466,59 +466,52 @@ export class SupabaseService {
         }
       }
 
-      let query = client.from('workspaces').select('*').order('created_at', { ascending: true });
+      // Consulta direta da tabela workspaces ordenando por criação
+      const wsResult: any = await client
+        .from('workspaces')
+        .select('*')
+        .order('created_at', { ascending: true });
+      const allWsRows: any[] = Array.isArray(wsResult?.data) ? wsResult.data : [];
+      const wsErr = wsResult?.error;
 
-      const targetTenantId = params?.tenantId || params?.companyId;
-      if (!params?.isSuperAdmin) {
-        const orClauses: string[] = [];
-        if (memberWsIds.length > 0) {
-          orClauses.push(`id.in.(${memberWsIds.join(',')})`);
-        }
-        if (params?.userId) {
-          orClauses.push(`owner_id.eq.${params.userId}`);
-        }
-        if (targetTenantId) {
-          orClauses.push(`tenant_id.eq.${targetTenantId}`);
-          orClauses.push(`company_id.eq.${targetTenantId}`);
-          orClauses.push(`id.eq.${targetTenantId}`);
-        }
-        if (params?.workspaceId) {
-          orClauses.push(`id.eq.${params.workspaceId}`);
-        }
-
-        if (orClauses.length > 0) {
-          query = query.or(orClauses.join(','));
-        }
-      }
-
-      let { data: wsRows, error: wsErr } = await query;
-
-      // Fallback de segurança: se a query filtrada retornar vazia mas o usuário tiver ID de workspace/empresa/membro,
-      // busca sem o filtro estrito de coluna para não quebrar a navegação caso a coluna no Supabase seja diferente
-      if ((!wsRows || wsRows.length === 0) && !params?.isSuperAdmin && (targetTenantId || params?.workspaceId || params?.userId || memberWsIds.length > 0)) {
-        try {
-          const fallbackRes = await client.from('workspaces').select('*').order('created_at', { ascending: true });
-          if (fallbackRes.data && fallbackRes.data.length > 0) {
-            const inMemoryFiltered = fallbackRes.data.filter((row: any) => {
-              if (memberWsIds.includes(String(row.id))) return true;
-              if (targetTenantId && (row.tenant_id === targetTenantId || row.company_id === targetTenantId || row.id === targetTenantId)) return true;
-              if (params?.workspaceId && row.id === params.workspaceId) return true;
-              if (params?.userId && row.owner_id === params.userId) return true;
-              return false;
-            });
-            wsRows = inMemoryFiltered.length > 0 ? inMemoryFiltered : fallbackRes.data;
-          }
-        } catch {}
-      }
-
-      if (wsErr && (!wsRows || wsRows.length === 0)) {
+      if (wsErr && allWsRows.length === 0) {
         if (!wsErr.message?.includes('does not exist')) {
-          console.warn('[SupabaseService] Erro ao buscar workspaces:', wsErr);
+          console.warn('[SupabaseService] Erro ao buscar workspaces no Supabase:', wsErr);
         }
         return { success: false, workspaces: [], error: wsErr.message };
       }
 
-      if (!wsRows || wsRows.length === 0) {
+      let wsRows: any[] = allWsRows;
+
+      // Filtragem por permissões do usuário
+      const targetTenantId = params?.tenantId || params?.companyId;
+      if (!params?.isSuperAdmin && wsRows.length > 0) {
+        const filtered = wsRows.filter((row: any) => {
+          // 1. É proprietário/criador
+          if (params?.userId && String(row.owner_id) === String(params.userId)) return true;
+          // 2. É membro registrado na tabela workspace_members
+          if (memberWsIds.includes(String(row.id))) return true;
+          // 3. Vínculo por Empresa / Tenant
+          if (targetTenantId) {
+            if (String(row.tenant_id) === String(targetTenantId)) return true;
+            if (String(row.company_id) === String(targetTenantId)) return true;
+            if (String(row.id) === String(targetTenantId)) return true;
+          }
+          // 4. ID específico de Workspace
+          if (params?.workspaceId && String(row.id) === String(params.workspaceId)) return true;
+          return false;
+        });
+
+        // Se o filtro encontrou os workspaces do usuário, usa-os; caso contrário, preserva os não-matriz
+        if (filtered.length > 0) {
+          wsRows = filtered;
+        } else if (params?.userId || targetTenantId) {
+          const nonMatriz = wsRows.filter((r) => r.id !== 'ws-principal');
+          wsRows = nonMatriz.length > 0 ? nonMatriz : wsRows;
+        }
+      }
+
+      if (wsRows.length === 0) {
         return { success: true, workspaces: [] };
       }
 
@@ -731,6 +724,27 @@ export class SupabaseService {
     }
 
     try {
+      const targetCompId = workspace.companyId || (workspace as any).tenantId || workspace.id;
+
+      // 1. Garante que o Tenant / Empresa existe na tabela tenants para evitar erro de Foreign Key
+      try {
+        await client.from('tenants').upsert({
+          id: targetCompId,
+          name: workspace.name,
+          owner_id: workspace.ownerId,
+          owner_name: workspace.name,
+          owner_email: 'contato@operatask.com',
+          primary_workspace_id: workspace.id,
+          status: 'active',
+          plan: 'profissional',
+          payment_status: 'paid',
+          updated_at: new Date().toISOString(),
+        });
+      } catch (tErr) {
+        console.warn('[SupabaseService] Aviso ao garantir tenant para workspace:', tErr);
+      }
+
+      // 2. Monta payload do Workspace gravando tanto tenant_id quanto company_id
       const wsPayload: any = {
         id: workspace.id,
         name: workspace.name,
@@ -738,27 +752,64 @@ export class SupabaseService {
         description: workspace.description || '',
         logo_color: workspace.logoColor || '#173653',
         owner_id: workspace.ownerId,
-        tenant_id: workspace.companyId || (workspace as any).tenantId || null,
+        tenant_id: targetCompId,
+        company_id: targetCompId,
         created_at: workspace.createdAt || new Date().toISOString(),
       };
 
-      const { error: wsError } = await client.from('workspaces').upsert(wsPayload);
-      if (wsError && !wsError.message?.includes('does not exist')) {
-        console.error('[SupabaseService] Erro ao persistir workspace:', wsError);
+      let wsResult = await client.from('workspaces').upsert(wsPayload);
+      if (wsResult.error && wsResult.error.message?.includes('company_id')) {
+        // Se a coluna company_id ainda não existir no schema remoto do Supabase, retenta apenas com tenant_id
+        delete wsPayload.company_id;
+        wsResult = await client.from('workspaces').upsert(wsPayload);
       }
 
-      // Insere o criador/membros
-      if (Array.isArray(workspace.members) && workspace.members.length > 0) {
-        const memPayload = workspace.members.map((m) => ({
+      if (wsResult.error && !wsResult.error.message?.includes('does not exist')) {
+        console.error('[SupabaseService] Erro ao persistir workspace no Supabase:', wsResult.error);
+      }
+
+      // 3. VINCULAÇÃO AUTOMÁTICA OBRIGATÓRIA NO CADASTRO/CRIAÇÃO:
+      // O criador (ownerId) e todos os membros são obrigatoriamente vinculados na tabela workspace_members
+      const membersToUpsert: Array<{ workspace_id: string; user_id: string; role: string; joined_at: string }> = [];
+
+      if (workspace.ownerId) {
+        membersToUpsert.push({
           workspace_id: workspace.id,
-          user_id: m.userId,
-          role: m.role || 'owner',
-          joined_at: m.joinedAt || new Date().toISOString(),
-        }));
-        const { error: mError } = await client.from('workspace_members').upsert(memPayload);
+          user_id: workspace.ownerId,
+          role: 'owner',
+          joined_at: workspace.createdAt || new Date().toISOString(),
+        });
+      }
+
+      if (Array.isArray(workspace.members)) {
+        workspace.members.forEach((m) => {
+          if (m.userId && !membersToUpsert.some((x) => x.user_id === m.userId)) {
+            membersToUpsert.push({
+              workspace_id: workspace.id,
+              user_id: m.userId,
+              role: m.role || 'membro',
+              joined_at: m.joinedAt || new Date().toISOString(),
+            });
+          }
+        });
+      }
+
+      if (membersToUpsert.length > 0) {
+        const { error: mError } = await client.from('workspace_members').upsert(membersToUpsert);
         if (mError && !mError.message?.includes('does not exist')) {
-          console.warn('[SupabaseService] Erro ao persistir workspace_members:', mError);
+          console.warn('[SupabaseService] Erro ao vincular membros em workspace_members:', mError);
         }
+      }
+
+      // 4. Atualiza perfil do criador/dono com o ID do workspace e da empresa
+      if (workspace.ownerId) {
+        try {
+          await client.from('profiles').update({
+            workspace_id: workspace.id,
+            tenant_id: targetCompId,
+            company_id: targetCompId,
+          }).eq('id', workspace.ownerId);
+        } catch {}
       }
 
       return { success: true, workspace };
@@ -839,30 +890,55 @@ export class SupabaseService {
     try {
       // 1. Workspaces
       if (data.workspaces.length > 0) {
-        const wsPayload = data.workspaces.map((w) => ({
-          id: w.id,
-          name: w.name,
-          slug: w.slug,
-          description: w.description || '',
-          logo_color: w.logoColor,
-          owner_id: w.ownerId,
-          created_at: w.createdAt,
-        }));
-        const { error: wsErr } = await client.from('workspaces').upsert(wsPayload);
+        const wsPayload = data.workspaces.map((w) => {
+          const targetCompId = w.companyId || (w as any).tenantId || w.id;
+          return {
+            id: w.id,
+            name: w.name,
+            slug: w.slug || w.name.toLowerCase().replace(/\s+/g, '-'),
+            description: w.description || '',
+            logo_color: w.logoColor || '#173653',
+            owner_id: w.ownerId,
+            tenant_id: targetCompId,
+            company_id: targetCompId,
+            created_at: w.createdAt || new Date().toISOString(),
+          };
+        });
+
+        let wsErr = (await client.from('workspaces').upsert(wsPayload)).error;
+        if (wsErr && wsErr.message?.includes('company_id')) {
+          const fallbackWsPayload = wsPayload.map(({ company_id, ...rest }: any) => rest);
+          wsErr = (await client.from('workspaces').upsert(fallbackWsPayload)).error;
+        }
         if (wsErr && !wsErr.message?.includes('does not exist')) {
           console.warn('Erro ao sincronizar workspaces no Supabase:', wsErr);
         }
 
-        // Sincroniza workspace_members
+        // Sincroniza workspace_members garantindo que o ownerId esteja presente
         for (const w of data.workspaces) {
-          if (Array.isArray(w.members) && w.members.length > 0) {
-            const memPayload = w.members.map((m) => ({
+          const membersList: Array<{ workspace_id: string; user_id: string; role: string; joined_at: string }> = [];
+          if (w.ownerId) {
+            membersList.push({
               workspace_id: w.id,
-              user_id: m.userId,
-              role: m.role,
-              joined_at: m.joinedAt || new Date().toISOString(),
-            }));
-            await client.from('workspace_members').upsert(memPayload);
+              user_id: w.ownerId,
+              role: 'owner',
+              joined_at: w.createdAt || new Date().toISOString(),
+            });
+          }
+          if (Array.isArray(w.members)) {
+            w.members.forEach((m) => {
+              if (m.userId && !membersList.some((x) => x.user_id === m.userId)) {
+                membersList.push({
+                  workspace_id: w.id,
+                  user_id: m.userId,
+                  role: m.role || 'membro',
+                  joined_at: m.joinedAt || new Date().toISOString(),
+                });
+              }
+            });
+          }
+          if (membersList.length > 0) {
+            await client.from('workspace_members').upsert(membersList);
           }
         }
       }

@@ -5,11 +5,21 @@ import { SupabaseService } from '../services/supabaseService.ts';
 import { matchUserIdentifier, normalizeAuthText } from '../utils/helpers.ts';
 import { User as UserIcon, Lock, Eye, EyeOff, ArrowRight, HelpCircle, CheckCircle2, X, Sun, Moon, Database } from 'lucide-react';
 
+export interface InviteInfo {
+  token?: string;
+  companyId?: string;
+  workspaceId?: string;
+  workspaceName?: string;
+  login?: string;
+}
+
 interface LoginScreenProps {
   users: User[];
   onLoginSuccess: (user: User) => void;
   theme?: 'light' | 'dark';
   onToggleTheme?: () => void;
+  initialLogin?: string;
+  inviteInfo?: InviteInfo | null;
 }
 
 export const LoginScreen: React.FC<LoginScreenProps> = ({
@@ -17,14 +27,25 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   onLoginSuccess,
   theme = 'light',
   onToggleTheme,
+  initialLogin = '',
+  inviteInfo = null,
 }) => {
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(initialLogin || inviteInfo?.login || '');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [debugMessage, setDebugMessage] = useState<string | null>(null);
+
+  // Atualiza campo de login quando inicializado por convite
+  useEffect(() => {
+    if (initialLogin) {
+      setEmail(initialLogin);
+    } else if (inviteInfo?.login) {
+      setEmail(inviteInfo.login);
+    }
+  }, [initialLogin, inviteInfo]);
 
   // Sincroniza a base de dados remota compartilhada assim que a tela de login for carregada
   useEffect(() => {
@@ -336,6 +357,19 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                     Detalhe: {debugMessage}
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* Banner de Boas-Vindas de Convite */}
+            {inviteInfo && (
+              <div className="mb-4 p-3.5 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/60 text-slate-700 dark:text-slate-200 text-xs space-y-1 animate-in fade-in">
+                <div className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400 font-bold">
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  <span>Convite Verificado & Acesso Isolado</span>
+                </div>
+                <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                  Bem-vindo ao Workspace <strong>{inviteInfo.workspaceName || 'da sua Empresa'}</strong>! Digite sua senha para entrar.
+                </p>
               </div>
             )}
 

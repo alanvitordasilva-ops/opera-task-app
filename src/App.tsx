@@ -48,6 +48,7 @@ import { OfflineIndicator } from './components/OfflineIndicator.tsx';
 import { MobileBottomNav } from './components/MobileBottomNav.tsx';
 import { SyncSettingsModal } from './components/SyncSettingsModal.tsx';
 import { LoginScreen } from './components/LoginScreen.tsx';
+import { InviteValidationScreen, InviteValidationData } from './components/InviteValidationScreen.tsx';
 import { WelcomeEmptyState } from './components/WelcomeEmptyState.tsx';
 import { UserProfileModal } from './components/UserProfileModal.tsx';
 import { MasterAdminModal } from './components/MasterAdminModal.tsx';
@@ -82,15 +83,45 @@ export default function App() {
       : 'kanban';
   });
 
-  // Tela de Carregamento (Splash Screen) ao acessar o link do app
-  const [showSplash, setShowSplash] = useState<boolean>(true);
+  // Detecção e Isolamento de Link de Convite na URL (?invite=true)
+  const [inviteData] = useState<InviteValidationData | null>(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const search = window.location.search;
+      if (!search) return null;
+      const params = new URLSearchParams(search);
+      if (params.get('invite') === 'true') {
+        const token = params.get('token') || `inv-${Date.now().toString(36)}`;
+        const companyId = params.get('company_id') || params.get('companyId') || undefined;
+        const workspaceId = params.get('workspace_id') || params.get('workspaceId') || undefined;
+        const workspaceName = params.get('ws_name') || params.get('workspaceName') || undefined;
+        const login = params.get('login') || undefined;
 
-  // Estado de Autenticação na Tela de Login
+        // Limpeza preventiva imediata de qualquer sessão residual (ex: Master) para evitar login cruzado
+        StorageService.setAuthenticated(false);
+        try {
+          localStorage.removeItem('operatask_auth_status');
+          localStorage.removeItem('operatask_current_user_id');
+          sessionStorage.clear();
+        } catch {}
+
+        return { token, companyId, workspaceId, workspaceName, login };
+      }
+    } catch {}
+    return null;
+  });
+
+  const [isInviteValidating, setIsInviteValidating] = useState<boolean>(() => Boolean(inviteData));
+
+  // Tela de Carregamento (Splash Screen) ao acessar o link do app (não exibe se for fluxo de convite)
+  const [showSplash, setShowSplash] = useState<boolean>(() => !inviteData);
+
+  // Estado de Autenticação na Tela de Login (link de convite força login isolado)
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() =>
-    StorageService.isAuthenticated()
+    inviteData ? false : StorageService.isAuthenticated()
   );
 
-  const handleLoginSuccess = (user: User) => {
+  const handleLoginSuccess = async (user: User) => {
     // 1. Atualiza lista de usuários com dados mais recentes do armazenamento
     const freshUsers = StorageService.getUsers();
     let currentUsersList = freshUsers;
@@ -102,8 +133,19 @@ export default function App() {
     setCurrentUser(user);
     StorageService.setCurrentUserId(user.id);
 
-    // 2. Garante acesso imediato aos workspaces aos quais o usuário foi vinculado ou da sua empresa
-    const freshWorkspaces = StorageService.getWorkspaces();
+    // 2. Busca workspaces atualizados da nuvem (Supabase) para o usuário recém-logado
+    let freshWorkspaces = StorageService.getWorkspaces();
+    if (SupabaseService.isConfigured()) {
+      try {
+        const cloudWs = await StorageService.fetchWorkspacesCloud(user);
+        if (cloudWs.success && Array.isArray(cloudWs.workspaces) && cloudWs.workspaces.length > 0) {
+          freshWorkspaces = StorageService.getWorkspaces();
+        }
+      } catch (err) {
+        console.warn('[OperaTask] Erro ao buscar workspaces na nuvem durante login:', err);
+      }
+    }
+
     const isMasterUser = isUserMaster(user);
     const userCompany = user.companyId || user.tenantId;
 
@@ -112,8 +154,19 @@ export default function App() {
       : freshWorkspaces.filter(
           (w) =>
             w.ownerId === user.id ||
-            (Array.isArray(w.members) && w.members.some((m) => m.userId === user.id)) ||
-            (userCompany && (w.companyId === userCompany || (w as any).tenantId === userCompany || w.id === userCompany))
+            w.ownerId === user.email ||
+            w.ownerId === user.username ||
+            (Array.isArray(w.members) &&
+              w.members.some(
+                (m) =>
+                  m.userId === user.id ||
+                  m.userId === user.email ||
+                  m.userId === user.username
+              )) ||
+            (userCompany &&
+              (w.companyId === userCompany ||
+                (w as any).tenantId === userCompany ||
+                w.id === userCompany))
         );
 
     // Fallback de segurança: se o filtro estrito não encontrar mas existirem workspaces de clientes, usa-os
@@ -122,11 +175,17 @@ export default function App() {
       allowedWorkspaces = nonMatriz.length > 0 ? nonMatriz : freshWorkspaces;
     }
 
-    if (allowedWorkspaces.length > 0) {
+    // Se o usuário veio de convite para um workspace específico, prioriza esse workspace
+    const targetInvitedWs = inviteData?.workspaceId
+      ? freshWorkspaces.find((w) => w.id === inviteData.workspaceId)
+      : null;
+    const activeWs = targetInvitedWs || (allowedWorkspaces.length > 0 ? allowedWorkspaces[0] : null);
+
+    if (activeWs) {
       setWorkspaces(freshWorkspaces);
-      setCurrentWorkspace(allowedWorkspaces[0]);
-      StorageService.setCurrentWorkspaceId(allowedWorkspaces[0].id);
-      StorageService.ensureWorkspaceProject(allowedWorkspaces[0].id, allowedWorkspaces[0].name);
+      setCurrentWorkspace(activeWs);
+      StorageService.setCurrentWorkspaceId(activeWs.id);
+      StorageService.ensureWorkspaceProject(activeWs.id, activeWs.name);
     } else {
       const newWs: Workspace = {
         id: `ws-${Date.now()}`,
@@ -136,7 +195,10 @@ export default function App() {
         logoColor: '#173653',
         ownerId: user.id,
         companyId: userCompany,
-        members: [{ userId: user.id, role: 'owner', joinedAt: new Date().toISOString() }],
+        members: [
+          { userId: user.id, role: 'owner', joinedAt: new Date().toISOString() },
+          ...(user.email && user.email !== user.id ? [{ userId: user.email, role: 'owner' as const, joinedAt: new Date().toISOString() }] : []),
+        ],
         createdAt: new Date().toISOString(),
       };
       const updatedAll = [...freshWorkspaces, newWs];
@@ -145,26 +207,27 @@ export default function App() {
       StorageService.saveWorkspaces(updatedAll, true);
       StorageService.setCurrentWorkspaceId(newWs.id);
       StorageService.ensureWorkspaceProject(newWs.id, newWs.name);
+      if (SupabaseService.isConfigured()) {
+        StorageService.createWorkspaceAsync(newWs).catch((e) => console.warn(e));
+      }
     }
 
     StorageService.setAuthenticated(true);
     setIsAuthenticated(true);
 
     // Carregar projetos e tarefas da nuvem do Supabase para o Workspace ativo
-    if (SupabaseService.isConfigured()) {
-      const activeWs = allowedWorkspaces[0] || freshWorkspaces[0];
-      if (activeWs) {
-        StorageService.fetchProjectsCloud(activeWs.id).then((pRes) => {
-          if (pRes.success && Array.isArray(pRes.projects) && pRes.projects.length > 0) {
-            setProjects(StorageService.getProjects());
-          }
-        });
-        StorageService.fetchTasksCloud(activeWs.id).then((res) => {
-          if (res.success && Array.isArray(res.tasks)) {
-            setTasks(StorageService.getTasks());
-          }
-        });
-      }
+    const finalActiveWs = activeWs || freshWorkspaces[freshWorkspaces.length - 1];
+    if (SupabaseService.isConfigured() && finalActiveWs) {
+      StorageService.fetchProjectsCloud(finalActiveWs.id).then((pRes) => {
+        if (pRes.success && Array.isArray(pRes.projects) && pRes.projects.length > 0) {
+          setProjects(StorageService.getProjects());
+        }
+      });
+      StorageService.fetchTasksCloud(finalActiveWs.id).then((res) => {
+        if (res.success && Array.isArray(res.tasks)) {
+          setTasks(StorageService.getTasks());
+        }
+      });
     }
 
     showToast({
@@ -499,10 +562,17 @@ export default function App() {
 
     // Sincronização de Workspaces e Membros
     const unsubWorkspaces = RealtimeService.subscribe('workspaces', (incomingWorkspaces: Workspace[]) => {
-      if (Array.isArray(incomingWorkspaces)) {
+      if (Array.isArray(incomingWorkspaces) && incomingWorkspaces.length > 0) {
         setWorkspaces((prev) => {
-          if (JSON.stringify(prev) === JSON.stringify(incomingWorkspaces)) return prev;
-          return incomingWorkspaces;
+          const map = new Map<string, Workspace>();
+          prev.forEach((w) => map.set(w.id, w));
+          incomingWorkspaces.forEach((w) => {
+            const existing = map.get(w.id);
+            map.set(w.id, existing ? { ...existing, ...w } : w);
+          });
+          const merged = Array.from(map.values());
+          if (JSON.stringify(prev) === JSON.stringify(merged)) return prev;
+          return merged;
         });
         setCurrentWorkspace((prev) => {
           const updatedCurrent = incomingWorkspaces.find((w) => w.id === prev.id);
@@ -649,9 +719,25 @@ export default function App() {
 
     const filtered = workspaces.filter((w) => {
       // 1. É o proprietário do workspace
-      if (w.ownerId === currentUser.id) return true;
+      if (
+        w.ownerId === currentUser.id ||
+        (currentUser.email && w.ownerId === currentUser.email) ||
+        (currentUser.username && w.ownerId === currentUser.username)
+      ) {
+        return true;
+      }
       // 2. É membro registrado na lista de membros
-      if (Array.isArray(w.members) && w.members.some((m) => m.userId === currentUser.id)) return true;
+      if (
+        Array.isArray(w.members) &&
+        w.members.some(
+          (m) =>
+            m.userId === currentUser.id ||
+            (currentUser.email && m.userId === currentUser.email) ||
+            (currentUser.username && m.userId === currentUser.username)
+        )
+      ) {
+        return true;
+      }
       // 3. Vínculo por Empresa / Tenant
       const wsCompany = w.companyId || (w as any).tenantId;
       if (userCompany && wsCompany && (userCompany === wsCompany || userCompany === w.id)) return true;
@@ -1421,6 +1507,32 @@ export default function App() {
     });
   };
 
+  const handleOpenMasterPanel = () => {
+    if (!isUserMaster(currentUser)) {
+      showToast({
+        type: 'error',
+        message: 'Acesso negado: O Painel Master é de uso exclusivo do Super Administrador.',
+      });
+      setIsMasterModalOpen(false);
+      return;
+    }
+    const localClients = StorageService.getClients();
+    setClients(localClients);
+    StorageService.fetchClientsCloud().then((res: any) => {
+      if (res && res.success && Array.isArray(res.clients) && res.clients.length > 0) {
+        setClients(res.clients);
+      }
+    });
+    setIsMasterModalOpen(true);
+  };
+
+  // Proteção do Painel Master contra acessos indevidos
+  useEffect(() => {
+    if (isMasterModalOpen && !isUserMaster(currentUser)) {
+      setIsMasterModalOpen(false);
+    }
+  }, [isMasterModalOpen, currentUser]);
+
   const handleCreateWorkspace = async (name: string, description: string, color: string) => {
     try {
       const newWsId = `ws-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
@@ -1435,7 +1547,11 @@ export default function App() {
         companyId: assignedCompId,
         clientStatus: 'active',
         clientPlan: 'profissional',
-        members: [{ userId: currentUser.id, role: 'owner' as const, joinedAt: new Date().toISOString() }],
+        members: [
+          { userId: currentUser.id, role: 'owner' as const, joinedAt: new Date().toISOString() },
+          ...(currentUser.email && currentUser.email !== currentUser.id ? [{ userId: currentUser.email, role: 'owner' as const, joinedAt: new Date().toISOString() }] : []),
+          ...(currentUser.username && currentUser.username !== currentUser.id ? [{ userId: currentUser.username, role: 'owner' as const, joinedAt: new Date().toISOString() }] : []),
+        ],
         createdAt: new Date().toISOString(),
       };
 
@@ -1445,10 +1561,13 @@ export default function App() {
       // 2. Atualiza estado da aplicação e seleciona o workspace criado
       setWorkspaces((prev) => {
         const exists = prev.some((w) => w.id === newWs.id);
-        return exists ? prev.map((w) => (w.id === newWs.id ? newWs : w)) : [...prev, newWs];
+        const next = exists ? prev.map((w) => (w.id === newWs.id ? newWs : w)) : [...prev, newWs];
+        StorageService.saveWorkspaces(next, true);
+        return next;
       });
       setCurrentWorkspace(newWs);
       StorageService.setCurrentWorkspaceId(newWs.id);
+      StorageService.ensureWorkspaceProject(newWs.id, newWs.name);
       setSelectedProjectId('all');
 
       recordActivity(`criou o workspace "${newWs.name}"`);
@@ -1576,14 +1695,15 @@ export default function App() {
     const targetWs = workspaces.find((w) => w.id === workspaceId);
     if (!targetWs) return;
 
-    // Verificar rigorosamente se o usuário autenticado é o Dono (Owner)
-    const member = targetWs.members.find((m) => m.userId === currentUser.id);
-    const isOwner = member?.role === 'owner' || targetWs.ownerId === currentUser.id;
+    // Verificar rigorosamente se o usuário autenticado tem autonomia (Dono do workspace ou Master)
+    const isMaster = isUserMaster(currentUser);
+    const member = targetWs.members?.find((m) => m.userId === currentUser.id);
+    const isOwner = member?.role === 'owner' || (member as any)?.role === 'dono' || targetWs.ownerId === currentUser.id;
 
-    if (!isOwner) {
+    if (!isOwner && !isMaster) {
       showToast({
         type: 'error',
-        message: 'Ação não permitida: Apenas o Dono (Owner) pode excluir este workspace.',
+        message: 'Ação não permitida: Apenas o Dono (Owner) ou o Super Administrador (Master) tem autonomia para excluir este workspace.',
       });
       return;
     }
@@ -1649,21 +1769,63 @@ export default function App() {
 
   const handleDeleteProject = (projectId: string) => {
     const proj = projects.find((p) => p.id === projectId);
+    if (!proj) return;
+
+    // Autonomia: Apenas Master, Dono ou Administrador do Workspace podem excluir quadros
+    const isMaster = isUserMaster(currentUser);
+    const targetWs = workspaces.find((w) => w.id === proj.workspaceId) || currentWorkspace;
+    const member = targetWs?.members?.find((m) => m.userId === currentUser.id);
+    const role = (member?.role || currentUserRole || '').toLowerCase();
+    const canDelete =
+      isMaster ||
+      role === 'owner' ||
+      role === 'dono' ||
+      role === 'admin' ||
+      role === 'administrador' ||
+      targetWs?.ownerId === currentUser.id;
+
+    if (!canDelete) {
+      showToast({
+        type: 'error',
+        message: 'Ação não permitida: Apenas Administradores ou Donos do Workspace têm autonomia para excluir quadros.',
+      });
+      return;
+    }
+
     setProjects((prev) => prev.filter((p) => p.id !== projectId));
     setTasks((prev) => prev.filter((t) => t.projectId !== projectId));
     if (selectedProjectId === projectId) setSelectedProjectId('all');
     StorageService.deleteProjectAsync(projectId);
-    if (proj) {
-      recordActivity(`excluiu o projeto "${proj.name}"`);
-      showToast({
-        type: 'info',
-        message: `Projeto "${proj.name}" excluído com sucesso.`,
-      });
-    }
+    recordActivity(`excluiu o projeto "${proj.name}"`);
+    showToast({
+      type: 'info',
+      message: `Quadro "${proj.name}" excluído com sucesso.`,
+    });
   };
 
   const handleDeleteColumn = (columnId: string) => {
     if (!activeProject) return;
+
+    // Autonomia: Apenas Master, Dono ou Administrador do Workspace podem excluir colunas
+    const isMaster = isUserMaster(currentUser);
+    const member = currentWorkspace?.members?.find((m) => m.userId === currentUser.id);
+    const role = (member?.role || currentUserRole || '').toLowerCase();
+    const canDeleteCol =
+      isMaster ||
+      role === 'owner' ||
+      role === 'dono' ||
+      role === 'admin' ||
+      role === 'administrador' ||
+      currentWorkspace?.ownerId === currentUser.id;
+
+    if (!canDeleteCol) {
+      showToast({
+        type: 'error',
+        message: 'Ação não permitida: Apenas Administradores ou Donos do Workspace têm autonomia para excluir colunas.',
+      });
+      return;
+    }
+
     if (activeProject.columns.length <= 1) {
       showToast({
         type: 'error',
@@ -1776,6 +1938,23 @@ export default function App() {
   const overdueCount = workspaceTasks.filter((t) => isTaskOverdue(t)).length;
   const unreadNotificationCount = notifications.filter((n) => !n.read && n.userId === currentUser.id).length;
 
+  // Fluxo Obrigatório de Validação e Isolamento de Sessão de Convite
+  if (isInviteValidating && inviteData) {
+    return (
+      <InviteValidationScreen
+        inviteData={inviteData}
+        onProceedToLogin={(data) => {
+          setIsInviteValidating(false);
+          setShowSplash(false);
+          setIsAuthenticated(false);
+          try {
+            window.history.replaceState({}, document.title, window.location.pathname);
+          } catch {}
+        }}
+      />
+    );
+  }
+
   // Tela de Carregamento (Splash Screen) ao acessar o link do OperaTask (2 a 3 segundos com transição suave para login)
   if (showSplash) {
     return <SplashScreen onFinish={() => setShowSplash(false)} />;
@@ -1789,6 +1968,8 @@ export default function App() {
         onLoginSuccess={handleLoginSuccess}
         theme={theme}
         onToggleTheme={handleToggleTheme}
+        initialLogin={inviteData?.login || ''}
+        inviteInfo={inviteData}
       />
     );
   }
@@ -1893,16 +2074,7 @@ export default function App() {
         onResetData={handleResetData}
         onOpenSyncSettings={() => setIsSyncSettingsOpen(true)}
         onOpenUserProfile={() => setIsUserProfileModalOpen(true)}
-        onOpenMasterPanel={() => {
-          const localClients = StorageService.getClients();
-          setClients(localClients);
-          StorageService.fetchClientsCloud().then((res) => {
-            if (res.success && res.clients.length > 0) {
-              setClients(res.clients);
-            }
-          });
-          setIsMasterModalOpen(true);
-        }}
+        onOpenMasterPanel={handleOpenMasterPanel}
         onOpenRegisterUserModal={() => {
           const check = StorageService.validateWorkspaceLimit(currentWorkspace.id, 'invite_member');
           if (!check.allowed) {
@@ -1976,7 +2148,7 @@ export default function App() {
           onOpenSyncSettings={() => setIsSyncSettingsOpen(true)}
           currentUser={currentUser}
           onOpenUserProfile={() => setIsUserProfileModalOpen(true)}
-          onOpenMasterPanel={() => setIsMasterModalOpen(true)}
+          onOpenMasterPanel={handleOpenMasterPanel}
           canRegisterUser={canRegisterUser(currentUserRole, isMaster)}
           onOpenRegisterUserModal={() => setIsRegisterUserOpen(true)}
           theme={theme}

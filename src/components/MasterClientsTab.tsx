@@ -45,8 +45,8 @@ import {
   CreditCard,
 } from 'lucide-react';
 import { StorageService } from '../services/storage.ts';
-import { generateUserAccessMessage, OFFICIAL_APP_ACCESS_URL } from '../utils/userAccessMessage.ts';
-import { getProductionAppUrl } from '../utils/appUrl.ts';
+import { generateUserAccessMessage } from '../utils/userAccessMessage.ts';
+import { getProductionAppUrl, createInviteAccessUrl } from '../utils/appUrl.ts';
 
 interface MasterClientsTabProps {
   clients: ClientCompany[];
@@ -412,13 +412,23 @@ export const MasterClientsTab: React.FC<MasterClientsTabProps> = ({
   // Mensagem Oficial de Compartilhamento
   const getShareText = () => {
     if (!shareResult) return '';
+    const loginUser = shareResult.ownerUser.username || shareResult.ownerUser.email;
+    const inviteLink = createInviteAccessUrl({
+      baseUrl: getProductionAppUrl(),
+      companyId: shareResult.client.id,
+      workspaceId: shareResult.workspace.id,
+      workspaceName: shareResult.workspace.name,
+      login: loginUser,
+    });
     return generateUserAccessMessage({
       name: shareResult.ownerUser.name,
-      login: shareResult.ownerUser.username || shareResult.ownerUser.email,
+      login: loginUser,
       password: shareResult.rawPassword,
       workspaceName: shareResult.workspace.name,
       role: 'Dono',
-      customLink: getProductionAppUrl(),
+      companyId: shareResult.client.id,
+      workspaceId: shareResult.workspace.id,
+      customLink: inviteLink,
     });
   };
 

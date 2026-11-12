@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 import { WorkspaceRole, User, Workspace } from '../types/index.ts';
 import { StorageService, isServerApiAvailable, setServerApiAvailable } from '../services/storage.ts';
-import { getProductionAppUrl } from '../utils/appUrl.ts';
+import { getProductionAppUrl, createInviteAccessUrl } from '../utils/appUrl.ts';
 import { generateUserAccessMessage, formatUserProfileRole, OFFICIAL_APP_ACCESS_URL } from '../utils/userAccessMessage.ts';
 import { isUserMaster } from '../utils/helpers.ts';
 
@@ -131,6 +131,8 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
     workspaceName: string;
     workspaceNames: string[];
     accessLink: string;
+    companyId?: string;
+    workspaceId?: string;
   } | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
 
@@ -259,7 +261,13 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
       const targetWsNames = targetWorkspaces.map((w) => w.name);
       const combinedWsName = targetWsNames.join(', ') || 'Workspaces Vinculados';
 
-      const appLink = getProductionAppUrl();
+      const appLink = createInviteAccessUrl({
+        baseUrl: getProductionAppUrl(),
+        companyId: assignedCompId,
+        workspaceId: selectedWorkspaceIds[0],
+        workspaceName: combinedWsName,
+        login: cleanUsername || cleanEmail,
+      });
 
       setCreatedResult({
         user: result.user,
@@ -268,6 +276,8 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
         workspaceName: combinedWsName,
         workspaceNames: targetWsNames,
         accessLink: appLink,
+        companyId: assignedCompId,
+        workspaceId: selectedWorkspaceIds[0],
       });
 
       if (onUserCreated) {
@@ -288,7 +298,9 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
       password: createdResult.rawPassword,
       workspaceName: createdResult.workspaceName,
       role: createdResult.role,
-      customLink: createdResult.accessLink || getProductionAppUrl(),
+      companyId: createdResult.companyId,
+      workspaceId: createdResult.workspaceId,
+      customLink: createdResult.accessLink,
     });
   };
 

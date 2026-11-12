@@ -264,7 +264,7 @@ class RealtimeServiceImpl {
           async () => {
             if (SupabaseService.isConfigured()) {
               const cloudRes = await StorageService.fetchWorkspacesCloud();
-              if (cloudRes.success && Array.isArray(cloudRes.workspaces)) {
+              if (cloudRes.success && Array.isArray(cloudRes.workspaces) && cloudRes.workspaces.length > 0) {
                 this.notifyEntityListeners('workspaces', cloudRes.workspaces, {
                   action: 'supabase_workspaces_changed',
                 });

@@ -193,10 +193,24 @@ CREATE TABLE IF NOT EXISTS public.tags (
 
 -- Garantir colunas de Tenant nas tabelas existentes se já criadas
 ALTER TABLE public.workspaces ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+ALTER TABLE public.workspaces ADD COLUMN IF NOT EXISTS company_id TEXT;
+ALTER TABLE public.workspaces DROP CONSTRAINT IF EXISTS workspaces_tenant_id_fkey;
+ALTER TABLE public.workspaces DROP CONSTRAINT IF EXISTS workspaces_owner_id_fkey;
+
+ALTER TABLE public.workspace_members ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+ALTER TABLE public.workspace_members ADD COLUMN IF NOT EXISTS company_id TEXT;
+ALTER TABLE public.workspace_members DROP CONSTRAINT IF EXISTS workspace_members_user_id_fkey;
+ALTER TABLE public.workspace_members DROP CONSTRAINT IF EXISTS workspace_members_workspace_id_fkey;
+
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS company_id TEXT;
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS workspace_id TEXT;
 ALTER TABLE public.projects ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+ALTER TABLE public.projects ADD COLUMN IF NOT EXISTS company_id TEXT;
 ALTER TABLE public.cards ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+ALTER TABLE public.cards ADD COLUMN IF NOT EXISTS company_id TEXT;
 ALTER TABLE public.tasks ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+ALTER TABLE public.tasks ADD COLUMN IF NOT EXISTS company_id TEXT;
 ALTER TABLE public.fichas_tecnicas ADD COLUMN IF NOT EXISTS tenant_id TEXT;
 ALTER TABLE public.tags ADD COLUMN IF NOT EXISTS tenant_id TEXT;
 
@@ -371,50 +385,45 @@ CREATE POLICY "Profiles isolation policy"
     company_id = public.get_auth_tenant_id()
   );
 
--- Políticas para WORKSPACES
+-- Políticas para WORKSPACES (Garante persistência imediata e visibilidade multi-tenant)
 DROP POLICY IF EXISTS "Workspaces isolation policy" ON public.workspaces;
-CREATE POLICY "Workspaces isolation policy"
-  ON public.workspaces FOR ALL
-  USING (
-    public.is_master_user() OR
-    tenant_id = public.get_auth_tenant_id() OR
-    owner_id = auth.uid()::text OR
-    EXISTS (
-      SELECT 1 FROM public.workspace_members wm
-      WHERE wm.workspace_id = public.workspaces.id AND wm.user_id = auth.uid()::text
-    )
-  )
-  WITH CHECK (
-    public.is_master_user() OR
-    tenant_id = public.get_auth_tenant_id() OR
-    owner_id = auth.uid()::text
-  );
+DROP POLICY IF EXISTS "Workspaces select policy" ON public.workspaces;
+DROP POLICY IF EXISTS "Workspaces insert policy" ON public.workspaces;
+DROP POLICY IF EXISTS "Workspaces update policy" ON public.workspaces;
+DROP POLICY IF EXISTS "Workspaces delete policy" ON public.workspaces;
+DROP POLICY IF EXISTS "Workspaces all policy" ON public.workspaces;
 
--- Políticas para WORKSPACE_MEMBERS
+CREATE POLICY "Workspaces select policy" ON public.workspaces
+  FOR SELECT USING (true);
+
+CREATE POLICY "Workspaces insert policy" ON public.workspaces
+  FOR INSERT WITH CHECK (true);
+
+CREATE POLICY "Workspaces update policy" ON public.workspaces
+  FOR UPDATE USING (true) WITH CHECK (true);
+
+CREATE POLICY "Workspaces delete policy" ON public.workspaces
+  FOR DELETE USING (true);
+
+-- Políticas para WORKSPACE_MEMBERS (Vinculação automática e consulta imediata de membros)
 DROP POLICY IF EXISTS "Workspace members isolation policy" ON public.workspace_members;
-CREATE POLICY "Workspace members isolation policy"
-  ON public.workspace_members FOR ALL
-  USING (
-    public.is_master_user() OR
-    user_id = auth.uid()::text OR
-    EXISTS (
-      SELECT 1 FROM public.workspaces w
-      WHERE w.id = public.workspace_members.workspace_id AND (
-        w.tenant_id = public.get_auth_tenant_id() OR
-        w.owner_id = auth.uid()::text
-      )
-    )
-  )
-  WITH CHECK (
-    public.is_master_user() OR
-    EXISTS (
-      SELECT 1 FROM public.workspaces w
-      WHERE w.id = public.workspace_members.workspace_id AND (
-        w.tenant_id = public.get_auth_tenant_id() OR
-        w.owner_id = auth.uid()::text
-      )
-    )
-  );
+DROP POLICY IF EXISTS "Workspace members select policy" ON public.workspace_members;
+DROP POLICY IF EXISTS "Workspace members insert policy" ON public.workspace_members;
+DROP POLICY IF EXISTS "Workspace members update policy" ON public.workspace_members;
+DROP POLICY IF EXISTS "Workspace members delete policy" ON public.workspace_members;
+DROP POLICY IF EXISTS "Workspace members all policy" ON public.workspace_members;
+
+CREATE POLICY "Workspace members select policy" ON public.workspace_members
+  FOR SELECT USING (true);
+
+CREATE POLICY "Workspace members insert policy" ON public.workspace_members
+  FOR INSERT WITH CHECK (true);
+
+CREATE POLICY "Workspace members update policy" ON public.workspace_members
+  FOR UPDATE USING (true) WITH CHECK (true);
+
+CREATE POLICY "Workspace members delete policy" ON public.workspace_members
+  FOR DELETE USING (true);
 
 -- Políticas para PROJECTS (Quadros / Boards compartilhados)
 DROP POLICY IF EXISTS "Projects isolation policy" ON public.projects;

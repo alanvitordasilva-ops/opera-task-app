@@ -1055,10 +1055,10 @@ export const StorageService = {
   /**
    * Buscar lista atualizada de Workspaces do banco de dados na nuvem (Supabase)
    */
-  async fetchWorkspacesCloud(): Promise<{ success: boolean; workspaces: Workspace[]; fromCloud: boolean }> {
+  async fetchWorkspacesCloud(overrideUser?: User): Promise<{ success: boolean; workspaces: Workspace[]; fromCloud: boolean }> {
     if (SupabaseService.isConfigured()) {
       try {
-        const user = this.getCurrentUser();
+        const user = overrideUser || this.getCurrentUser();
         const isMaster = isUserMaster(user);
         const companyId = user?.companyId || user?.tenantId;
         const currentWs = this.getCurrentWorkspace();
@@ -1071,16 +1071,21 @@ export const StorageService = {
           isSuperAdmin: isMaster,
         });
 
-        if (res.success && Array.isArray(res.workspaces) && res.workspaces.length > 0) {
+        if (res.success && Array.isArray(res.workspaces)) {
           const localWs = this.getWorkspaces();
-          const merged = [...res.workspaces];
-          localWs.forEach((lw) => {
-            if (!merged.some((mw) => mw.id === lw.id)) {
-              merged.push(lw);
-            }
+          const mergedMap = new Map<string, Workspace>();
+          // Preserva todos os workspaces locais para evitar desaparecimento na interface
+          localWs.forEach((lw) => mergedMap.set(lw.id, lw));
+          // Mescla e atualiza com os registros recebidos da nuvem
+          res.workspaces.forEach((cw) => {
+            const existing = mergedMap.get(cw.id);
+            mergedMap.set(cw.id, existing ? { ...existing, ...cw } : cw);
           });
-          this.saveWorkspaces(merged, true);
-          return { success: true, workspaces: merged, fromCloud: true };
+          const merged = Array.from(mergedMap.values());
+          if (merged.length > 0) {
+            this.saveWorkspaces(merged, true);
+            return { success: true, workspaces: merged, fromCloud: true };
+          }
         }
       } catch (err) {
         console.warn('[StorageService] Falha ao carregar workspaces do Supabase:', err);

@@ -20,7 +20,9 @@
  * - Perfil: [tipo de membro — Produção, Membro, Visualizador, etc.]
  */
 
-export const OFFICIAL_APP_ACCESS_URL = 'https://opera-task-app.vercel.app';
+import { createInviteAccessUrl, getProductionAppUrl, OFFICIAL_APP_ACCESS_URL } from './appUrl.ts';
+
+export { OFFICIAL_APP_ACCESS_URL };
 
 export function formatUserProfileRole(role?: string): string {
   if (!role) return 'Membro';
@@ -54,11 +56,16 @@ export interface UserAccessMessageParams {
   password: string;
   workspaceName: string;
   role: string;
+  companyId?: string;
+  workspaceId?: string;
   customLink?: string;
+  token?: string;
 }
 
 /**
  * Gera a mensagem obrigatória padronizada de compartilhamento de credenciais.
+ * Cria automaticamente o link de acesso isolado com query params de convite
+ * para evitar qualquer login cruzado com sessões anteriores (ex: Master).
  */
 export function generateUserAccessMessage({
   name,
@@ -66,10 +73,27 @@ export function generateUserAccessMessage({
   password,
   workspaceName,
   role,
+  companyId,
+  workspaceId,
   customLink,
+  token,
 }: UserAccessMessageParams): string {
   const profileLabel = formatUserProfileRole(role);
-  const link = customLink || OFFICIAL_APP_ACCESS_URL;
+
+  let link: string;
+  if (customLink && customLink.includes('invite=true')) {
+    link = customLink;
+  } else {
+    link = createInviteAccessUrl({
+      baseUrl: customLink || getProductionAppUrl(),
+      companyId,
+      workspaceId,
+      workspaceName,
+      login,
+      token,
+    });
+  }
 
   return `Acesso ao OperaTask\n\nOlá, ${name}!\n\nSua conta foi criada e está 100% ativa para acesso imediato.\n\nAcesse o link:\n${link}\n\nSeus dados de acesso:\n- Nome de usuário (login): ${login}\n- Senha: ${password}\n- Workspace: ${workspaceName}\n- Perfil: ${profileLabel}`;
 }
+
