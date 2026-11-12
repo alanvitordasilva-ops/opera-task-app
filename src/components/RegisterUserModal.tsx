@@ -29,7 +29,7 @@ interface RegisterUserModalProps {
   onClose: () => void;
   workspaces?: Workspace[];
   workspaceId?: string;
-  onUserCreated?: (newUser: User, role: WorkspaceRole, workspaceId: string) => void;
+  onUserCreated?: (newUser: User, role: WorkspaceRole, workspaceId: string, workspaceIds?: string[]) => void;
   currentUser?: User;
 }
 
@@ -281,7 +281,7 @@ export const RegisterUserModal: React.FC<RegisterUserModalProps> = ({
       });
 
       if (onUserCreated) {
-        onUserCreated(result.user, role, selectedWorkspaceIds[0]);
+        onUserCreated(result.user, role, selectedWorkspaceIds[0], selectedWorkspaceIds);
       }
     } catch (err: any) {
       setIsSubmitting(false);

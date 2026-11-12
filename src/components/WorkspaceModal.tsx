@@ -12,11 +12,13 @@ interface WorkspaceModalProps {
   workspace: Workspace;
   allUsers: User[];
   currentUserId: string;
+  allWorkspaces?: Workspace[];
   onSaveWorkspace: (data: Partial<Workspace>) => void;
   onInviteMember: (email: string, role: WorkspaceRole) => void;
   onChangeMemberRole: (userId: string, newRole: WorkspaceRole) => void;
   onRemoveMember: (userId: string) => void;
   onDeleteWorkspace?: (workspaceId: string) => void;
+  onUserCreated?: (newUser: User, role: WorkspaceRole, workspaceId: string, workspaceIds?: string[]) => void;
 }
 
 export const WorkspaceModal: React.FC<WorkspaceModalProps> = ({
@@ -25,11 +27,13 @@ export const WorkspaceModal: React.FC<WorkspaceModalProps> = ({
   workspace,
   allUsers,
   currentUserId,
+  allWorkspaces,
   onSaveWorkspace,
   onInviteMember,
   onChangeMemberRole,
   onRemoveMember,
   onDeleteWorkspace,
+  onUserCreated,
 }) => {
   const [activeTab, setActiveTab] = useState<'general' | 'members'>('members');
   const [name, setName] = useState(workspace.name);
@@ -491,10 +495,15 @@ export const WorkspaceModal: React.FC<WorkspaceModalProps> = ({
       <RegisterUserModal
         isOpen={isRegisterUserOpen}
         onClose={() => setIsRegisterUserOpen(false)}
+        workspaces={allWorkspaces}
         workspaceId={workspace.id}
-        onUserCreated={(newUser, newRole) => {
-          // O usuário já foi cadastrado e associado ao workspace no RegisterUserModal.
-          // Sincroniza a lista de membros do workspace atual sem duplicar o cadastro ou sobrescrever o estado global.
+        currentUser={currentMemberUser}
+        onUserCreated={(newUser, newRole, primaryWsId, selectedWsIds) => {
+          if (onUserCreated) {
+            onUserCreated(newUser, newRole, primaryWsId, selectedWsIds);
+            return;
+          }
+          // Fallback caso o pai não forneça onUserCreated
           const memberExists = (workspace.members || []).some((m) => m.userId === newUser.id);
           if (!memberExists && onSaveWorkspace) {
             const updatedMembers = [

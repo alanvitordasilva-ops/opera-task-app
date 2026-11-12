@@ -663,13 +663,20 @@ export const StorageService = {
           }
           if (Array.isArray(data.workspaces) && data.workspaces.length > 0) {
             const currentWs = this.getWorkspaces();
-            const mergedWs = [...data.workspaces];
-            currentWs.forEach((cw) => {
-              if (!mergedWs.some((mw) => mw.id === cw.id)) {
-                mergedWs.push(cw);
+            const wsMap = new Map<string, Workspace>();
+            currentWs.forEach((cw) => wsMap.set(cw.id, cw));
+            data.workspaces.forEach((rw: Workspace) => {
+              const prev = wsMap.get(rw.id);
+              if (prev) {
+                const mMap = new Map<string, Workspace['members'][number]>();
+                (prev.members || []).forEach((m) => m?.userId && mMap.set(m.userId, m));
+                (rw.members || []).forEach((m) => m?.userId && mMap.set(m.userId, m));
+                wsMap.set(rw.id, { ...prev, ...rw, members: Array.from(mMap.values()) });
+              } else {
+                wsMap.set(rw.id, rw);
               }
             });
-            localStorage.setItem(STORAGE_KEYS.WORKSPACES, JSON.stringify(mergedWs));
+            localStorage.setItem(STORAGE_KEYS.WORKSPACES, JSON.stringify(Array.from(wsMap.values())));
           }
           if (Array.isArray(data.projects) && data.projects.length > 0) {
             const currentProj = this.getProjects();
@@ -999,10 +1006,14 @@ export const StorageService = {
       const parsed: Workspace[] = JSON.parse(data);
       let clean = parsed.filter((w) => w.id !== 'ws-agency' && w.id !== 'ws-acme');
 
-      // Sanitização multi-tenant: remove Master dos membros de workspaces que pertencem a empresas/clientes
+      // Sanitização multi-tenant: remove Master apenas de workspaces de terceiros onde ele NÃO seja o dono/criador
       let sanitized = false;
       clean = clean.map((w) => {
-        if (w.id !== 'ws-principal' && (w.companyId || (w as any).tenantId)) {
+        const isOwnedByMaster =
+          w.ownerId === MASTER_USER.id ||
+          w.ownerId === 'user-master-alan' ||
+          w.ownerId === 'master-alan';
+        if (w.id !== 'ws-principal' && !isOwnedByMaster && (w.companyId || (w as any).tenantId)) {
           const originalLen = w.members?.length || 0;
           const filteredMembers = (w.members || []).filter(
             (m) =>
@@ -1076,10 +1087,17 @@ export const StorageService = {
           const mergedMap = new Map<string, Workspace>();
           // Preserva todos os workspaces locais para evitar desaparecimento na interface
           localWs.forEach((lw) => mergedMap.set(lw.id, lw));
-          // Mescla e atualiza com os registros recebidos da nuvem
+          // Mescla e atualiza com os registros recebidos da nuvem preservando união de membros
           res.workspaces.forEach((cw) => {
             const existing = mergedMap.get(cw.id);
-            mergedMap.set(cw.id, existing ? { ...existing, ...cw } : cw);
+            if (existing) {
+              const mMap = new Map<string, Workspace['members'][number]>();
+              (existing.members || []).forEach((m) => m?.userId && mMap.set(m.userId, m));
+              (cw.members || []).forEach((m) => m?.userId && mMap.set(m.userId, m));
+              mergedMap.set(cw.id, { ...existing, ...cw, members: Array.from(mMap.values()) });
+            } else {
+              mergedMap.set(cw.id, cw);
+            }
           });
           const merged = Array.from(mergedMap.values());
           if (merged.length > 0) {
@@ -2666,8 +2684,9 @@ export const StorageService = {
       viewer: 'Visualizador',
     };
 
-    const allWorkspaces = this.getWorkspaces();
-    const primaryWs = allWorkspaces.find((w) => targetWorkspaceIds.includes(w.id));
+    // Snapshot obrigatório dos workspaces ANTES de qualquer chamada de rede ou WebSocket
+    const workspacesBefore = this.getWorkspaces();
+    const primaryWs = workspacesBefore.find((w) => targetWorkspaceIds.includes(w.id));
     const assignedCompanyId = params.companyId || params.tenantId || primaryWs?.companyId || (primaryWs as any)?.tenantId || primaryWs?.id;
 
     let newUser: User = {
@@ -2686,33 +2705,33 @@ export const StorageService = {
       createdAt: new Date().toISOString(),
     };
 
-    // 0. Se Supabase estiver configurado, grava no Supabase (auth.users + profiles + workspace_members)
+    // 0. Se Supabase estiver configurado, grava UMA única vez no Supabase (auth.users + profiles + todos os workspace_members)
     if (SupabaseService.isConfigured()) {
       try {
-        for (const wsId of targetWorkspaceIds) {
-          const sbResult = await SupabaseService.registerUser({
-            name: cleanName,
-            username: cleanUsername,
-            email: cleanEmail,
-            password: cleanPassword,
-            tipo: (params.role as any) || 'membro',
-            workspaceId: wsId,
-            companyId: assignedCompanyId,
-            tenantId: assignedCompanyId,
-            avatarColor: chosenColor,
-          });
-          if (sbResult.success && sbResult.user) {
-            newUser = { ...newUser, ...sbResult.user, id: sbResult.user.id };
-          }
+        const sbResult = await SupabaseService.registerUser({
+          name: cleanName,
+          username: cleanUsername,
+          email: cleanEmail,
+          password: cleanPassword,
+          tipo: (params.role as any) || 'membro',
+          workspaceId: targetWorkspaceIds[0],
+          workspaceIds: targetWorkspaceIds,
+          companyId: assignedCompanyId,
+          tenantId: assignedCompanyId,
+          avatarColor: chosenColor,
+        });
+        if (sbResult.success && sbResult.user) {
+          newUser = { ...newUser, ...sbResult.user, id: sbResult.user.id };
         }
       } catch (sbErr) {
         console.warn('[OperaTask] Supabase registration notice:', sbErr);
       }
     }
 
-    // 1. Grava no servidor central via POST /api/auth/register para garantir acesso em todos os aparelhos
+    // 1. Grava no servidor central via POST /api/auth/register enviando os objetos completos dos workspaces selecionados
     if (typeof window !== 'undefined') {
       try {
+        const workspaceObjects = workspacesBefore.filter((w) => targetWorkspaceIds.includes(w.id));
         const resp = await fetch('/api/auth/register', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -2725,6 +2744,7 @@ export const StorageService = {
             role: params.role,
             workspaceId: targetWorkspaceIds[0],
             workspaceIds: targetWorkspaceIds,
+            workspaceObjects,
             avatarColor: chosenColor,
             tenantId: assignedCompanyId,
             companyId: assignedCompanyId,
@@ -2745,20 +2765,51 @@ export const StorageService = {
       }
     }
 
-    // 2. Garante persistência local no navegador atual
+    // 2. Garante persistência local do novo usuário no navegador atual
     const freshUsers = this.getUsers();
     if (!freshUsers.some((u) => u.id === newUser.id)) {
       freshUsers.push(newUser);
       this.saveUsers(freshUsers, true);
     }
 
-    // 3. Vincula o usuário aos workspaces selecionados localmente
-    const workspaces = this.getWorkspaces();
-    let workspacesChanged = false;
+    // 3. Reconcilia workspaces locais + snapshot pré-rede por ID para jamais perder nenhum workspace criado
+    const workspacesAfter = this.getWorkspaces();
+    const mergedMap = new Map<string, Workspace>();
+    for (const ws of workspacesBefore) {
+      mergedMap.set(ws.id, {
+        ...ws,
+        members: Array.isArray(ws.members) ? [...ws.members] : [],
+      });
+    }
+    for (const ws of workspacesAfter) {
+      const prev = mergedMap.get(ws.id);
+      if (!prev) {
+        mergedMap.set(ws.id, {
+          ...ws,
+          members: Array.isArray(ws.members) ? [...ws.members] : [],
+        });
+      } else {
+        const membersMap = new Map<string, Workspace['members'][number]>();
+        for (const m of prev.members || []) {
+          if (m?.userId) membersMap.set(m.userId, m);
+        }
+        for (const m of ws.members || []) {
+          if (m?.userId) membersMap.set(m.userId, m);
+        }
+        mergedMap.set(ws.id, {
+          ...prev,
+          ...ws,
+          members: Array.from(membersMap.values()),
+        });
+      }
+    }
+
+    const mergedWorkspaces = Array.from(mergedMap.values());
+    let workspacesChanged = mergedWorkspaces.length !== workspacesAfter.length;
     for (const wsId of targetWorkspaceIds) {
-      const wsIndex = workspaces.findIndex((w) => w.id === wsId);
+      const wsIndex = mergedWorkspaces.findIndex((w) => w.id === wsId);
       if (wsIndex !== -1) {
-        const ws = workspaces[wsIndex];
+        const ws = mergedWorkspaces[wsIndex];
         const memberExists = ws.members.some((m) => m.userId === newUser.id);
         if (!memberExists) {
           ws.members.push({
@@ -2770,12 +2821,15 @@ export const StorageService = {
         }
       }
     }
-    if (workspacesChanged) {
-      this.saveWorkspaces(workspaces, true);
-      if (SupabaseService.isConfigured()) {
-        for (const wsId of targetWorkspaceIds) {
-          SupabaseService.upsertWorkspaceMember(wsId, newUser.id, params.role).catch(() => {});
-        }
+
+    // Salva sempre os workspaces reconciliados para garantir integridade local e remota
+    if (workspacesChanged || workspacesBefore.length > workspacesAfter.length) {
+      this.saveWorkspaces(mergedWorkspaces, true);
+    }
+
+    if (SupabaseService.isConfigured()) {
+      for (const wsId of targetWorkspaceIds) {
+        SupabaseService.upsertWorkspaceMember(wsId, newUser.id, params.role).catch(() => {});
       }
     }
 

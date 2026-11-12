@@ -406,9 +406,55 @@ class RealtimeServiceImpl {
       subscription_plans: 'operatask_clean_v1_subscription_plans',
     };
     const storageKey = entityToKey[entity];
-    if (storageKey && typeof window !== 'undefined' && data) {
+    let resolvedData = data;
+    const action = String(meta?.action || '');
+    const isDestructiveAction =
+      action.includes('delete') || action.includes('reset');
+
+    if (
+      storageKey &&
+      typeof window !== 'undefined' &&
+      Array.isArray(data) &&
+      !isDestructiveAction &&
+      (entity === 'workspaces' || entity === 'projects' || entity === 'users' || entity === 'clients')
+    ) {
       try {
-        localStorage.setItem(storageKey, JSON.stringify(data));
+        const existingRaw = localStorage.getItem(storageKey);
+        const existingArr = existingRaw ? JSON.parse(existingRaw) : [];
+        if (Array.isArray(existingArr) && existingArr.length > 0) {
+          const map = new Map<string, any>();
+          existingArr.forEach((item: any) => {
+            if (item && item.id) map.set(item.id, item);
+          });
+          data.forEach((incoming: any) => {
+            if (!incoming || !incoming.id) return;
+            const prev = map.get(incoming.id);
+            if (prev && entity === 'workspaces') {
+              // Preserva união de membros entre local e remoto
+              const memberMap = new Map<string, any>();
+              (Array.isArray(prev.members) ? prev.members : []).forEach((m: any) => {
+                if (m && m.userId) memberMap.set(m.userId, m);
+              });
+              (Array.isArray(incoming.members) ? incoming.members : []).forEach((m: any) => {
+                if (m && m.userId) memberMap.set(m.userId, m);
+              });
+              map.set(incoming.id, {
+                ...prev,
+                ...incoming,
+                members: Array.from(memberMap.values()),
+              });
+            } else {
+              map.set(incoming.id, prev ? { ...prev, ...incoming } : incoming);
+            }
+          });
+          resolvedData = Array.from(map.values());
+        }
+      } catch {}
+    }
+
+    if (storageKey && typeof window !== 'undefined' && resolvedData) {
+      try {
+        localStorage.setItem(storageKey, JSON.stringify(resolvedData));
       } catch {}
     }
 
@@ -417,7 +463,7 @@ class RealtimeServiceImpl {
 
     entityListeners.forEach((callback) => {
       try {
-        callback(data, meta);
+        callback(resolvedData, meta);
       } catch (err) {
         console.error(`Erro no listener realtime de ${entity}:`, err);
       }

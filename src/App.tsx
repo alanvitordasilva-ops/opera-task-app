@@ -570,7 +570,14 @@ export default function App() {
           prev.forEach((w) => map.set(w.id, w));
           incomingWorkspaces.forEach((w) => {
             const existing = map.get(w.id);
-            map.set(w.id, existing ? { ...existing, ...w } : w);
+            if (existing) {
+              const mMap = new Map<string, Workspace['members'][number]>();
+              (existing.members || []).forEach((m) => m?.userId && mMap.set(m.userId, m));
+              (w.members || []).forEach((m) => m?.userId && mMap.set(m.userId, m));
+              map.set(w.id, { ...existing, ...w, members: Array.from(mMap.values()) });
+            } else {
+              map.set(w.id, w);
+            }
           });
           const merged = Array.from(map.values());
           if (JSON.stringify(prev) === JSON.stringify(merged)) return prev;
@@ -2408,11 +2415,49 @@ export default function App() {
         workspace={currentWorkspace}
         allUsers={switchableUsers}
         currentUserId={currentUser.id}
+        allWorkspaces={userVisibleWorkspaces}
         onSaveWorkspace={handleSaveWorkspace}
         onInviteMember={handleInviteMember}
         onChangeMemberRole={handleChangeMemberRole}
         onRemoveMember={handleRemoveMember}
         onDeleteWorkspace={handleDeleteWorkspace}
+        onUserCreated={(newUser, role, primaryWsId, selectedWsIds) => {
+          const freshUsers = StorageService.getUsers();
+          setUsers(freshUsers);
+          const targetWsIds = selectedWsIds && selectedWsIds.length > 0 ? selectedWsIds : [primaryWsId || currentWorkspace.id];
+          const fromStorage = StorageService.getWorkspaces();
+          setWorkspaces((prev) => {
+            const map = new Map<string, Workspace>();
+            for (const ws of prev) map.set(ws.id, ws);
+            for (const ws of fromStorage) {
+              const existing = map.get(ws.id);
+              if (!existing) {
+                map.set(ws.id, ws);
+              } else {
+                const membersMap = new Map<string, Workspace['members'][number]>();
+                for (const m of existing.members || []) membersMap.set(m.userId, m);
+                for (const m of ws.members || []) membersMap.set(m.userId, m);
+                map.set(ws.id, { ...existing, ...ws, members: Array.from(membersMap.values()) });
+              }
+            }
+            const merged = Array.from(map.values()).map((ws) => {
+              if (!targetWsIds.includes(ws.id)) return ws;
+              if ((ws.members || []).some((m) => m.userId === newUser.id)) return ws;
+              return {
+                ...ws,
+                members: [...(ws.members || []), { userId: newUser.id, role, joinedAt: new Date().toISOString() }],
+              };
+            });
+            StorageService.saveWorkspaces(merged, true);
+            const updatedCurrentWs = merged.find((w) => w.id === currentWorkspace.id);
+            if (updatedCurrentWs) setCurrentWorkspace(updatedCurrentWs);
+            return merged;
+          });
+          showToast({
+            type: 'success',
+            message: `Usuário ${newUser.name} cadastrado e vinculado com sucesso!`,
+          });
+        }}
       />
 
       <CreateWorkspaceModal
@@ -2508,15 +2553,38 @@ export default function App() {
         workspaces={userVisibleWorkspaces}
         workspaceId={currentWorkspace.id}
         currentUser={currentUser}
-        onUserCreated={(newUser) => {
+        onUserCreated={(newUser, role, primaryWsId, selectedWsIds) => {
           const freshUsers = StorageService.getUsers();
           setUsers(freshUsers);
-          const freshWorkspaces = StorageService.getWorkspaces();
-          setWorkspaces(freshWorkspaces);
-          const updatedCurrentWs = freshWorkspaces.find((w) => w.id === currentWorkspace.id);
-          if (updatedCurrentWs) {
-            setCurrentWorkspace(updatedCurrentWs);
-          }
+          const targetWsIds = selectedWsIds && selectedWsIds.length > 0 ? selectedWsIds : [primaryWsId || currentWorkspace.id];
+          const fromStorage = StorageService.getWorkspaces();
+          setWorkspaces((prev) => {
+            const map = new Map<string, Workspace>();
+            for (const ws of prev) map.set(ws.id, ws);
+            for (const ws of fromStorage) {
+              const existing = map.get(ws.id);
+              if (!existing) {
+                map.set(ws.id, ws);
+              } else {
+                const membersMap = new Map<string, Workspace['members'][number]>();
+                for (const m of existing.members || []) membersMap.set(m.userId, m);
+                for (const m of ws.members || []) membersMap.set(m.userId, m);
+                map.set(ws.id, { ...existing, ...ws, members: Array.from(membersMap.values()) });
+              }
+            }
+            const merged = Array.from(map.values()).map((ws) => {
+              if (!targetWsIds.includes(ws.id)) return ws;
+              if ((ws.members || []).some((m) => m.userId === newUser.id)) return ws;
+              return {
+                ...ws,
+                members: [...(ws.members || []), { userId: newUser.id, role, joinedAt: new Date().toISOString() }],
+              };
+            });
+            StorageService.saveWorkspaces(merged, true);
+            const updatedCurrentWs = merged.find((w) => w.id === currentWorkspace.id);
+            if (updatedCurrentWs) setCurrentWorkspace(updatedCurrentWs);
+            return merged;
+          });
           showToast({
             type: 'success',
             message: `Usuário ${newUser.name} cadastrado com sucesso! Conta ativa e link liberado para acesso imediato.`,

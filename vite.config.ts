@@ -220,7 +220,26 @@ function operataskRealtimePlugin() {
                 });
                 sharedCache.users = Array.from(userMap.values());
               }
-              if (Array.isArray(body.workspaces)) sharedCache.workspaces = body.workspaces;
+              if (Array.isArray(body.workspaces)) {
+                if (body.replaceAll) {
+                  sharedCache.workspaces = body.workspaces;
+                } else {
+                  const wsMap = new Map();
+                  (sharedCache.workspaces || []).forEach((w: any) => wsMap.set(w.id, w));
+                  body.workspaces.forEach((w: any) => {
+                    const prev = wsMap.get(w.id);
+                    if (prev) {
+                      const mMap = new Map();
+                      (Array.isArray(prev.members) ? prev.members : []).forEach((m: any) => m?.userId && mMap.set(m.userId, m));
+                      (Array.isArray(w.members) ? w.members : []).forEach((m: any) => m?.userId && mMap.set(m.userId, m));
+                      wsMap.set(w.id, { ...prev, ...w, members: Array.from(mMap.values()) });
+                    } else {
+                      wsMap.set(w.id, w);
+                    }
+                  });
+                  sharedCache.workspaces = Array.from(wsMap.values());
+                }
+              }
               if (Array.isArray(body.projects)) sharedCache.projects = body.projects;
               if (Array.isArray(body.tasks)) sharedCache.tasks = body.tasks;
               if (Array.isArray(body.tags)) sharedCache.tags = body.tags;
@@ -244,8 +263,8 @@ function operataskRealtimePlugin() {
 
           const cleanName = (body.name || '').trim();
           const rawUsername = (body.username || body.usernameOrEmail || '').trim().toLowerCase();
-          const cleanUsername = rawUsername.replace(/\s+/g, '.').replace(/[^a-z0-9._-]/g, '').replace(/^@/, '');
-          const cleanEmail = (body.email || (cleanUsername ? `${cleanUsername}@operatask.app` : '')).trim().toLowerCase();
+          const cleanUsername = rawUsername.replace(/\s+/g, '').replace(/[^a-z0-9._@+-]/g, '');
+          const cleanEmail = (body.email || (cleanUsername.includes('@') ? cleanUsername : cleanUsername ? `${cleanUsername}@operatask.app` : '')).trim().toLowerCase();
           const cleanPassword = (body.password || '').trim();
           const chosenRole = body.role || 'production';
 
@@ -268,10 +287,21 @@ function operataskRealtimePlugin() {
             return;
           }
 
-          // Atualiza dados locais da base
+          // Atualiza dados locais da base mesclando workspaces recebidos para nunca perder nenhum
           const freshDb = readDb();
           sharedCache.users = freshDb.users || sharedCache.users || [...INITIAL_SERVER_DATA.users];
-          sharedCache.workspaces = freshDb.workspaces || sharedCache.workspaces || [...INITIAL_SERVER_DATA.workspaces];
+          const wsMergeMap = new Map<string, any>();
+          (freshDb.workspaces || sharedCache.workspaces || [...INITIAL_SERVER_DATA.workspaces]).forEach((w: any) => {
+            if (w && w.id) wsMergeMap.set(w.id, w);
+          });
+          if (Array.isArray(body.workspaceObjects)) {
+            body.workspaceObjects.forEach((wo: any) => {
+              if (wo && wo.id && !wsMergeMap.has(wo.id)) {
+                wsMergeMap.set(wo.id, wo);
+              }
+            });
+          }
+          sharedCache.workspaces = Array.from(wsMergeMap.values());
 
           const roleTitleMap: Record<string, string> = {
             master: 'Super Administrador / Master',
@@ -307,6 +337,8 @@ function operataskRealtimePlugin() {
               password: cleanPassword,
               title: roleTitleMap[chosenRole] || sharedCache.users[existingIndex].title || 'Membro da Equipe',
               tipo: chosenRole,
+              companyId: body.companyId || sharedCache.users[existingIndex].companyId,
+              tenantId: body.tenantId || body.companyId || sharedCache.users[existingIndex].tenantId,
               status: 'active',
               isActive: true,
               avatarColor: body.avatarColor || sharedCache.users[existingIndex].avatarColor || '#34B1AC',
@@ -323,6 +355,8 @@ function operataskRealtimePlugin() {
               avatarColor: body.avatarColor || '#34B1AC',
               title: roleTitleMap[chosenRole] || 'Membro da Equipe',
               tipo: chosenRole,
+              companyId: body.companyId,
+              tenantId: body.tenantId || body.companyId,
               status: 'active',
               isActive: true,
               createdAt: body.createdAt || new Date().toISOString(),
@@ -330,7 +364,7 @@ function operataskRealtimePlugin() {
             sharedCache.users.push(savedUser);
           }
 
-          // Vincula o usuário a todos os Workspaces selecionados
+          // Vincula o usuário a todos os Workspaces selecionados sem remover de outros workspaces existentes
           sharedCache.workspaces.forEach((ws: any) => {
             if (!Array.isArray(ws.members)) ws.members = [];
             const isSelected = targetWorkspaceIds.includes(ws.id);
@@ -346,9 +380,6 @@ function operataskRealtimePlugin() {
                   joinedAt: new Date().toISOString(),
                 });
               }
-            } else if (memberIdx !== -1 && !body.keepExistingWorkspaces) {
-              // Se não foi selecionado e não é update parcial, remove do workspace não selecionado
-              ws.members.splice(memberIdx, 1);
             }
           });
 

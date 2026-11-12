@@ -265,6 +265,7 @@ export class SupabaseService {
     password: string;
     tipo: ProfileTipo;
     workspaceId: string;
+    workspaceIds?: string[];
     companyId?: string;
     tenantId?: string;
     avatarColor?: string;
@@ -275,10 +276,22 @@ export class SupabaseService {
     }
 
     const cleanName = params.name.trim();
-    const cleanUsername = params.username.trim().toLowerCase().replace(/\s+/g, '.').replace(/[^a-z0-9._-]/g, '').replace(/^@/, '');
-    const cleanEmail = (params.email || `${cleanUsername}@operatask.app`).trim().toLowerCase();
+    // Preserva o caractere @ obrigatório no login
+    const cleanUsername = params.username.trim().toLowerCase().replace(/\s+/g, '').replace(/[^a-z0-9._@+-]/g, '');
+    const cleanEmail = (
+      params.email ||
+      (cleanUsername.includes('@') ? cleanUsername : `${cleanUsername}@operatask.app`)
+    )
+      .trim()
+      .toLowerCase();
     const cleanPassword = params.password.trim();
-    const targetWsId = params.workspaceId.trim();
+    const targetWsIds =
+      Array.isArray(params.workspaceIds) && params.workspaceIds.length > 0
+        ? Array.from(new Set(params.workspaceIds.map((w) => w.trim()).filter(Boolean)))
+        : params.workspaceId?.trim()
+        ? [params.workspaceId.trim()]
+        : [];
+    const targetWsId = targetWsIds[0] || '';
     const chosenColor = params.avatarColor || '#34B1AC';
 
     // Determina o ID de empresa/tenant associado
@@ -307,7 +320,7 @@ export class SupabaseService {
         },
       });
 
-      // 1. Cadastra usuário no Supabase Auth com metadados de tenant e workspace
+      // 1. Cadastra usuário no Supabase Auth uma única vez com metadados de tenant e workspace
       const { data: authData, error: authErr } = await isolatedAuthClient.auth.signUp({
         email: cleanEmail,
         password: cleanPassword,
@@ -326,55 +339,81 @@ export class SupabaseService {
       });
 
       if (authErr) {
-        // Se o usuário já existir no auth, continua para garantir vínculo
-        if (!authErr.message?.includes('already registered')) {
+        const msg = authErr.message?.toLowerCase() || '';
+        // Se o usuário já existir no auth, continua para localizar ID e garantir vínculos
+        if (!msg.includes('already registered') && !msg.includes('already exists')) {
           return { success: false, error: authErr.message };
         }
       }
 
-      const userId = authData?.user?.id || `user-sb-${Date.now()}`;
+      let userId = authData?.user?.id;
+      if (!userId) {
+        try {
+          const { data: existingProf } = await client
+            .from('profiles')
+            .select('id')
+            .eq('email', cleanEmail)
+            .maybeSingle();
+          if (existingProf?.id) {
+            userId = existingProf.id;
+          }
+        } catch {}
+      }
+      if (!userId) {
+        userId = `user-sb-${Date.now()}`;
+      }
 
-      // 2. Garante gravação direta na tabela profiles com tenant_id e company_id
-      try {
-        const profilePayload: any = {
-          id: userId,
-          nome: cleanName,
-          email: cleanEmail,
-          tipo: params.tipo,
-          avatar_url: chosenColor,
-          tenant_id: effectiveTenantId || targetWsId || null,
-          company_id: effectiveTenantId || targetWsId || null,
-          workspace_id: targetWsId || null,
-          created_at: new Date().toISOString(),
-        };
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId);
 
-        const { error: pError } = await client.from('profiles').upsert(profilePayload);
-        if (pError && (pError.message?.includes('column') || pError.message?.includes('does not exist'))) {
-          // Fallback caso a tabela profiles ainda não tenha colunas tenant_id ou workspace_id
-          await client.from('profiles').upsert({
+      // 2. Garante gravação direta na tabela profiles apenas se userId for UUID válido (FK auth.users)
+      if (isUuid) {
+        try {
+          const profilePayload: any = {
             id: userId,
             nome: cleanName,
+            username: cleanUsername,
             email: cleanEmail,
             tipo: params.tipo,
             avatar_url: chosenColor,
+            tenant_id: effectiveTenantId || targetWsId || null,
+            company_id: effectiveTenantId || targetWsId || null,
+            workspace_id: targetWsId || null,
             created_at: new Date().toISOString(),
-          });
+          };
+
+          const { error: pError } = await client.from('profiles').upsert(profilePayload);
+          if (pError && (pError.message?.includes('column') || pError.message?.includes('does not exist'))) {
+            // Fallback caso a tabela profiles ainda não tenha colunas username/tenant_id/workspace_id
+            await client.from('profiles').upsert({
+              id: userId,
+              nome: cleanName,
+              email: cleanEmail,
+              tipo: params.tipo,
+              avatar_url: chosenColor,
+              created_at: new Date().toISOString(),
+            });
+          }
+        } catch (pErr) {
+          console.warn('[Supabase] Aviso ao gravar na tabela profiles:', pErr);
         }
-      } catch (pErr) {
-        console.warn('[Supabase] Aviso ao gravar na tabela profiles:', pErr);
       }
 
-      // 3. Vincula imediatamente na tabela workspace_members
-      if (targetWsId) {
-        try {
-          await client.from('workspace_members').upsert({
-            workspace_id: targetWsId,
-            user_id: userId,
-            role: params.tipo,
-            joined_at: new Date().toISOString(),
-          });
-        } catch (mErr) {
-          console.warn('[Supabase] Aviso ao vincular membro no workspace:', mErr);
+      // 3. Vincula imediatamente em TODOS os workspaces selecionados na tabela workspace_members
+      if (targetWsIds.length > 0) {
+        for (const wsId of targetWsIds) {
+          try {
+            await client.from('workspace_members').upsert(
+              {
+                workspace_id: wsId,
+                user_id: userId,
+                role: params.tipo,
+                joined_at: new Date().toISOString(),
+              },
+              { onConflict: 'workspace_id,user_id' }
+            );
+          } catch (mErr) {
+            console.warn('[Supabase] Aviso ao vincular membro no workspace:', wsId, mErr);
+          }
         }
       }
 
@@ -904,12 +943,15 @@ export class SupabaseService {
     const client = this.getClient();
     if (!client) return false;
     try {
-      await client.from('workspace_members').upsert({
-        workspace_id: workspaceId,
-        user_id: userId,
-        role: role,
-        joined_at: new Date().toISOString(),
-      });
+      await client.from('workspace_members').upsert(
+        {
+          workspace_id: workspaceId,
+          user_id: userId,
+          role: role,
+          joined_at: new Date().toISOString(),
+        },
+        { onConflict: 'workspace_id,user_id' }
+      );
       return true;
     } catch (e) {
       console.warn('[SupabaseService] Erro ao sincronizar membro:', e);

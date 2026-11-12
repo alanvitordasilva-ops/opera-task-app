@@ -284,8 +284,10 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
 
       const freshUsers = StorageService.getUsers();
       onUpdateUsers(freshUsers);
+      const freshWorkspaces = StorageService.getWorkspaces();
+      onUpdateWorkspaces(freshWorkspaces);
 
-      const targetWorkspaces = workspaces.filter((w) => newUserWorkspaceIds.includes(w.id));
+      const targetWorkspaces = freshWorkspaces.filter((w) => newUserWorkspaceIds.includes(w.id));
       const combinedWsNames = targetWorkspaces.map((w) => w.name).join(', ') || 'Workspaces Vinculados';
       const targetWsId = newUserWorkspaceIds[0];
       const targetCompId = targetWorkspaces[0]?.companyId || result.user.companyId;
