@@ -59,8 +59,11 @@ CREATE TABLE IF NOT EXISTS public.workspaces (
   description TEXT,
   logo_color TEXT DEFAULT '#173653',
   owner_id TEXT NOT NULL,
+  order_index INTEGER DEFAULT 0,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+ALTER TABLE public.workspaces ADD COLUMN IF NOT EXISTS order_index INTEGER DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS idx_workspaces_tenant ON public.workspaces(tenant_id);
 

@@ -36,6 +36,11 @@ import {
   Crown,
   UserPlus,
   CreditCard,
+  ArrowUp,
+  ArrowDown,
+  ArrowUpDown,
+  GripVertical,
+  Check,
 } from 'lucide-react';
 import { ProjectIcon } from './ProjectIcon.tsx';
 import {
@@ -45,6 +50,7 @@ import {
   canAccessDashboard,
   getUserRoleInWorkspace,
   getUserIdentifiers,
+  canManageWorkspace,
 } from '../utils/helpers.ts';
 import { PWAInstallPrompt } from './PWAInstallPrompt.tsx';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
@@ -61,6 +67,8 @@ interface SidebarProps {
   workspaces: Workspace[];
   currentWorkspace: Workspace;
   onSelectWorkspace: (workspaceId: string) => void;
+  onRenameWorkspace?: (workspaceId: string, newName: string) => void;
+  onReorderWorkspaces?: (orderedWorkspaces: Workspace[]) => void;
   onOpenCreateWorkspaceModal: () => void;
   onOpenWorkspaceSettingsModal: () => void;
   projects: Project[];
@@ -93,6 +101,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   workspaces,
   currentWorkspace,
   onSelectWorkspace,
+  onRenameWorkspace,
+  onReorderWorkspaces,
   onOpenCreateWorkspaceModal,
   onOpenWorkspaceSettingsModal,
   projects,
@@ -124,12 +134,65 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenBillingPlans,
 }) => {
   const [isWorkspaceDropdownOpen, setIsWorkspaceDropdownOpen] = useState(false);
+  const [isReorderingWorkspaces, setIsReorderingWorkspaces] = useState(false);
+  const [editingWorkspaceId, setEditingWorkspaceId] = useState<string | null>(null);
+  const [editingWorkspaceName, setEditingWorkspaceName] = useState('');
+  const [draggedWorkspaceId, setDraggedWorkspaceId] = useState<string | null>(null);
+  const [dragOverWorkspaceId, setDragOverWorkspaceId] = useState<string | null>(null);
   const [isUserSwitcherOpen, setIsUserSwitcherOpen] = useState(false);
   const isMaster = isUserMaster(currentUser);
   const [expandedArchivedProjects, setExpandedArchivedProjects] = useState<Record<string, boolean>>({});
   const [deleteConfirmTask, setDeleteConfirmTask] = useState<Task | null>(null);
   const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleCommitWorkspaceRename = (wsId: string) => {
+    const trimmed = editingWorkspaceName.trim();
+    if (trimmed && onRenameWorkspace) {
+      onRenameWorkspace(wsId, trimmed);
+    }
+    setEditingWorkspaceId(null);
+    setEditingWorkspaceName('');
+  };
+
+  const handleMoveWorkspace = (index: number, direction: -1 | 1) => {
+    if (!onReorderWorkspaces) return;
+    const targetIndex = index + direction;
+    if (targetIndex < 0 || targetIndex >= workspaces.length) return;
+    const reordered = [...workspaces];
+    const [moved] = reordered.splice(index, 1);
+    reordered.splice(targetIndex, 0, moved);
+    onReorderWorkspaces(reordered);
+  };
+
+  const handleDropWorkspace = (targetWorkspaceId: string) => {
+    if (!onReorderWorkspaces || !draggedWorkspaceId || draggedWorkspaceId === targetWorkspaceId) {
+      setDraggedWorkspaceId(null);
+      setDragOverWorkspaceId(null);
+      return;
+    }
+    const fromIdx = workspaces.findIndex((w) => w.id === draggedWorkspaceId);
+    const toIdx = workspaces.findIndex((w) => w.id === targetWorkspaceId);
+    if (fromIdx === -1 || toIdx === -1) {
+      setDraggedWorkspaceId(null);
+      setDragOverWorkspaceId(null);
+      return;
+    }
+    const reordered = [...workspaces];
+    const [moved] = reordered.splice(fromIdx, 1);
+    reordered.splice(toIdx, 0, moved);
+    onReorderWorkspaces(reordered);
+    setDraggedWorkspaceId(null);
+    setDragOverWorkspaceId(null);
+  };
+
+  const handleSortWorkspacesAZ = () => {
+    if (!onReorderWorkspaces || workspaces.length <= 1) return;
+    const sorted = [...workspaces].sort((a, b) =>
+      a.name.localeCompare(b.name, 'pt-BR', { sensitivity: 'base' })
+    );
+    onReorderWorkspaces(sorted);
+  };
 
   // Verificação de papel (role) e permissões no workspace atual
   const userRole: WorkspaceRole = getUserRoleInWorkspace(currentWorkspace, currentUser, allUsers);
@@ -240,7 +303,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <div className="flex items-center justify-between">
             <button
               type="button"
-              onClick={() => setIsWorkspaceDropdownOpen(!isWorkspaceDropdownOpen)}
+              onClick={() => {
+                setIsWorkspaceDropdownOpen((prev) => {
+                  const next = !prev;
+                  if (!next) {
+                    setIsReorderingWorkspaces(false);
+                    setEditingWorkspaceId(null);
+                  }
+                  return next;
+                });
+              }}
               className="flex items-center gap-2.5 p-2 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors flex-1 min-w-0 text-left"
             >
               <div
@@ -272,30 +344,195 @@ export const Sidebar: React.FC<SidebarProps> = ({
           {/* Dropdown de Workspaces */}
           {isWorkspaceDropdownOpen && (
             <div className="absolute top-full left-3 right-3 mt-1 bg-white dark:bg-slate-800 rounded-xl shadow-xl border border-slate-200 dark:border-slate-700 p-2 z-50 space-y-1">
-              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2 py-1">
-                Meus Workspaces
+              <div className="flex items-center justify-between gap-1 px-2 py-1">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                  Meus Workspaces ({workspaces.length})
+                </span>
+                {workspaces.length > 1 && onReorderWorkspaces && (
+                  <div className="flex items-center gap-1">
+                    {isReorderingWorkspaces && (
+                      <button
+                        type="button"
+                        onClick={handleSortWorkspacesAZ}
+                        className="px-1.5 py-0.5 rounded text-[10px] font-bold text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors cursor-pointer"
+                        title="Ordenar alfabeticamente (A–Z)"
+                      >
+                        A–Z
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsReorderingWorkspaces((prev) => !prev);
+                        setEditingWorkspaceId(null);
+                      }}
+                      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold transition-colors cursor-pointer ${
+                        isReorderingWorkspaces
+                          ? 'bg-[#34B1AC] text-white'
+                          : 'text-slate-500 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
+                      }`}
+                      title={isReorderingWorkspaces ? 'Concluir ordenação' : 'Ordenar lista de workspaces'}
+                    >
+                      <ArrowUpDown className="w-3 h-3" />
+                      <span>{isReorderingWorkspaces ? 'Concluir' : 'Ordenar'}</span>
+                    </button>
+                  </div>
+                )}
               </div>
-              {workspaces.map((ws) => (
-                <button
-                  key={ws.id}
-                  type="button"
-                  onClick={() => {
-                    onSelectWorkspace(ws.id);
-                    setIsWorkspaceDropdownOpen(false);
-                  }}
-                  className={`w-full flex items-center gap-2 p-2 rounded-lg text-xs transition-colors text-left ${
-                    ws.id === currentWorkspace.id
-                      ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 font-bold'
-                      : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
-                  }`}
-                >
-                  <span
-                    className="w-2.5 h-2.5 rounded-full shrink-0"
-                    style={{ backgroundColor: ws.logoColor }}
-                  />
-                  <span className="truncate flex-1">{ws.name}</span>
-                </button>
-              ))}
+
+              <div className="max-h-60 overflow-y-auto space-y-1 pr-0.5">
+                {workspaces.map((ws, index) => {
+                  const wsRole = getUserRoleInWorkspace(ws, currentUser, allUsers);
+                  const canEditWs = Boolean(onRenameWorkspace && canManageWorkspace(wsRole, isMaster));
+                  const isEditingThis = editingWorkspaceId === ws.id;
+                  const isDraggedOver = dragOverWorkspaceId === ws.id && draggedWorkspaceId !== ws.id;
+
+                  if (isEditingThis) {
+                    return (
+                      <div
+                        key={ws.id}
+                        onClick={(e) => e.stopPropagation()}
+                        className="flex items-center gap-1.5 p-1.5 rounded-lg bg-slate-50 dark:bg-slate-700/70 border border-[#34B1AC]"
+                      >
+                        <span
+                          className="w-2.5 h-2.5 rounded-full shrink-0"
+                          style={{ backgroundColor: ws.logoColor }}
+                        />
+                        <input
+                          type="text"
+                          autoFocus
+                          value={editingWorkspaceName}
+                          onChange={(e) => setEditingWorkspaceName(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleCommitWorkspaceRename(ws.id);
+                            } else if (e.key === 'Escape') {
+                              e.preventDefault();
+                              setEditingWorkspaceId(null);
+                            }
+                          }}
+                          className="flex-1 min-w-0 text-xs px-2 py-1 rounded bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-[#34B1AC]"
+                          placeholder="Nome do workspace"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleCommitWorkspaceRename(ws.id)}
+                          className="p-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white shrink-0 cursor-pointer"
+                          title="Salvar nome"
+                        >
+                          <Check className="w-3 h-3" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditingWorkspaceId(null)}
+                          className="p-1 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-600 shrink-0 cursor-pointer"
+                          title="Cancelar"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div
+                      key={ws.id}
+                      draggable={Boolean(onReorderWorkspaces)}
+                      onDragStart={() => setDraggedWorkspaceId(ws.id)}
+                      onDragOver={(e) => {
+                        if (!onReorderWorkspaces) return;
+                        e.preventDefault();
+                        if (dragOverWorkspaceId !== ws.id) setDragOverWorkspaceId(ws.id);
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        handleDropWorkspace(ws.id);
+                      }}
+                      onDragEnd={() => {
+                        setDraggedWorkspaceId(null);
+                        setDragOverWorkspaceId(null);
+                      }}
+                      className={`group flex items-center gap-1 rounded-lg text-xs transition-colors ${
+                        isDraggedOver
+                          ? 'ring-2 ring-[#34B1AC] bg-teal-50/70 dark:bg-teal-950/30'
+                          : ws.id === currentWorkspace.id
+                          ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 font-bold'
+                          : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
+                      }`}
+                    >
+                      {isReorderingWorkspaces && (
+                        <span
+                          className="pl-1.5 text-slate-400 cursor-grab active:cursor-grabbing shrink-0"
+                          title="Arraste para reordenar"
+                        >
+                          <GripVertical className="w-3.5 h-3.5" />
+                        </span>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (isReorderingWorkspaces) return;
+                          onSelectWorkspace(ws.id);
+                          setIsWorkspaceDropdownOpen(false);
+                        }}
+                        className="flex items-center gap-2 p-2 flex-1 min-w-0 text-left"
+                      >
+                        <span
+                          className="w-2.5 h-2.5 rounded-full shrink-0"
+                          style={{ backgroundColor: ws.logoColor }}
+                        />
+                        <span className="truncate flex-1">{ws.name}</span>
+                      </button>
+
+                      {isReorderingWorkspaces ? (
+                        <div className="flex items-center gap-0.5 pr-1 shrink-0">
+                          <button
+                            type="button"
+                            disabled={index === 0}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleMoveWorkspace(index, -1);
+                            }}
+                            className="p-1 rounded text-slate-500 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-600 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                            title="Mover para cima"
+                          >
+                            <ArrowUp className="w-3 h-3" />
+                          </button>
+                          <button
+                            type="button"
+                            disabled={index === workspaces.length - 1}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleMoveWorkspace(index, 1);
+                            }}
+                            className="p-1 rounded text-slate-500 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-600 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                            title="Mover para baixo"
+                          >
+                            <ArrowDown className="w-3 h-3" />
+                          </button>
+                        </div>
+                      ) : (
+                        canEditWs && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditingWorkspaceId(ws.id);
+                              setEditingWorkspaceName(ws.name);
+                            }}
+                            className="mr-1 p-1.5 rounded-md text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-white/80 dark:hover:bg-slate-600/60 lg:opacity-0 lg:group-hover:opacity-100 focus:opacity-100 transition-opacity shrink-0 cursor-pointer"
+                            title="Editar nome do workspace"
+                          >
+                            <Edit2 className="w-3 h-3" />
+                          </button>
+                        )
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
 
               <div className="pt-2 border-t border-slate-100 dark:border-slate-700 space-y-1">
                 <button

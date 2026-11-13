@@ -558,11 +558,20 @@ export class SupabaseService {
         }
       }
 
-      // Consulta direta da tabela workspaces ordenando por criação
-      const wsResult: any = await client
+      // Consulta direta da tabela workspaces ordenando por order_index (se existir) e criação
+      let wsResult: any = await client
         .from('workspaces')
         .select('*')
+        .order('order_index', { ascending: true })
         .order('created_at', { ascending: true });
+
+      if (wsResult?.error && wsResult.error.message?.includes('order_index')) {
+        wsResult = await client
+          .from('workspaces')
+          .select('*')
+          .order('created_at', { ascending: true });
+      }
+
       const allWsRows: any[] = Array.isArray(wsResult?.data) ? wsResult.data : [];
       const wsErr = wsResult?.error;
 
@@ -662,6 +671,7 @@ export class SupabaseService {
           clientPlan: row.client_plan || 'profissional',
           members,
           createdAt: row.created_at || new Date().toISOString(),
+          orderIndex: typeof row.order_index === 'number' ? row.order_index : undefined,
         };
       });
 
@@ -872,7 +882,13 @@ export class SupabaseService {
       }
 
       // 2. Monta payload do Workspace gravando tanto tenant_id quanto company_id com fallbacks progressivos
-      const buildWsPayload = (includeCompanyId: boolean, includeTenantId: boolean, slugVal: string, minimal = false): any => {
+      const buildWsPayload = (
+        includeCompanyId: boolean,
+        includeTenantId: boolean,
+        slugVal: string,
+        minimal = false,
+        includeOrder = true
+      ): any => {
         if (minimal) {
           return {
             id: workspace.id,
@@ -891,6 +907,9 @@ export class SupabaseService {
           owner_id: workspace.ownerId,
           created_at: workspace.createdAt || new Date().toISOString(),
         };
+        if (includeOrder && typeof workspace.orderIndex === 'number') {
+          payload.order_index = workspace.orderIndex;
+        }
         if (includeTenantId) payload.tenant_id = targetCompId;
         if (includeCompanyId) payload.company_id = targetCompId;
         return payload;
@@ -899,8 +918,12 @@ export class SupabaseService {
       let currentSlug = safeSlug;
       let wsResult = await client.from('workspaces').upsert(buildWsPayload(true, true, currentSlug));
 
+      if (wsResult.error && wsResult.error.message?.includes('order_index')) {
+        wsResult = await client.from('workspaces').upsert(buildWsPayload(true, true, currentSlug, false, false));
+      }
+
       if (wsResult.error && wsResult.error.message?.includes('company_id')) {
-        wsResult = await client.from('workspaces').upsert(buildWsPayload(false, true, currentSlug));
+        wsResult = await client.from('workspaces').upsert(buildWsPayload(false, true, currentSlug, false, false));
       }
 
       if (
@@ -909,16 +932,16 @@ export class SupabaseService {
           wsResult.error.message?.includes('foreign key') ||
           wsResult.error.code === '23503')
       ) {
-        wsResult = await client.from('workspaces').upsert(buildWsPayload(false, false, currentSlug));
+        wsResult = await client.from('workspaces').upsert(buildWsPayload(false, false, currentSlug, false, false));
       }
 
       if (wsResult.error && (wsResult.error.code === '23505' || wsResult.error.message?.includes('slug'))) {
         currentSlug = `${baseSlug}-${Date.now().toString(36)}`;
-        wsResult = await client.from('workspaces').upsert(buildWsPayload(false, false, currentSlug));
+        wsResult = await client.from('workspaces').upsert(buildWsPayload(false, false, currentSlug, false, false));
       }
 
       if (wsResult.error && wsResult.error.message?.includes('column')) {
-        wsResult = await client.from('workspaces').upsert(buildWsPayload(false, false, currentSlug, true));
+        wsResult = await client.from('workspaces').upsert(buildWsPayload(false, false, currentSlug, true, false));
       }
 
       if (wsResult.error && !wsResult.error.message?.includes('does not exist')) {
@@ -986,6 +1009,72 @@ export class SupabaseService {
       return { success: true, workspace: { ...workspace, slug: currentSlug } };
     } catch (err: any) {
       console.error('[SupabaseService] Falha ao criar workspace no Supabase:', err);
+      return { success: false, error: err.message };
+    }
+  }
+
+  static async updateWorkspace(
+    workspaceId: string,
+    updates: Partial<Workspace>
+  ): Promise<{ success: boolean; error?: string }> {
+    const client = this.getClient();
+    if (!client) return { success: false, error: 'Supabase não conectado' };
+
+    try {
+      const payload: any = {};
+      if (updates.name !== undefined) payload.name = updates.name;
+      if (updates.slug !== undefined) payload.slug = updates.slug;
+      if (updates.description !== undefined) payload.description = updates.description;
+      if (updates.logoColor !== undefined) payload.logo_color = updates.logoColor;
+      if (typeof updates.orderIndex === 'number') payload.order_index = updates.orderIndex;
+
+      if (Object.keys(payload).length === 0) {
+        return { success: true };
+      }
+
+      let { error } = await client.from('workspaces').update(payload).eq('id', workspaceId);
+
+      if (error && (error.message?.includes('order_index') || error.message?.includes('column'))) {
+        const { order_index: _ignored, ...withoutOrder } = payload;
+        if (Object.keys(withoutOrder).length > 0) {
+          const retry = await client.from('workspaces').update(withoutOrder).eq('id', workspaceId);
+          error = retry.error;
+        } else {
+          error = null;
+        }
+      }
+
+      if (error && !error.message?.includes('does not exist')) {
+        console.warn('[SupabaseService] Erro ao atualizar workspace:', error);
+        return { success: false, error: error.message };
+      }
+
+      return { success: true };
+    } catch (err: any) {
+      console.warn('[SupabaseService] Erro ao atualizar workspace no Supabase:', err);
+      return { success: false, error: err.message };
+    }
+  }
+
+  static async updateWorkspacesOrder(
+    items: Array<{ id: string; orderIndex: number }>
+  ): Promise<{ success: boolean; error?: string }> {
+    const client = this.getClient();
+    if (!client) return { success: false, error: 'Supabase não conectado' };
+
+    try {
+      for (const item of items) {
+        const { error } = await client
+          .from('workspaces')
+          .update({ order_index: item.orderIndex })
+          .eq('id', item.id);
+        if (error && error.message?.includes('order_index')) {
+          // Coluna ainda não existe no Supabase do projeto; ordem permanece persistida localmente e no servidor /api/sync/state
+          return { success: true };
+        }
+      }
+      return { success: true };
+    } catch (err: any) {
       return { success: false, error: err.message };
     }
   }
@@ -1086,7 +1175,7 @@ export class SupabaseService {
     try {
       // 1. Workspaces
       if (data.workspaces.length > 0) {
-        const wsPayload = data.workspaces.map((w) => {
+        const wsPayload = data.workspaces.map((w, idx) => {
           const targetCompId = w.companyId || (w as any).tenantId || w.id;
           return {
             id: w.id,
@@ -1097,17 +1186,22 @@ export class SupabaseService {
             owner_id: w.ownerId,
             tenant_id: targetCompId,
             company_id: targetCompId,
+            order_index: typeof w.orderIndex === 'number' ? w.orderIndex : idx,
             created_at: w.createdAt || new Date().toISOString(),
           };
         });
 
         let wsErr = (await client.from('workspaces').upsert(wsPayload)).error;
+        if (wsErr && wsErr.message?.includes('order_index')) {
+          const withoutOrder = wsPayload.map(({ order_index, ...rest }: any) => rest);
+          wsErr = (await client.from('workspaces').upsert(withoutOrder)).error;
+        }
         if (wsErr && wsErr.message?.includes('company_id')) {
-          const fallbackWsPayload = wsPayload.map(({ company_id, ...rest }: any) => rest);
+          const fallbackWsPayload = wsPayload.map(({ company_id, order_index, ...rest }: any) => rest);
           wsErr = (await client.from('workspaces').upsert(fallbackWsPayload)).error;
         }
         if (wsErr && (wsErr.message?.includes('tenant_id') || wsErr.message?.includes('foreign key') || wsErr.code === '23503')) {
-          const minimalPayload = wsPayload.map(({ company_id, tenant_id, ...rest }: any) => rest);
+          const minimalPayload = wsPayload.map(({ company_id, tenant_id, order_index, ...rest }: any) => rest);
           wsErr = (await client.from('workspaces').upsert(minimalPayload)).error;
         }
         if (wsErr && !wsErr.message?.includes('does not exist')) {

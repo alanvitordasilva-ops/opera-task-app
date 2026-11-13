@@ -36,6 +36,9 @@ import {
   MessageSquare,
   Sliders,
   Terminal,
+  ArrowUp,
+  ArrowDown,
+  ArrowUpDown,
 } from 'lucide-react';
 import { StorageService } from '../services/storage.ts';
 import { getProductionAppUrl, createInviteAccessUrl } from '../utils/appUrl.ts';
@@ -56,6 +59,8 @@ interface MasterAdminModalProps {
   onUpdateTasks: (tasks: Task[]) => void;
   onUpdateClients?: (clients: ClientCompany[]) => void;
   onSelectWorkspace: (workspaceId: string) => void;
+  onRenameWorkspace?: (workspaceId: string, newName: string) => void;
+  onReorderWorkspaces?: (orderedWorkspaces: Workspace[]) => void;
   onEnterSupportMode?: (client: ClientCompany) => void;
   onShowToast: (params: { type: 'success' | 'info' | 'error'; message: string }) => void;
 }
@@ -75,6 +80,8 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
   onUpdateTasks,
   onUpdateClients,
   onSelectWorkspace,
+  onRenameWorkspace,
+  onReorderWorkspaces,
   onEnterSupportMode,
   onShowToast,
 }) => {
@@ -132,12 +139,64 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
   } | null>(null);
   const [copiedCredentials, setCopiedCredentials] = useState(false);
 
-  // Exclusões com confirmação
+  // Exclusões e edição inline de workspaces
   const [deleteTargetUser, setDeleteTargetUser] = useState<User | null>(null);
   const [deleteTargetWorkspace, setDeleteTargetWorkspace] = useState<Workspace | null>(null);
   const [deleteTargetProject, setDeleteTargetProject] = useState<Project | null>(null);
+  const [editingWsId, setEditingWsId] = useState<string | null>(null);
+  const [editingWsName, setEditingWsName] = useState('');
 
   if (!isOpen) return null;
+
+  const handleCommitWsRename = (wsId: string) => {
+    const trimmed = editingWsName.trim();
+    if (!trimmed) {
+      setEditingWsId(null);
+      setEditingWsName('');
+      return;
+    }
+    if (onRenameWorkspace) {
+      onRenameWorkspace(wsId, trimmed);
+    } else {
+      const updated = workspaces.map((w) => (w.id === wsId ? { ...w, name: trimmed } : w));
+      onUpdateWorkspaces(updated);
+      StorageService.updateWorkspaceAsync(wsId, { name: trimmed });
+      onShowToast({ type: 'success', message: `Workspace renomeado para "${trimmed}".` });
+    }
+    setEditingWsId(null);
+    setEditingWsName('');
+  };
+
+  const handleMoveWsOrder = (wsId: string, direction: -1 | 1) => {
+    const idx = workspaces.findIndex((w) => w.id === wsId);
+    const targetIdx = idx + direction;
+    if (idx === -1 || targetIdx < 0 || targetIdx >= workspaces.length) return;
+    const reordered = [...workspaces];
+    const [moved] = reordered.splice(idx, 1);
+    reordered.splice(targetIdx, 0, moved);
+    if (onReorderWorkspaces) {
+      onReorderWorkspaces(reordered);
+    } else {
+      const indexed = reordered.map((w, i) => ({ ...w, orderIndex: i }));
+      onUpdateWorkspaces(indexed);
+      StorageService.reorderWorkspacesAsync(indexed);
+    }
+  };
+
+  const handleSortWsAZ = () => {
+    if (workspaces.length <= 1) return;
+    const sorted = [...workspaces].sort((a, b) =>
+      a.name.localeCompare(b.name, 'pt-BR', { sensitivity: 'base' })
+    );
+    if (onReorderWorkspaces) {
+      onReorderWorkspaces(sorted);
+    } else {
+      const indexed = sorted.map((w, i) => ({ ...w, orderIndex: i }));
+      onUpdateWorkspaces(indexed);
+      StorageService.reorderWorkspacesAsync(indexed);
+    }
+    onShowToast({ type: 'success', message: 'Workspaces ordenados de A a Z!' });
+  };
 
   // Filtragem de dados
   const filteredUsers = users.filter(
@@ -743,8 +802,8 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
           {/* ================= ABA 2: WORKSPACES ================= */}
           {activeTab === 'workspaces' && (
             <div className="space-y-4">
-              <div className="flex items-center justify-between gap-3">
-                <div className="relative flex-1 max-w-md">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="relative flex-1 min-w-[220px] max-w-md">
                   <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
                   <input
                     type="text"
@@ -754,6 +813,17 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
                     className="w-full pl-9 pr-4 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:ring-2 focus:ring-[#34B1AC]"
                   />
                 </div>
+                {workspaces.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={handleSortWsAZ}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:border-[#34B1AC] hover:text-[#173653] dark:hover:text-[#34B1AC] transition-colors cursor-pointer"
+                    title="Ordenar todos os workspaces alfabeticamente"
+                  >
+                    <ArrowUpDown className="w-3.5 h-3.5 text-[#34B1AC]" />
+                    <span>Ordenar A–Z</span>
+                  </button>
+                )}
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -761,6 +831,9 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
                   const wsProjects = projects.filter((p) => p.workspaceId === ws.id);
                   const wsTasks = tasks.filter((t) => t.workspaceId === ws.id);
                   const owner = users.find((u) => u.id === ws.ownerId);
+                  const wsGlobalIdx = workspaces.findIndex((item) => item.id === ws.id);
+                  const isEditingThis = editingWsId === ws.id;
+                  const canReorderInGrid = !workspaceSearch.trim() && workspaces.length > 1;
 
                   return (
                     <div
@@ -768,15 +841,66 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
                       className="p-4 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/50 shadow-xs hover:border-[#34B1AC]/60 transition-all space-y-3"
                     >
                       <div className="flex items-start justify-between gap-3">
-                        <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
                           <span
                             className="w-4 h-4 rounded-full shrink-0"
                             style={{ backgroundColor: ws.logoColor }}
                           />
-                          <div className="min-w-0">
-                            <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100 truncate">
-                              {ws.name}
-                            </h4>
+                          <div className="min-w-0 flex-1">
+                            {isEditingThis ? (
+                              <div className="flex items-center gap-1.5">
+                                <input
+                                  type="text"
+                                  autoFocus
+                                  value={editingWsName}
+                                  onChange={(e) => setEditingWsName(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault();
+                                      handleCommitWsRename(ws.id);
+                                    } else if (e.key === 'Escape') {
+                                      e.preventDefault();
+                                      setEditingWsId(null);
+                                    }
+                                  }}
+                                  className="flex-1 min-w-0 text-xs font-bold px-2.5 py-1.5 rounded-lg border border-[#34B1AC] bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-[#34B1AC]"
+                                  placeholder="Nome do workspace"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => handleCommitWsRename(ws.id)}
+                                  className="p-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white shrink-0 cursor-pointer"
+                                  title="Salvar nome"
+                                >
+                                  <Check className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingWsId(null)}
+                                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 shrink-0 cursor-pointer"
+                                  title="Cancelar"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100 truncate">
+                                  {ws.name}
+                                </h4>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingWsId(ws.id);
+                                    setEditingWsName(ws.name);
+                                  }}
+                                  className="p-1 rounded-md text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-slate-100 dark:hover:bg-slate-700 shrink-0 cursor-pointer"
+                                  title="Editar nome do workspace"
+                                >
+                                  <Edit2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            )}
                             <span className="text-[10px] text-slate-400 block truncate">
                               Slug: {ws.slug} · Dono: {owner?.name || 'Administrador'}
                             </span>
@@ -822,11 +946,39 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
                         </div>
                       </div>
 
-                      <div className="flex items-center justify-end gap-2 pt-1">
+                      <div className="flex items-center justify-between gap-2 pt-1">
+                        {canReorderInGrid ? (
+                          <div className="flex items-center gap-1">
+                            <span className="text-[10px] font-semibold text-slate-400 mr-1">
+                              Posição #{wsGlobalIdx + 1}
+                            </span>
+                            <button
+                              type="button"
+                              disabled={wsGlobalIdx <= 0}
+                              onClick={() => handleMoveWsOrder(ws.id, -1)}
+                              className="p-1 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                              title="Mover antes"
+                            >
+                              <ArrowUp className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              disabled={wsGlobalIdx >= workspaces.length - 1}
+                              onClick={() => handleMoveWsOrder(ws.id, 1)}
+                              className="p-1 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                              title="Mover depois"
+                            >
+                              <ArrowDown className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ) : (
+                          <div />
+                        )}
+
                         <button
                           type="button"
                           onClick={() => setDeleteTargetWorkspace(ws)}
-                          className="flex items-center gap-1 text-[11px] font-semibold text-red-600 hover:text-red-700 p-1 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors"
+                          className="flex items-center gap-1 text-[11px] font-semibold text-red-600 hover:text-red-700 p-1 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors cursor-pointer"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                           <span>Excluir Workspace</span>

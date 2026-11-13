@@ -5,13 +5,13 @@
       "name": "Alan Silva (Master)",
       "username": "alan",
       "email": "alanvitordasilva@gmail.com.br",
+      "password": "273021",
       "avatarColor": "#173653",
       "title": "Super Administrador / Master",
       "systemRole": "master",
       "isSuperAdmin": true,
       "status": "active",
       "isActive": true,
-      "password": "273021",
       "createdAt": "2026-01-01T00:00:00.000Z",
       "bio": "Conta Master com acesso total e irrestrito a todas as configurações, workspaces e dados do OperaTask."
     }

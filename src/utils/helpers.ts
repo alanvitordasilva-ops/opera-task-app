@@ -275,6 +275,32 @@ export function canManageWorkspace(role: WorkspaceRole, isMaster = false): boole
   return role === 'owner' || role === 'dono' || role === 'admin' || role === 'administrador';
 }
 
+/**
+ * Ordena uma lista de workspaces preservando o campo orderIndex (quando definido)
+ * e mantendo a ordem relativa original como critério de desempate.
+ */
+export function sortWorkspacesByOrder<T extends { id: string; orderIndex?: number }>(list: T[]): T[] {
+  if (!Array.isArray(list) || list.length <= 1) return Array.isArray(list) ? [...list] : [];
+  const hasExplicitOrder = list.some((w) => typeof w?.orderIndex === 'number' && !Number.isNaN(w.orderIndex));
+  if (!hasExplicitOrder) return [...list];
+
+  return list
+    .map((item, idx) => ({ item, idx }))
+    .sort((a, b) => {
+      const aOrder =
+        typeof a.item?.orderIndex === 'number' && !Number.isNaN(a.item.orderIndex)
+          ? a.item.orderIndex
+          : Number.MAX_SAFE_INTEGER;
+      const bOrder =
+        typeof b.item?.orderIndex === 'number' && !Number.isNaN(b.item.orderIndex)
+          ? b.item.orderIndex
+          : Number.MAX_SAFE_INTEGER;
+      if (aOrder !== bOrder) return aOrder - bOrder;
+      return a.idx - b.idx;
+    })
+    .map((entry) => entry.item);
+}
+
 export function canCreateProject(role: WorkspaceRole, isMaster = false): boolean {
   if (isMaster) return true;
   return role === 'owner' || role === 'dono' || role === 'admin' || role === 'administrador';

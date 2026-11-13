@@ -402,6 +402,7 @@ export interface Workspace {
   paymentStatus?: PaymentStatus;
   companyName?: string;
   lastAccessAt?: string;
+  orderIndex?: number;
 }
 
 export interface BoardColumn {

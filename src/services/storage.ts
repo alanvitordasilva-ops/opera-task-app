@@ -24,7 +24,7 @@ import {
 } from '../types/index.ts';
 import { SupabaseService } from './supabaseService.ts';
 import { RealtimeService, SyncEntity } from './realtimeService.ts';
-import { isUserMaster, getUserIdentifiers } from '../utils/helpers.ts';
+import { isUserMaster, getUserIdentifiers, sortWorkspacesByOrder } from '../utils/helpers.ts';
 
 const STORAGE_KEYS = {
   USERS: 'operatask_clean_v1_users',
@@ -676,7 +676,8 @@ export const StorageService = {
                 wsMap.set(rw.id, rw);
               }
             });
-            localStorage.setItem(STORAGE_KEYS.WORKSPACES, JSON.stringify(Array.from(wsMap.values())));
+            const sortedWs = sortWorkspacesByOrder(Array.from(wsMap.values()));
+            localStorage.setItem(STORAGE_KEYS.WORKSPACES, JSON.stringify(sortedWs));
           }
           if (Array.isArray(data.projects) && data.projects.length > 0) {
             const currentProj = this.getProjects();
@@ -1043,7 +1044,7 @@ export const StorageService = {
         this.saveWorkspaces(DEFAULT_WORKSPACES);
         return DEFAULT_WORKSPACES;
       }
-      return clean;
+      return sortWorkspacesByOrder(clean);
     } catch {
       return DEFAULT_WORKSPACES;
     }
@@ -1109,7 +1110,7 @@ export const StorageService = {
               mergedMap.set(cw.id, cw);
             }
           });
-          const merged = Array.from(mergedMap.values());
+          const merged = sortWorkspacesByOrder(Array.from(mergedMap.values()));
           if (merged.length > 0) {
             this.saveWorkspaces(merged, true);
             return { success: true, workspaces: merged, fromCloud: true };
@@ -1370,6 +1371,85 @@ export const StorageService = {
     }
 
     return { success: true, workspace: savedWorkspace, project: initialProject };
+  },
+
+  /**
+   * Atualizar metadados do Workspace (nome, descrição, cor, etc.) com persistência imediata
+   */
+  async updateWorkspaceAsync(
+    workspaceId: string,
+    updates: Partial<Workspace>
+  ): Promise<{ success: boolean; workspace?: Workspace }> {
+    const current = this.getWorkspaces();
+    let updatedWorkspace: Workspace | undefined;
+    const nextList = sortWorkspacesByOrder(
+      current.map((w) => {
+        if (w.id !== workspaceId) return w;
+        updatedWorkspace = { ...w, ...updates };
+        return updatedWorkspace;
+      })
+    );
+
+    this.saveWorkspaces(nextList, true);
+
+    RealtimeService.broadcast('workspaces', nextList, {
+      action: 'update_workspace',
+      targetId: workspaceId,
+      userName: updatedWorkspace?.name,
+    });
+
+    if (isServerApiAvailable()) {
+      fetch('/api/sync/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaces: nextList, replaceAll: true }),
+      }).catch(() => {});
+    }
+
+    if (SupabaseService.isConfigured()) {
+      SupabaseService.updateWorkspace(workspaceId, updates).catch((err) => {
+        console.warn('[StorageService] Erro ao atualizar workspace no Supabase:', err);
+      });
+    }
+
+    return { success: true, workspace: updatedWorkspace };
+  },
+
+  /**
+   * Persistir a nova ordem dos Workspaces com orderIndex sequencial
+   */
+  async reorderWorkspacesAsync(
+    orderedWorkspaces: Workspace[]
+  ): Promise<{ success: boolean; workspaces: Workspace[] }> {
+    const indexed = orderedWorkspaces.map((w, idx) => ({
+      ...w,
+      orderIndex: idx,
+    }));
+
+    this.saveWorkspaces(indexed, true);
+
+    RealtimeService.broadcast('workspaces', indexed, {
+      action: 'reorder_workspaces',
+      targetId: 'all',
+    });
+
+    if (isServerApiAvailable()) {
+      fetch('/api/sync/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaces: indexed, replaceAll: true }),
+      }).catch(() => {});
+    }
+
+    if (SupabaseService.isConfigured()) {
+      SupabaseService.updateWorkspacesOrder(
+        indexed.map((w, idx) => ({ id: w.id, orderIndex: idx }))
+      ).catch((err) => {
+        console.warn('[StorageService] Erro ao atualizar ordem dos workspaces no Supabase:', err);
+      });
+    }
+
+    return { success: true, workspaces: indexed };
   },
 
   /**

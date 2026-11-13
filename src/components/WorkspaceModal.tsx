@@ -1,7 +1,16 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Workspace, User, WorkspaceRole } from '../types/index.ts';
 import { X, Users, UserPlus, Shield, Trash2, Check, Mail, Building, Lock, AlertTriangle, ShieldAlert } from 'lucide-react';
-import { ROLE_CONFIG, COLOR_PALETTE, getInitials, canRegisterUser, canRemoveWorkspaceMember, isUserMaster } from '../utils/helpers.ts';
+import {
+  ROLE_CONFIG,
+  COLOR_PALETTE,
+  getInitials,
+  canRegisterUser,
+  canRemoveWorkspaceMember,
+  isUserMaster,
+  getUserRoleInWorkspace,
+  canManageWorkspace,
+} from '../utils/helpers.ts';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
 import { ColorPicker } from './ColorPicker.tsx';
 import { RegisterUserModal } from './RegisterUserModal.tsx';
@@ -12,6 +21,7 @@ interface WorkspaceModalProps {
   workspace: Workspace;
   allUsers: User[];
   currentUserId: string;
+  currentUser?: User;
   allWorkspaces?: Workspace[];
   onSaveWorkspace: (data: Partial<Workspace>) => void;
   onInviteMember: (email: string, role: WorkspaceRole) => void;
@@ -27,6 +37,7 @@ export const WorkspaceModal: React.FC<WorkspaceModalProps> = ({
   workspace,
   allUsers,
   currentUserId,
+  currentUser,
   allWorkspaces,
   onSaveWorkspace,
   onInviteMember,
@@ -48,14 +59,24 @@ export const WorkspaceModal: React.FC<WorkspaceModalProps> = ({
   // Modal de cadastro de novos usuários pelo Dono/Admin
   const [isRegisterUserOpen, setIsRegisterUserOpen] = useState(false);
 
+  // Sincroniza campos quando o modal abre ou o workspace ativo muda
+  useEffect(() => {
+    setName(workspace.name || '');
+    setDescription(workspace.description || '');
+    setLogoColor(workspace.logoColor || '#173653');
+    setIsConfirmingDelete(false);
+    setDeleteConfirmText('');
+  }, [workspace.id, workspace.name, workspace.description, workspace.logoColor, isOpen]);
+
   if (!isOpen) return null;
 
   const currentMember = workspace.members.find((m) => m.userId === currentUserId);
-  const currentMemberUser = allUsers.find((u) => u.id === currentUserId);
+  const currentMemberUser = currentUser || allUsers.find((u) => u.id === currentUserId);
   const isMaster = isUserMaster(currentMemberUser);
-  const isOwner = isMaster || currentMember?.role === 'owner' || workspace.ownerId === currentUserId;
-  const isAdminOrOwner = isOwner || currentMember?.role === 'admin' || currentMember?.role === 'administrador';
-  const currentActorRole: WorkspaceRole = isMaster ? 'owner' : currentMember?.role || (isOwner ? 'owner' : 'member');
+  const resolvedRole: WorkspaceRole = getUserRoleInWorkspace(workspace, currentMemberUser, allUsers);
+  const isOwner = isMaster || resolvedRole === 'owner' || resolvedRole === 'dono' || workspace.ownerId === currentUserId;
+  const isAdminOrOwner = canManageWorkspace(resolvedRole, isMaster) || isOwner;
+  const currentActorRole: WorkspaceRole = isMaster ? 'owner' : resolvedRole;
 
   const ownerMember =
     workspace.members.find((m) => m.role === 'owner') ||

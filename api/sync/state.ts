@@ -39,7 +39,18 @@ export default async function handler(req: any, res: any) {
             wsMap.set(w.id, w);
           }
         });
-        store.workspaces = Array.from(wsMap.values());
+        const mergedWs = Array.from(wsMap.values());
+        const hasOrder = mergedWs.some((w: any) => typeof w?.orderIndex === 'number');
+        store.workspaces = hasOrder
+          ? mergedWs
+              .map((w: any, idx: number) => ({ w, idx }))
+              .sort((a: any, b: any) => {
+                const ao = typeof a.w?.orderIndex === 'number' ? a.w.orderIndex : Number.MAX_SAFE_INTEGER;
+                const bo = typeof b.w?.orderIndex === 'number' ? b.w.orderIndex : Number.MAX_SAFE_INTEGER;
+                return ao !== bo ? ao - bo : a.idx - b.idx;
+              })
+              .map((e: any) => e.w)
+          : mergedWs;
       }
     }
     if (Array.isArray(body.projects)) store.projects = body.projects;

@@ -30,6 +30,7 @@ import {
   canModifyCompletedTask,
   isTaskInDoneColumn,
   canRegisterUser,
+  sortWorkspacesByOrder,
 } from './utils/helpers.ts';
 import { SplashScreen } from './components/SplashScreen.tsx';
 import { RegisterUserModal } from './components/RegisterUserModal.tsx';
@@ -640,7 +641,7 @@ export default function App() {
               map.set(w.id, w);
             }
           });
-          const merged = Array.from(map.values());
+          const merged = sortWorkspacesByOrder(Array.from(map.values()));
           if (JSON.stringify(prev) === JSON.stringify(merged)) return prev;
           return merged;
         });
@@ -1584,6 +1585,10 @@ export default function App() {
           .toLowerCase()
           .replace(/[^a-z0-9]+/g, '-')
           .replace(/^-|-$/g, '') || 'workspace';
+      const maxOrder = workspaces.reduce(
+        (max, w) => (typeof w.orderIndex === 'number' && w.orderIndex > max ? w.orderIndex : max),
+        workspaces.length - 1
+      );
       const newWs: Workspace = {
         id: newWsId,
         name,
@@ -1596,6 +1601,7 @@ export default function App() {
         clientPlan: 'profissional',
         members: [{ userId: currentUser.id, role: 'owner' as const, joinedAt: new Date().toISOString() }],
         createdAt: new Date().toISOString(),
+        orderIndex: maxOrder + 1,
       };
 
       // 1. Salva imediatamente no cache local e no banco de dados Supabase (workspace antes do projeto)
@@ -1629,23 +1635,90 @@ export default function App() {
     }
   };
 
-  const handleSaveWorkspace = (data: Partial<Workspace>) => {
-    const updatedWs = { ...currentWorkspace, ...data };
+  const handleSaveWorkspace = (data: Partial<Workspace>, targetWorkspaceId?: string) => {
+    const targetId = targetWorkspaceId || currentWorkspace.id;
+    const baseWs = workspaces.find((w) => w.id === targetId) || currentWorkspace;
+
+    let nextSlug = data.slug;
+    if (typeof data.name === 'string' && data.name.trim() && data.name.trim() !== baseWs.name && !nextSlug) {
+      const cleanBase =
+        data.name
+          .trim()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-|-$/g, '') || 'workspace';
+      nextSlug = `${cleanBase}-${targetId.slice(-5)}`;
+    }
+
+    const nextUpdates: Partial<Workspace> = {
+      ...data,
+      ...(typeof data.name === 'string' ? { name: data.name.trim() } : {}),
+      ...(nextSlug ? { slug: nextSlug } : {}),
+    };
+    const updatedWs = { ...baseWs, ...nextUpdates };
+
     setWorkspaces((prev) => {
-      const exists = prev.some((w) => w.id === currentWorkspace.id);
-      const all = exists
-        ? prev.map((w) => (w.id === currentWorkspace.id ? updatedWs : w))
-        : [...prev, updatedWs];
-      StorageService.saveWorkspaces(all, true);
+      const exists = prev.some((w) => w.id === targetId);
+      const all = sortWorkspacesByOrder(
+        exists ? prev.map((w) => (w.id === targetId ? updatedWs : w)) : [...prev, updatedWs]
+      );
       return all;
     });
-    setCurrentWorkspace(updatedWs);
-    if (SupabaseService.isConfigured()) {
-      SupabaseService.createWorkspace(updatedWs).catch((err) => {
-        console.warn('[OperaTask] Erro ao sincronizar workspace com Supabase:', err);
-      });
+
+    if (targetId === currentWorkspace.id) {
+      setCurrentWorkspace(updatedWs);
     }
-    recordActivity('atualizou as configurações do workspace');
+
+    StorageService.updateWorkspaceAsync(targetId, nextUpdates);
+
+    if (typeof nextUpdates.name === 'string' && nextUpdates.name && nextUpdates.name !== baseWs.name) {
+      recordActivity(`renomeou o workspace "${baseWs.name}" para "${nextUpdates.name}"`);
+      showToast({
+        type: 'success',
+        message: `Workspace renomeado para "${nextUpdates.name}"!`,
+      });
+    } else {
+      recordActivity('atualizou as configurações do workspace');
+    }
+  };
+
+  const handleReorderWorkspaces = (orderedVisibleWorkspaces: Workspace[]) => {
+    if (!Array.isArray(orderedVisibleWorkspaces) || orderedVisibleWorkspaces.length === 0) return;
+
+    const visibleIds = new Set(orderedVisibleWorkspaces.map((w) => w.id));
+    let nextVisibleCursor = 0;
+
+    // Preserva os slots de workspaces não visíveis ao usuário atual e substitui os visíveis na nova ordem
+    const mergedList = workspaces.map((ws) => {
+      if (!visibleIds.has(ws.id)) return ws;
+      const replacement = orderedVisibleWorkspaces[nextVisibleCursor];
+      nextVisibleCursor += 1;
+      return replacement || ws;
+    });
+
+    // Garante que qualquer item novo da lista visível também esteja incluído
+    while (nextVisibleCursor < orderedVisibleWorkspaces.length) {
+      const extra = orderedVisibleWorkspaces[nextVisibleCursor];
+      nextVisibleCursor += 1;
+      if (extra && !mergedList.some((w) => w.id === extra.id)) {
+        mergedList.push(extra);
+      }
+    }
+
+    const indexedList = mergedList.map((w, idx) => ({
+      ...w,
+      orderIndex: idx,
+    }));
+
+    setWorkspaces(indexedList);
+    const updatedCurrent = indexedList.find((w) => w.id === currentWorkspace.id);
+    if (updatedCurrent) {
+      setCurrentWorkspace(updatedCurrent);
+    }
+
+    StorageService.reorderWorkspacesAsync(indexedList);
   };
 
   const handleInviteMember = async (email: string, role: WorkspaceRole) => {
@@ -2098,6 +2171,8 @@ export default function App() {
         workspaces={userVisibleWorkspaces}
         currentWorkspace={currentWorkspace}
         onSelectWorkspace={handleSelectWorkspace}
+        onRenameWorkspace={(wsId, newName) => handleSaveWorkspace({ name: newName }, wsId)}
+        onReorderWorkspaces={handleReorderWorkspaces}
         onOpenCreateWorkspaceModal={() => setIsCreateWorkspaceModalOpen(true)}
         onOpenWorkspaceSettingsModal={() => setIsWorkspaceModalOpen(true)}
         projects={workspaceProjects}
@@ -2460,6 +2535,7 @@ export default function App() {
         workspace={currentWorkspace}
         allUsers={switchableUsers}
         currentUserId={currentUser.id}
+        currentUser={currentUser}
         allWorkspaces={userVisibleWorkspaces}
         onSaveWorkspace={handleSaveWorkspace}
         onInviteMember={handleInviteMember}
@@ -2587,6 +2663,8 @@ export default function App() {
           handleSelectWorkspace(workspaceId);
           setIsMasterModalOpen(false);
         }}
+        onRenameWorkspace={(wsId, newName) => handleSaveWorkspace({ name: newName }, wsId)}
+        onReorderWorkspaces={handleReorderWorkspaces}
         onEnterSupportMode={handleEnterSupportMode}
         onShowToast={showToast}
       />
