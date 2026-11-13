@@ -38,7 +38,14 @@ import {
   CreditCard,
 } from 'lucide-react';
 import { ProjectIcon } from './ProjectIcon.tsx';
-import { getInitials, ROLE_CONFIG, isUserMaster, canAccessDashboard } from '../utils/helpers.ts';
+import {
+  getInitials,
+  ROLE_CONFIG,
+  isUserMaster,
+  canAccessDashboard,
+  getUserRoleInWorkspace,
+  getUserIdentifiers,
+} from '../utils/helpers.ts';
 import { PWAInstallPrompt } from './PWAInstallPrompt.tsx';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
 import { UserAvatar } from './UserAvatar.tsx';
@@ -125,14 +132,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Verificação de papel (role) e permissões no workspace atual
-  const currentMember = currentWorkspace?.members?.find((m) => m.userId === currentUser.id);
-  const userRole: WorkspaceRole =
-    currentMember?.role || (currentWorkspace?.ownerId === currentUser.id ? 'owner' : 'member');
+  const userRole: WorkspaceRole = getUserRoleInWorkspace(currentWorkspace, currentUser, allUsers);
   const roleInfo = ROLE_CONFIG[userRole] || ROLE_CONFIG.member;
 
   // Lógica de verificação de permissão estrita:
-  // Apenas usuários com a role 'owner' ou 'admin' no workspace atual podem visualizar a seção de itens arquivados
-  const canViewArchived = Boolean(userRole === 'owner' || userRole === 'admin');
+  // Apenas usuários com a role 'owner'/'dono' ou 'admin'/'administrador' no workspace atual podem visualizar a seção de itens arquivados
+  const canViewArchived = Boolean(
+    isMaster || userRole === 'owner' || userRole === 'dono' || userRole === 'admin' || userRole === 'administrador'
+  );
 
   // Lista de usuários estritamente filtrada para troca rápida de sessão no workspace/empresa ativo
   const switchableUsers = useMemo(() => {
@@ -151,8 +158,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
       }
 
       // 2. Deve pertencer ao workspace ativo ou à mesma empresa/equipe
-      const isMember = currentWorkspace?.members?.some((member) => member.userId === u.id);
-      const isOwner = currentWorkspace?.ownerId === u.id;
+      const uIds = getUserIdentifiers(u, allUsers);
+      const isMember = currentWorkspace?.members?.some((member) => {
+        const mid = (member?.userId || '').trim().toLowerCase();
+        return mid && (uIds.has(mid) || uIds.has(mid.replace(/^@/, '')));
+      });
+      const ownerNorm = (currentWorkspace?.ownerId || '').trim().toLowerCase();
+      const isOwner = Boolean(ownerNorm && (uIds.has(ownerNorm) || uIds.has(ownerNorm.replace(/^@/, ''))));
       const wsCompanyId = currentWorkspace?.companyId || (currentWorkspace as any)?.tenantId;
       const isSameCompany = Boolean(
         wsCompanyId && (u.companyId === wsCompanyId || u.tenantId === wsCompanyId || u.companyId === currentWorkspace?.id)

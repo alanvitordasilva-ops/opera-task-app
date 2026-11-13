@@ -50,6 +50,18 @@ export default async function handler(req: any, res: any) {
 
   const resolvedTenantId = tenantId || companyId || (targetWsIds[0] !== 'ws-principal' ? targetWsIds[0] : undefined);
 
+  // Garante que os workspaces selecionados existam no store antes do vínculo
+  if (Array.isArray(body.workspaceObjects)) {
+    body.workspaceObjects.forEach((wo: any) => {
+      if (wo && wo.id && !store.workspaces.some((w: any) => w.id === wo.id)) {
+        store.workspaces.push({
+          ...wo,
+          members: Array.isArray(wo.members) ? wo.members : [],
+        });
+      }
+    });
+  }
+
   // 1. Executa criação administrativa no Supabase se SUPABASE_SERVICE_ROLE_KEY estiver definida
   let supabaseUserId: string | undefined;
   try {
@@ -79,7 +91,12 @@ export default async function handler(req: any, res: any) {
     email: cleanEmail,
     password: cleanPass,
     avatarColor: avatarColor || '#34B1AC',
-    title: role === 'administrador' ? 'Administrador' : role === 'producao' ? 'Produção' : 'Membro da Equipe',
+    title: role === 'administrador' ? 'Administrador' : role === 'producao' ? 'Produção' : role === 'dono' ? 'Dono do Workspace' : 'Membro da Equipe',
+    tipo: role || 'producao',
+    companyId: resolvedTenantId,
+    tenantId: resolvedTenantId,
+    workspaceId: targetWsIds[0],
+    workspaceIds: targetWsIds,
     status: 'active',
     isActive: true,
     createdAt: new Date().toISOString(),
@@ -91,7 +108,11 @@ export default async function handler(req: any, res: any) {
   targetWsIds.forEach((wsId) => {
     const ws = store.workspaces.find((w) => w.id === wsId);
     if (ws) {
-      if (!ws.members.some((m: any) => m.userId === newUser.id)) {
+      if (!Array.isArray(ws.members)) ws.members = [];
+      const memberIdx = ws.members.findIndex((m: any) => m.userId === newUser.id);
+      if (memberIdx !== -1) {
+        ws.members[memberIdx].role = role || 'member';
+      } else {
         ws.members.push({
           userId: newUser.id,
           role: role || 'member',
@@ -105,6 +126,7 @@ export default async function handler(req: any, res: any) {
     success: true,
     user: newUser,
     users: store.users,
+    workspaces: store.workspaces,
   });
 }
 

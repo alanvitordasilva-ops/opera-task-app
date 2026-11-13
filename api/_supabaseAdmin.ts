@@ -84,6 +84,8 @@ export async function adminRegisterOrSyncUser(userData: {
           avatar_url: userData.avatarColor || '#34B1AC',
           tenant_id: userData.tenantId || userData.companyId || null,
           company_id: userData.companyId || userData.tenantId || null,
+          workspace_id: userData.workspaceIds?.[0] || null,
+          workspace_ids: userData.workspaceIds || [],
         },
       });
 
@@ -112,6 +114,8 @@ export async function adminRegisterOrSyncUser(userData: {
                 avatar_url: userData.avatarColor || '#34B1AC',
                 tenant_id: userData.tenantId || userData.companyId || null,
                 company_id: userData.companyId || userData.tenantId || null,
+                workspace_id: userData.workspaceIds?.[0] || null,
+                workspace_ids: userData.workspaceIds || [],
               },
             });
           }
@@ -145,12 +149,18 @@ export async function adminRegisterOrSyncUser(userData: {
 
       // Vincula aos workspaces selecionados
       for (const wsId of wsList) {
-        await adminClient.from('workspace_members').upsert({
-          workspace_id: wsId,
-          user_id: finalUserId,
-          role: userData.role,
-          joined_at: new Date().toISOString(),
-        });
+        const { error: mErr } = await adminClient.from('workspace_members').upsert(
+          {
+            workspace_id: wsId,
+            user_id: finalUserId,
+            role: userData.role,
+            joined_at: new Date().toISOString(),
+          },
+          { onConflict: 'workspace_id,user_id' }
+        );
+        if (mErr) {
+          console.warn('[Supabase Admin] Aviso upsert workspace_members:', mErr.message);
+        }
       }
 
       return { success: true, userId: finalUserId };

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Task,
   Project,
@@ -23,6 +23,8 @@ import {
   isTaskDueSoon,
   formatDueDatePTBR,
   isUserMaster,
+  isWorkspaceMemberOrOwner,
+  getUserRoleInWorkspace,
   ROLE_CONFIG,
   canAccessDashboard,
   canModifyCompletedTask,
@@ -121,84 +123,139 @@ export default function App() {
     inviteData ? false : StorageService.isAuthenticated()
   );
 
-  const handleLoginSuccess = async (user: User) => {
-    // 1. Atualiza lista de usuários com dados mais recentes do armazenamento
-    const freshUsers = StorageService.getUsers();
-    let currentUsersList = freshUsers;
-    if (!currentUsersList.some((u) => u.id === user.id || u.email.toLowerCase() === user.email.toLowerCase())) {
-      currentUsersList = [...freshUsers, user];
-      StorageService.saveUsers(currentUsersList, true);
-    }
-    setUsers(currentUsersList);
-    setCurrentUser(user);
-    StorageService.setCurrentUserId(user.id);
+  const isAuthenticatedRef = useRef<boolean>(isAuthenticated);
+  const currentUserRef = useRef<User>(currentUser);
+  const currentWorkspaceRef = useRef<Workspace>(currentWorkspace);
 
-    // 2. Busca workspaces atualizados da nuvem (Supabase) para o usuário recém-logado
-    let freshWorkspaces = StorageService.getWorkspaces();
+  useEffect(() => {
+    isAuthenticatedRef.current = isAuthenticated;
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    currentUserRef.current = currentUser;
+  }, [currentUser]);
+
+  useEffect(() => {
+    currentWorkspaceRef.current = currentWorkspace;
+  }, [currentWorkspace]);
+
+  const handleLoginSuccess = async (user: User) => {
+    isAuthenticatedRef.current = true;
+
+    // 1. Sincroniza estado mais recente do servidor central (/api/sync/state) antes de resolver o workspace do usuário
+    await StorageService.syncWithServer().catch(() => false);
+
+    // 2. Reconcilia dados do usuário recém-logado com registros salvos (preservando companyId, tenantId e workspaceIds)
+    const freshUsers = StorageService.getUsers();
+    const matchedStoredUser = freshUsers.find(
+      (u) =>
+        u.id === user.id ||
+        (u.email && user.email && u.email.trim().toLowerCase() === user.email.trim().toLowerCase()) ||
+        (u.username && user.username && u.username.trim().toLowerCase().replace(/^@/, '') === user.username.trim().toLowerCase().replace(/^@/, ''))
+    );
+
+    const combinedWsIds = Array.from(
+      new Set([
+        ...(Array.isArray(matchedStoredUser?.workspaceIds) ? matchedStoredUser!.workspaceIds : []),
+        ...(matchedStoredUser?.workspaceId ? [matchedStoredUser.workspaceId] : []),
+        ...(Array.isArray(user.workspaceIds) ? user.workspaceIds : []),
+        ...(user.workspaceId ? [user.workspaceId] : []),
+        ...(inviteData?.workspaceId && !isUserMaster(user) ? [inviteData.workspaceId] : []),
+      ].filter(Boolean))
+    );
+
+    const resolvedUser: User = {
+      ...(matchedStoredUser || {}),
+      ...user,
+      companyId: user.companyId || matchedStoredUser?.companyId || (!isUserMaster(user) ? inviteData?.companyId : undefined),
+      tenantId: user.tenantId || matchedStoredUser?.tenantId || user.companyId || matchedStoredUser?.companyId || (!isUserMaster(user) ? inviteData?.companyId : undefined),
+      workspaceId: user.workspaceId || matchedStoredUser?.workspaceId || combinedWsIds[0],
+      workspaceIds: combinedWsIds.length > 0 ? combinedWsIds : undefined,
+      status: 'active',
+      isActive: true,
+    };
+
+    const currentUsersList = matchedStoredUser
+      ? freshUsers.map((u) => (u.id === matchedStoredUser.id ? resolvedUser : u))
+      : [...freshUsers, resolvedUser];
+    StorageService.saveUsers(currentUsersList, true);
+    setUsers(currentUsersList);
+    setCurrentUser(resolvedUser);
+    currentUserRef.current = resolvedUser;
+    StorageService.setCurrentUserId(resolvedUser.id);
+
+    // 3. Busca workspaces atualizados da nuvem (Supabase) para o usuário recém-logado
     if (SupabaseService.isConfigured()) {
       try {
-        const cloudWs = await StorageService.fetchWorkspacesCloud(user);
-        if (cloudWs.success && Array.isArray(cloudWs.workspaces) && cloudWs.workspaces.length > 0) {
-          freshWorkspaces = StorageService.getWorkspaces();
-        }
+        await StorageService.fetchWorkspacesCloud(resolvedUser);
       } catch (err) {
         console.warn('[OperaTask] Erro ao buscar workspaces na nuvem durante login:', err);
       }
     }
 
-    const isMasterUser = isUserMaster(user);
-    const userCompany = user.companyId || user.tenantId;
+    let freshWorkspaces = StorageService.getWorkspaces();
+    const isMasterUser = isUserMaster(resolvedUser);
 
-    let allowedWorkspaces = isMasterUser
-      ? freshWorkspaces
-      : freshWorkspaces.filter(
-          (w) =>
-            w.ownerId === user.id ||
-            w.ownerId === user.email ||
-            w.ownerId === user.username ||
-            (Array.isArray(w.members) &&
-              w.members.some(
-                (m) =>
-                  m.userId === user.id ||
-                  m.userId === user.email ||
-                  m.userId === user.username
-              )) ||
-            (userCompany &&
-              (w.companyId === userCompany ||
-                (w as any).tenantId === userCompany ||
-                w.id === userCompany))
-        );
-
-    // Fallback de segurança: se o filtro estrito não encontrar mas existirem workspaces de clientes, usa-os
-    if (allowedWorkspaces.length === 0 && freshWorkspaces.length > 0) {
-      const nonMatriz = freshWorkspaces.filter((w) => w.id !== 'ws-principal');
-      allowedWorkspaces = nonMatriz.length > 0 ? nonMatriz : freshWorkspaces;
+    // Se o usuário veio por link de convite com workspaceId e seu novo ID ainda não está listado em members, garante vínculo local
+    if (!isMasterUser && inviteData?.workspaceId) {
+      const invitedWsIdx = freshWorkspaces.findIndex((w) => w.id === inviteData.workspaceId);
+      if (invitedWsIdx !== -1) {
+        const ws = freshWorkspaces[invitedWsIdx];
+        if (!isWorkspaceMemberOrOwner(ws, resolvedUser, currentUsersList)) {
+          freshWorkspaces = freshWorkspaces.map((w, idx) =>
+            idx === invitedWsIdx
+              ? {
+                  ...w,
+                  members: [
+                    ...(w.members || []),
+                    { userId: resolvedUser.id, role: (resolvedUser.tipo as WorkspaceRole) || 'member', joinedAt: new Date().toISOString() },
+                  ],
+                }
+              : w
+          );
+          StorageService.saveWorkspaces(freshWorkspaces, true);
+        }
+      }
     }
 
-    // Se o usuário veio de convite para um workspace específico, prioriza esse workspace
+    const allowedWorkspaces = isMasterUser
+      ? freshWorkspaces
+      : freshWorkspaces.filter((w) => isWorkspaceMemberOrOwner(w, resolvedUser, currentUsersList));
+
+    // Se o usuário veio de convite para um workspace específico, prioriza esse workspace; senão, prioriza workspaces em que foi inscrito (evitando ws-principal se não for apenas dele)
     const targetInvitedWs = inviteData?.workspaceId
-      ? freshWorkspaces.find((w) => w.id === inviteData.workspaceId)
+      ? allowedWorkspaces.find((w) => w.id === inviteData.workspaceId) ||
+        freshWorkspaces.find((w) => w.id === inviteData.workspaceId)
       : null;
-    const activeWs = targetInvitedWs || (allowedWorkspaces.length > 0 ? allowedWorkspaces[0] : null);
+    const preferredNonPrincipalWs = !isMasterUser
+      ? allowedWorkspaces.find((w) => w.id !== 'ws-principal')
+      : null;
+    const activeWs =
+      targetInvitedWs ||
+      preferredNonPrincipalWs ||
+      (allowedWorkspaces.length > 0 ? allowedWorkspaces[0] : null);
 
     let resolvedActiveWs = activeWs;
     if (resolvedActiveWs) {
       setWorkspaces(freshWorkspaces);
       setCurrentWorkspace(resolvedActiveWs);
+      currentWorkspaceRef.current = resolvedActiveWs;
       StorageService.setCurrentWorkspaceId(resolvedActiveWs.id);
       StorageService.ensureWorkspaceProject(resolvedActiveWs.id, resolvedActiveWs.name);
       setProjects(StorageService.getProjects());
+      setClients(StorageService.getClients());
     } else {
+      const userCompany = resolvedUser.companyId || resolvedUser.tenantId;
       const wsId = `ws-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
       const newWs: Workspace = {
         id: wsId,
-        name: user.name ? `Workspace de ${user.name.split(' ')[0]}` : 'Meu Workspace',
+        name: resolvedUser.name ? `Workspace de ${resolvedUser.name.split(' ')[0]}` : 'Meu Workspace',
         slug: `meu-workspace-${wsId.slice(-5)}`,
         description: 'Espaço de trabalho corporativo',
         logoColor: '#173653',
-        ownerId: user.id,
+        ownerId: resolvedUser.id,
         companyId: userCompany,
-        members: [{ userId: user.id, role: 'owner', joinedAt: new Date().toISOString() }],
+        members: [{ userId: resolvedUser.id, role: 'owner', joinedAt: new Date().toISOString() }],
         createdAt: new Date().toISOString(),
       };
       resolvedActiveWs = newWs;
@@ -207,14 +264,16 @@ export default function App() {
       resolvedActiveWs = createdWs;
       setWorkspaces(StorageService.getWorkspaces());
       setCurrentWorkspace(createdWs);
+      currentWorkspaceRef.current = createdWs;
       setProjects(StorageService.getProjects());
     }
 
     StorageService.setAuthenticated(true);
     setIsAuthenticated(true);
 
-    // Carregar projetos e tarefas da nuvem do Supabase para o Workspace ativo
+    // Carregar projetos e tarefas do armazenamento sincronizado e da nuvem para o Workspace ativo
     const finalActiveWs = resolvedActiveWs;
+    setTasks(StorageService.getTasks());
     if (SupabaseService.isConfigured() && finalActiveWs) {
       StorageService.fetchProjectsCloud(finalActiveWs.id).then((pRes) => {
         if (pRes.success && Array.isArray(pRes.projects) && pRes.projects.length > 0) {
@@ -230,7 +289,7 @@ export default function App() {
 
     showToast({
       type: 'success',
-      message: `Bem-vindo(a) ao OperaTask, ${user.name}! Acesso liberado.`,
+      message: `Bem-vindo(a) ao OperaTask, ${resolvedUser.name}! Acesso liberado.`,
     });
   };
 
@@ -365,10 +424,12 @@ export default function App() {
   // Sincronização autoritativa inicial com o banco de dados remoto (Supabase / Servidor)
   useEffect(() => {
     const fetchLatestServerState = async () => {
-      // 1. Se o Supabase estiver configurado, busca Workspaces, Projetos e Tarefas da nuvem de forma assíncrona
-      if (SupabaseService.isConfigured()) {
+      // 1. Se já houver sessão autenticada e o Supabase estiver configurado, busca dados do usuário ativo na nuvem
+      if (isAuthenticatedRef.current && SupabaseService.isConfigured()) {
+        const liveUser = currentUserRef.current;
+        const liveWs = currentWorkspaceRef.current;
         try {
-          const cloudWs = await StorageService.fetchWorkspacesCloud();
+          const cloudWs = await StorageService.fetchWorkspacesCloud(liveUser);
           if (cloudWs.success && cloudWs.workspaces.length > 0) {
             setWorkspaces(cloudWs.workspaces);
           }
@@ -377,7 +438,7 @@ export default function App() {
         }
 
         try {
-          const cloudProj = await StorageService.fetchProjectsCloud(currentWorkspace.id);
+          const cloudProj = await StorageService.fetchProjectsCloud(liveWs.id);
           if (cloudProj.success && cloudProj.projects.length > 0) {
             setProjects(cloudProj.projects);
           }
@@ -386,7 +447,7 @@ export default function App() {
         }
 
         try {
-          const cloudRes = await StorageService.fetchTasksCloud(currentWorkspace.id);
+          const cloudRes = await StorageService.fetchTasksCloud(liveWs.id);
           if (cloudRes.success && cloudRes.tasks.length > 0) {
             setTasks(cloudRes.tasks);
           }
@@ -421,31 +482,31 @@ export default function App() {
       }
       setTags(freshTags);
 
-      const current = freshUsers.find((u) => u.id === currentUser.id);
-      if (current) {
-        setCurrentUser((prev) => (JSON.stringify(prev) === JSON.stringify(current) ? prev : current));
+      // Nunca sobrescreve o usuário ou workspace antes da autenticação ou com referência desatualizada de closure
+      if (!isAuthenticatedRef.current) {
+        return;
       }
-      const isMast = isUserMaster(current || currentUser);
-      const userCompany = (current || currentUser).companyId || (current || currentUser).tenantId;
 
-      let allowedWs = isMast
+      const activeUserNow = currentUserRef.current;
+      const activeWsNow = currentWorkspaceRef.current;
+      const matchedUser = freshUsers.find((u) => u.id === activeUserNow.id) || activeUserNow;
+      if (matchedUser) {
+        setCurrentUser((prev) => (JSON.stringify(prev) === JSON.stringify(matchedUser) ? prev : matchedUser));
+      }
+
+      const isMast = isUserMaster(matchedUser);
+      const allowedWs = isMast
         ? freshWorkspaces
-        : freshWorkspaces.filter(
-            (w) =>
-              w.ownerId === (current?.id || currentUser.id) ||
-              (Array.isArray(w.members) && w.members.some((m) => m.userId === (current?.id || currentUser.id))) ||
-              (userCompany && (w.companyId === userCompany || (w as any).tenantId === userCompany || w.id === userCompany))
-          );
+        : freshWorkspaces.filter((w) => isWorkspaceMemberOrOwner(w, matchedUser, freshUsers));
 
-      if (allowedWs.length === 0 && freshWorkspaces.length > 0) {
-        const nonMatriz = freshWorkspaces.filter((w) => w.id !== 'ws-principal');
-        allowedWs = nonMatriz.length > 0 ? nonMatriz : freshWorkspaces;
-      }
+      const preferredWs =
+        allowedWs.find((w) => w.id === activeWsNow.id) ||
+        (!isMast ? allowedWs.find((w) => w.id !== 'ws-principal') : undefined) ||
+        allowedWs[0];
 
-      const curWs = allowedWs.find((w) => w.id === currentWorkspace.id) || allowedWs[0] || freshWorkspaces[0];
-      if (curWs) {
-        setCurrentWorkspace((prev) => (JSON.stringify(prev) === JSON.stringify(curWs) ? prev : curWs));
-        StorageService.ensureWorkspaceProject(curWs.id, curWs.name);
+      if (preferredWs) {
+        setCurrentWorkspace((prev) => (JSON.stringify(prev) === JSON.stringify(preferredWs) ? prev : preferredWs));
+        StorageService.ensureWorkspaceProject(preferredWs.id, preferredWs.name);
       }
     };
     fetchLatestServerState();
@@ -663,10 +724,8 @@ export default function App() {
 
   // Papel do usuário atual no workspace ativo
   const currentUserRole: WorkspaceRole = useMemo(() => {
-    if (isUserMaster(currentUser)) return 'owner';
-    const member = currentWorkspace.members.find((m) => m.userId === currentUser.id);
-    return member?.role || (currentWorkspace.ownerId === currentUser.id ? 'owner' : 'member');
-  }, [currentWorkspace, currentUser]);
+    return getUserRoleInWorkspace(currentWorkspace, currentUser, users);
+  }, [currentWorkspace, currentUser, users]);
 
   // Projetos do workspace atual com garantia de persistência e fallback ativo anti-vazio
   const workspaceProjects = useMemo(() => {
@@ -724,44 +783,15 @@ export default function App() {
   // - Demais usuários enxergam e acessam os workspaces de sua própria empresa ou aos quais foram vinculados.
   const userVisibleWorkspaces = useMemo(() => {
     if (isMaster) return workspaces;
-    const userCompany = currentUser.companyId || currentUser.tenantId;
 
-    const filtered = workspaces.filter((w) => {
-      // 1. É o proprietário do workspace
-      if (
-        w.ownerId === currentUser.id ||
-        (currentUser.email && w.ownerId === currentUser.email) ||
-        (currentUser.username && w.ownerId === currentUser.username)
-      ) {
-        return true;
-      }
-      // 2. É membro registrado na lista de membros
-      if (
-        Array.isArray(w.members) &&
-        w.members.some(
-          (m) =>
-            m.userId === currentUser.id ||
-            (currentUser.email && m.userId === currentUser.email) ||
-            (currentUser.username && m.userId === currentUser.username)
-        )
-      ) {
-        return true;
-      }
-      // 3. Vínculo por Empresa / Tenant
-      const wsCompany = w.companyId || (w as any).tenantId;
-      if (userCompany && wsCompany && (userCompany === wsCompany || userCompany === w.id)) return true;
-      if (userCompany && w.id === userCompany) return true;
-      return false;
-    });
+    const filtered = workspaces.filter((w) => isWorkspaceMemberOrOwner(w, currentUser, users));
 
-    // Fallback de segurança: nunca deixa o usuário sem nenhum workspace na interface
-    if (filtered.length === 0 && workspaces.length > 0) {
-      const nonMatriz = workspaces.filter((w) => w.id !== 'ws-principal');
-      return nonMatriz.length > 0 ? nonMatriz : workspaces;
+    if (filtered.length === 0 && currentWorkspace?.id && currentWorkspace.id !== 'ws-principal') {
+      return [currentWorkspace];
     }
 
     return filtered;
-  }, [workspaces, currentUser, isMaster]);
+  }, [workspaces, currentUser, users, isMaster, currentWorkspace]);
 
   const userVisibleWorkspaceIds = useMemo(() => {
     return userVisibleWorkspaces.map((w) => w.id).join(',');
@@ -769,12 +799,13 @@ export default function App() {
 
   // Redireciona caso o workspace atual não esteja mais na lista visível
   useEffect(() => {
+    if (!isAuthenticated) return;
     if (userVisibleWorkspaces.length > 0 && !userVisibleWorkspaces.some((w) => w.id === currentWorkspace.id)) {
-      const fallback = userVisibleWorkspaces[0];
+      const fallback = (!isMaster ? userVisibleWorkspaces.find((w) => w.id !== 'ws-principal') : undefined) || userVisibleWorkspaces[0];
       setCurrentWorkspace(fallback);
       StorageService.setCurrentWorkspaceId(fallback.id);
     }
-  }, [userVisibleWorkspaceIds, currentWorkspace.id]);
+  }, [isAuthenticated, isMaster, userVisibleWorkspaceIds, currentWorkspace.id]);
 
   // Tenant / Empresa do Usuário e Workspace Atual (Isolamento Multi-tenant)
   const currentTenant = useMemo(() => {
@@ -1637,16 +1668,17 @@ export default function App() {
     const companyId = currentWorkspace.companyId || (currentWorkspace as any).tenantId || currentWorkspace.id;
 
     if (!targetUser) {
-      const namePart = email.split('@')[0];
+      const cleanEmail = email.trim().toLowerCase();
+      const namePart = cleanEmail.split('@')[0];
       const formattedName = namePart.charAt(0).toUpperCase() + namePart.slice(1);
-      const usernamePart = namePart.toLowerCase().replace(/[^a-z0-9._-]/g, '');
       const reg = await StorageService.registerUser({
         name: formattedName,
-        username: usernamePart || `user.${Date.now()}`,
-        email,
-        password: '123',
+        username: cleanEmail,
+        email: cleanEmail,
+        password: 'Opera@123',
         role,
         workspaceId: currentWorkspace.id,
+        workspaceIds: [currentWorkspace.id],
         companyId: companyId,
         tenantId: companyId,
       });
@@ -1699,6 +1731,19 @@ export default function App() {
     if (SupabaseService.isConfigured()) {
       SupabaseService.removeWorkspaceMember(currentWorkspace.id, userId).catch(() => {});
     }
+    const updatedUsers = users.map((u) => {
+      if (u.id !== userId) return u;
+      const nextWsIds = Array.isArray(u.workspaceIds)
+        ? u.workspaceIds.filter((id) => id !== currentWorkspace.id)
+        : undefined;
+      return {
+        ...u,
+        workspaceId: u.workspaceId === currentWorkspace.id ? nextWsIds?.[0] : u.workspaceId,
+        workspaceIds: nextWsIds,
+      };
+    });
+    setUsers(updatedUsers);
+    StorageService.saveUsers(updatedUsers, true);
     const targetUser = users.find((u) => u.id === userId);
     recordActivity(`removeu ${targetUser?.name || 'membro'} do workspace`);
   };

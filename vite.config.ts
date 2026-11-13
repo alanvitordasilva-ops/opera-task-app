@@ -328,7 +328,11 @@ function operataskRealtimePlugin() {
           let savedUser: any = null;
 
           if (existingIndex !== -1) {
-            // Atualiza usuário existente mantendo status ativo
+            // Atualiza usuário existente mantendo status ativo e vínculos de workspace
+            const existingWsIds = Array.isArray(sharedCache.users[existingIndex].workspaceIds)
+              ? sharedCache.users[existingIndex].workspaceIds
+              : [];
+            const combinedUserWsIds = Array.from(new Set([...existingWsIds, ...targetWorkspaceIds]));
             sharedCache.users[existingIndex] = {
               ...sharedCache.users[existingIndex],
               name: cleanName,
@@ -339,6 +343,8 @@ function operataskRealtimePlugin() {
               tipo: chosenRole,
               companyId: body.companyId || sharedCache.users[existingIndex].companyId,
               tenantId: body.tenantId || body.companyId || sharedCache.users[existingIndex].tenantId,
+              workspaceId: targetWorkspaceIds[0] || sharedCache.users[existingIndex].workspaceId,
+              workspaceIds: combinedUserWsIds,
               status: 'active',
               isActive: true,
               avatarColor: body.avatarColor || sharedCache.users[existingIndex].avatarColor || '#34B1AC',
@@ -357,6 +363,8 @@ function operataskRealtimePlugin() {
               tipo: chosenRole,
               companyId: body.companyId,
               tenantId: body.tenantId || body.companyId,
+              workspaceId: targetWorkspaceIds[0],
+              workspaceIds: targetWorkspaceIds,
               status: 'active',
               isActive: true,
               createdAt: body.createdAt || new Date().toISOString(),

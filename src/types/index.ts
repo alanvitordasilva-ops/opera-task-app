@@ -26,9 +26,13 @@ export type SystemRole = 'master' | 'user';
 export interface SupabaseProfile {
   id: string; // uuid
   nome: string;
+  username?: string;
   email: string;
   tipo: ProfileTipo;
   avatar_url?: string;
+  tenant_id?: string;
+  company_id?: string;
+  workspace_id?: string;
   created_at?: string;
 }
 
@@ -51,6 +55,8 @@ export interface User {
   tipo?: ProfileTipo;
   tenantId?: string; // Tenant isolado da empresa
   companyId?: string;
+  workspaceId?: string;
+  workspaceIds?: string[];
 }
 
 export interface WorkspaceMember {

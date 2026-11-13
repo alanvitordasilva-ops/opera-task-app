@@ -148,6 +148,128 @@ export function isUserMaster(user?: Partial<User> | null): boolean {
   );
 }
 
+/**
+ * Coleta todos os identificadores normalizados possíveis de um usuário (id, email, username e variações sem @),
+ * incluindo IDs de registros equivalentes na lista de usuários (ex: UUID do Supabase Auth vs user-... local).
+ */
+export function getUserIdentifiers(user?: Partial<User> | null, allUsers?: Partial<User>[]): Set<string> {
+  const ids = new Set<string>();
+  if (!user) return ids;
+
+  const addVal = (val?: string | null) => {
+    if (!val || typeof val !== 'string') return;
+    const norm = val.trim().toLowerCase();
+    if (!norm) return;
+    ids.add(norm);
+    const noAt = norm.replace(/^@/, '');
+    if (noAt) ids.add(noAt);
+  };
+
+  addVal(user.id);
+  addVal(user.email);
+  addVal(user.username);
+
+  if (Array.isArray(allUsers) && allUsers.length > 0) {
+    const emailNorm = (user.email || '').trim().toLowerCase();
+    const userNorm = (user.username || '').trim().toLowerCase().replace(/^@/, '');
+    allUsers.forEach((other) => {
+      if (!other) return;
+      const otherEmail = (other.email || '').trim().toLowerCase();
+      const otherUser = (other.username || '').trim().toLowerCase().replace(/^@/, '');
+      if (
+        (user.id && other.id === user.id) ||
+        (emailNorm && otherEmail && emailNorm === otherEmail) ||
+        (userNorm && otherUser && userNorm === otherUser) ||
+        (emailNorm && otherUser && emailNorm.replace(/^@/, '') === otherUser) ||
+        (userNorm && otherEmail && userNorm === otherEmail)
+      ) {
+        addVal(other.id);
+        addVal(other.email);
+        addVal(other.username);
+      }
+    });
+  }
+
+  return ids;
+}
+
+/**
+ * Verifica se o usuário pertence ao workspace (como dono, membro, ou por vínculo de empresa/workspace).
+ */
+export function isWorkspaceMemberOrOwner(
+  ws: {
+    id?: string;
+    ownerId?: string;
+    companyId?: string;
+    tenantId?: string;
+    members?: Array<{ userId: string; role?: WorkspaceRole | string }>;
+  } | null | undefined,
+  user?: Partial<User> | null,
+  allUsers?: Partial<User>[]
+): boolean {
+  if (!ws || !user) return false;
+  if (isUserMaster(user)) return true;
+
+  const identifiers = getUserIdentifiers(user, allUsers);
+  const ownerNorm = (ws.ownerId || '').trim().toLowerCase().replace(/^@/, '');
+  if (ownerNorm && (identifiers.has(ownerNorm) || identifiers.has((ws.ownerId || '').trim().toLowerCase()))) {
+    return true;
+  }
+
+  if (Array.isArray(ws.members)) {
+    const isMember = ws.members.some((m) => {
+      if (!m?.userId) return false;
+      const mNorm = m.userId.trim().toLowerCase();
+      return identifiers.has(mNorm) || identifiers.has(mNorm.replace(/^@/, ''));
+    });
+    if (isMember) return true;
+  }
+
+  if (ws.id) {
+    if (user.workspaceId && ws.id === user.workspaceId) return true;
+    if (Array.isArray(user.workspaceIds) && user.workspaceIds.includes(ws.id)) return true;
+  }
+
+  const userCompany = user.companyId || user.tenantId;
+  const wsCompany = ws.companyId || ws.tenantId;
+  if (userCompany && ws.id && (ws.id === userCompany || (wsCompany && wsCompany === userCompany))) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Resolve o papel (WorkspaceRole) do usuário dentro de um workspace considerando ID, e-mail e username.
+ */
+export function getUserRoleInWorkspace(
+  ws: {
+    id?: string;
+    ownerId?: string;
+    members?: Array<{ userId: string; role: WorkspaceRole }>;
+  } | null | undefined,
+  user?: Partial<User> | null,
+  allUsers?: Partial<User>[]
+): WorkspaceRole {
+  if (isUserMaster(user)) return 'owner';
+  if (!ws || !user) return 'member';
+
+  const identifiers = getUserIdentifiers(user, allUsers);
+  const member = (ws.members || []).find((m) => {
+    if (!m?.userId) return false;
+    const mNorm = m.userId.trim().toLowerCase();
+    return identifiers.has(mNorm) || identifiers.has(mNorm.replace(/^@/, ''));
+  });
+  if (member?.role) return member.role;
+
+  const ownerNorm = (ws.ownerId || '').trim().toLowerCase().replace(/^@/, '');
+  if (ownerNorm && (identifiers.has(ownerNorm) || identifiers.has((ws.ownerId || '').trim().toLowerCase()))) {
+    return 'owner';
+  }
+
+  return (user.tipo as WorkspaceRole) || 'member';
+}
+
 export function canManageWorkspace(role: WorkspaceRole, isMaster = false): boolean {
   if (isMaster) return true;
   return role === 'owner' || role === 'dono' || role === 'admin' || role === 'administrador';

@@ -47,10 +47,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     }
   }, [initialLogin, inviteInfo]);
 
+  const syncPromiseRef = React.useRef<Promise<boolean> | null>(null);
+
   // Sincroniza a base de dados remota compartilhada assim que a tela de login for carregada
   useEffect(() => {
-    StorageService.syncWithServer().catch((e) => {
+    syncPromiseRef.current = StorageService.syncWithServer().catch((e) => {
       console.warn('[OperaTask Login] Sync inicial com o servidor:', e);
+      return false;
     });
   }, []);
 
@@ -59,6 +62,42 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   const [forgotEmail, setForgotEmail] = useState('');
   const [forgotSent, setForgotSent] = useState(false);
   const [showAdminHelpModal, setShowAdminHelpModal] = useState(false);
+
+  const mergeWorkspaceLists = (existingWs: any[], incomingWs: any[]) => {
+    const wsMap = new Map<string, any>();
+    existingWs.forEach((w) => w?.id && wsMap.set(w.id, w));
+    incomingWs.forEach((rw) => {
+      if (!rw?.id) return;
+      const prev = wsMap.get(rw.id);
+      if (prev) {
+        const mMap = new Map<string, any>();
+        (Array.isArray(prev.members) ? prev.members : []).forEach((m: any) => m?.userId && mMap.set(m.userId, m));
+        (Array.isArray(rw.members) ? rw.members : []).forEach((m: any) => m?.userId && mMap.set(m.userId, m));
+        wsMap.set(rw.id, { ...prev, ...rw, members: Array.from(mMap.values()) });
+      } else {
+        wsMap.set(rw.id, rw);
+      }
+    });
+    return Array.from(wsMap.values());
+  };
+
+  const applyInviteContextToUser = (userObj: User): User => {
+    if (!inviteInfo || userObj.systemRole === 'master' || userObj.isSuperAdmin) return userObj;
+    const nextWsIds = Array.from(
+      new Set([
+        ...(Array.isArray(userObj.workspaceIds) ? userObj.workspaceIds : []),
+        ...(userObj.workspaceId ? [userObj.workspaceId] : []),
+        ...(inviteInfo.workspaceId ? [inviteInfo.workspaceId] : []),
+      ].filter(Boolean))
+    );
+    return {
+      ...userObj,
+      companyId: userObj.companyId || inviteInfo.companyId,
+      tenantId: userObj.tenantId || inviteInfo.companyId,
+      workspaceId: userObj.workspaceId || inviteInfo.workspaceId,
+      workspaceIds: nextWsIds.length > 0 ? nextWsIds : userObj.workspaceIds,
+    };
+  };
 
   const handleLogin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -91,6 +130,14 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     });
 
     try {
+      // Aguarda eventual sincronização inicial para garantir que usuários e workspaces recém-criados estejam disponíveis
+      if (syncPromiseRef.current) {
+        await Promise.race([
+          syncPromiseRef.current,
+          new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1800)),
+        ]);
+      }
+
       // 1. Validação Imediata da Conta Master (alan / 273021)
       const isMasterTarget =
         cleanIdentWithoutAt === 'alanvitordasilva@gmail.com.br' ||
@@ -128,15 +175,19 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         return;
       }
 
-      // 2. Consulta à base de usuários locais e sincronizados (StorageService.getUsers() já inclui DEFAULT_USERS)
-      const localUsers = StorageService.getUsers();
-      const combinedUsers = [...localUsers];
-      users.forEach((u) => {
-        if (!combinedUsers.some((item) => item.id === u.id)) {
-          combinedUsers.push(u);
-        }
-      });
+      // 2. Consulta à base de usuários locais e sincronizados
+      const getCombinedUsers = () => {
+        const localUsers = StorageService.getUsers();
+        const combined = [...localUsers];
+        users.forEach((u) => {
+          if (!combined.some((item) => item.id === u.id)) {
+            combined.push(u);
+          }
+        });
+        return combined;
+      };
 
+      const combinedUsers = getCombinedUsers();
       const foundLocalUser = combinedUsers.find((u) => matchUserIdentifier(u, rawIdent));
       if (foundLocalUser) {
         const isDavi =
@@ -161,37 +212,67 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           StorageService.saveUsers(combinedUsers, true);
         }
 
-        setIsLoading(false);
-        const activeUser = { ...foundLocalUser, status: 'active' as const, isActive: true };
+        // Garante que o sync inicial terminou caso tenha convidado um workspace específico
+        if (inviteInfo?.workspaceId && !StorageService.getWorkspaces().some((w) => w.id === inviteInfo.workspaceId)) {
+          await StorageService.syncWithServer().catch(() => false);
+        }
+
+        const activeUser = applyInviteContextToUser({
+          ...foundLocalUser,
+          status: 'active' as const,
+          isActive: true,
+        });
         StorageService.setCurrentUserId(activeUser.id);
         StorageService.setAuthenticated(true);
+        setIsLoading(false);
         console.log('[OperaTask Client Login] Usuário validado e autenticado com sucesso:', activeUser.name);
         onLoginSuccess(activeUser);
         return;
       }
 
       // 3. Se o Supabase estiver configurado, tenta autenticar via Supabase Auth
+      let sbInvalidCredentials = false;
       if (SupabaseService.isConfigured()) {
         try {
           console.log('[OperaTask Client Login] Tentando autenticação via Supabase Auth...');
           const sbAuth = await SupabaseService.login(rawIdent, cleanPassword);
           if (sbAuth.success && sbAuth.user) {
+            await StorageService.syncWithServer().catch(() => false);
             const all = StorageService.getUsers();
-            if (!all.some((u) => u.id === sbAuth.user!.id)) {
-              StorageService.saveUsers([...all, sbAuth.user], true);
-            }
-            StorageService.setCurrentUserId(sbAuth.user.id);
+            const existingByMatch = all.find(
+              (u) =>
+                u.id === sbAuth.user!.id ||
+                (u.email && sbAuth.user!.email && u.email.toLowerCase() === sbAuth.user!.email.toLowerCase()) ||
+                (u.username && sbAuth.user!.username && u.username.toLowerCase() === sbAuth.user!.username.toLowerCase())
+            );
+            const mergedUser = applyInviteContextToUser({
+              ...(existingByMatch || {}),
+              ...sbAuth.user,
+              companyId: sbAuth.user.companyId || existingByMatch?.companyId,
+              tenantId: sbAuth.user.tenantId || existingByMatch?.tenantId,
+              workspaceId: sbAuth.user.workspaceId || existingByMatch?.workspaceId,
+              workspaceIds: Array.from(
+                new Set([
+                  ...(existingByMatch?.workspaceIds || []),
+                  ...(sbAuth.user.workspaceIds || []),
+                ].filter(Boolean))
+              ),
+              status: 'active',
+              isActive: true,
+            });
+            const nextUsers = existingByMatch
+              ? all.map((u) => (u.id === existingByMatch.id ? mergedUser : u))
+              : [...all, mergedUser];
+            StorageService.saveUsers(nextUsers, true);
+            StorageService.setCurrentUserId(mergedUser.id);
             StorageService.setAuthenticated(true);
             setIsLoading(false);
             console.log('[OperaTask Client Login] Login autorizado com sucesso via Supabase!');
-            onLoginSuccess(sbAuth.user);
+            onLoginSuccess(mergedUser);
             return;
           }
           if (sbAuth.error && sbAuth.error.toLowerCase().includes('invalid login credentials')) {
-            setIsLoading(false);
-            setErrorMessage('Usuário ou senha inválidos.');
-            setDebugMessage('Supabase Auth: Credenciais inválidas.');
-            return;
+            sbInvalidCredentials = true;
           }
         } catch (sbErr) {
           console.warn('[OperaTask Client Login] Supabase Auth aviso:', sbErr);
@@ -213,27 +294,44 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         if (resp.ok) {
           const data = await resp.json().catch(() => null);
           if (data?.success && data?.user) {
+            const mergedUser = applyInviteContextToUser({
+              ...data.user,
+              status: 'active',
+              isActive: true,
+            });
             if (Array.isArray(data.allUsers) && data.allUsers.length > 0) {
-              StorageService.saveUsers(data.allUsers, true);
+              const currentUsers = StorageService.getUsers();
+              const uMap = new Map<string, User>();
+              currentUsers.forEach((u) => uMap.set(u.id, u));
+              data.allUsers.forEach((ru: User) => {
+                uMap.set(ru.id, { ...uMap.get(ru.id), ...ru });
+              });
+              uMap.set(mergedUser.id, { ...uMap.get(mergedUser.id), ...mergedUser });
+              StorageService.saveUsers(Array.from(uMap.values()), true);
             }
             if (Array.isArray(data.workspaces) && data.workspaces.length > 0) {
               const currentWs = StorageService.getWorkspaces();
-              const merged = [...currentWs];
-              data.workspaces.forEach((rw: any) => {
-                const idx = merged.findIndex((w) => w.id === rw.id);
-                if (idx !== -1) {
-                  merged[idx] = { ...merged[idx], ...rw };
-                } else {
-                  merged.push(rw);
-                }
-              });
-              StorageService.saveWorkspaces(merged, true);
+              StorageService.saveWorkspaces(mergeWorkspaceLists(currentWs, data.workspaces), true);
             }
-            StorageService.setCurrentUserId(data.user.id);
+            if (Array.isArray(data.projects) && data.projects.length > 0) {
+              const curP = StorageService.getProjects();
+              const pMap = new Map<string, any>();
+              curP.forEach((p) => pMap.set(p.id, p));
+              data.projects.forEach((p: any) => p?.id && pMap.set(p.id, { ...pMap.get(p.id), ...p }));
+              StorageService.saveProjects(Array.from(pMap.values()), true);
+            }
+            if (Array.isArray(data.tasks) && data.tasks.length > 0) {
+              const curT = StorageService.getTasks();
+              const tMap = new Map<string, any>();
+              curT.forEach((t) => tMap.set(t.id, t));
+              data.tasks.forEach((t: any) => t?.id && tMap.set(t.id, { ...tMap.get(t.id), ...t }));
+              StorageService.saveTasks(Array.from(tMap.values()), true);
+            }
+            StorageService.setCurrentUserId(mergedUser.id);
             StorageService.setAuthenticated(true);
             setIsLoading(false);
-            console.log('[OperaTask Client Login] Login realizado via servidor central:', data.user.name);
-            onLoginSuccess(data.user);
+            console.log('[OperaTask Client Login] Login realizado via servidor central:', mergedUser.name);
+            onLoginSuccess(mergedUser);
             return;
           }
         } else if (resp.status === 401) {
@@ -246,7 +344,40 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         console.warn('[OperaTask Client Login] Aviso ao consultar /api/auth/login:', netErr);
       }
 
-      // 5. Se chegou até aqui, conta realmente não foi encontrada
+      if (sbInvalidCredentials) {
+        setIsLoading(false);
+        setErrorMessage('Usuário ou senha inválidos.');
+        setDebugMessage('Supabase Auth: Credenciais inválidas.');
+        return;
+      }
+
+      // 5. Tentativa final após forçar sincronização caso o sync inicial tenha demorado
+      const syncedNow = await StorageService.syncWithServer().catch(() => false);
+      if (syncedNow) {
+        const refreshedUsers = getCombinedUsers();
+        const foundAfterSync = refreshedUsers.find((u) => matchUserIdentifier(u, rawIdent));
+        if (foundAfterSync) {
+          const passOk = !foundAfterSync.password || foundAfterSync.password.trim() === cleanPassword;
+          if (!passOk) {
+            setIsLoading(false);
+            setErrorMessage('Usuário ou senha inválidos.');
+            setDebugMessage('Senha informada não confere com a cadastrada.');
+            return;
+          }
+          const activeUser = applyInviteContextToUser({
+            ...foundAfterSync,
+            status: 'active' as const,
+            isActive: true,
+          });
+          StorageService.setCurrentUserId(activeUser.id);
+          StorageService.setAuthenticated(true);
+          setIsLoading(false);
+          onLoginSuccess(activeUser);
+          return;
+        }
+      }
+
+      // 6. Se chegou até aqui, conta realmente não foi encontrada
       setIsLoading(false);
       setErrorMessage('Conta não encontrada. Verifique os dados ou solicite o cadastro ao administrador.');
       setDebugMessage(`Usuário '${rawIdent}' não localizado na base (${combinedUsers.length} usuários verificados).`);

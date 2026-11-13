@@ -24,7 +24,7 @@ import {
 } from '../types/index.ts';
 import { SupabaseService } from './supabaseService.ts';
 import { RealtimeService, SyncEntity } from './realtimeService.ts';
-import { isUserMaster } from '../utils/helpers.ts';
+import { isUserMaster, getUserIdentifiers } from '../utils/helpers.ts';
 
 const STORAGE_KEYS = {
   USERS: 'operatask_clean_v1_users',
@@ -651,15 +651,15 @@ export const StorageService = {
         const data = json.data || json;
         if (data && typeof data === 'object') {
           if (Array.isArray(data.users) && data.users.length > 0) {
-            // Mescla usuários remotos com locais para não perder nenhum cadastro
+            // Mescla usuários remotos com locais mantendo metadados de tenant/workspace
             const current = this.getUsers();
-            const merged = [...data.users];
-            current.forEach((cu) => {
-              if (!merged.some((mu) => mu.id === cu.id)) {
-                merged.push(cu);
-              }
+            const userMap = new Map<string, User>();
+            current.forEach((cu) => userMap.set(cu.id, cu));
+            data.users.forEach((ru: User) => {
+              const prev = userMap.get(ru.id);
+              userMap.set(ru.id, prev ? { ...prev, ...ru } : ru);
             });
-            localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(merged));
+            localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(Array.from(userMap.values())));
           }
           if (Array.isArray(data.workspaces) && data.workspaces.length > 0) {
             const currentWs = this.getWorkspaces();
@@ -891,12 +891,19 @@ export const StorageService = {
         }
       }
 
-      // 2. Se for membro registrado deste workspace
-      const isMember = Array.isArray(workspace.members) && workspace.members.some((m) => m.userId === u.id);
+      // 2. Se for membro registrado deste workspace (verifica id, e-mail e username)
+      const uIds = getUserIdentifiers(u, users);
+      const isMember =
+        Array.isArray(workspace.members) &&
+        workspace.members.some((m) => {
+          const mid = (m?.userId || '').trim().toLowerCase();
+          return mid && (uIds.has(mid) || uIds.has(mid.replace(/^@/, '')));
+        });
       if (isMember) return true;
 
       // 3. Se for o dono do workspace
-      if (workspace.ownerId === u.id) return true;
+      const ownerNorm = (workspace.ownerId || '').trim().toLowerCase();
+      if (ownerNorm && (uIds.has(ownerNorm) || uIds.has(ownerNorm.replace(/^@/, '')))) return true;
 
       // 4. Se pertencer à mesma empresa/tenant do workspace
       if (wsCompanyId) {
@@ -1072,13 +1079,16 @@ export const StorageService = {
         const user = overrideUser || this.getCurrentUser();
         const isMaster = isUserMaster(user);
         const companyId = user?.companyId || user?.tenantId;
-        const currentWs = this.getCurrentWorkspace();
+        const userIdentifiers = Array.from(getUserIdentifiers(user, this.getUsers()));
+        const explicitWsId = user?.workspaceId || (!isMaster ? undefined : this.getCurrentWorkspace()?.id);
 
         const res = await SupabaseService.fetchWorkspaces({
           companyId,
           tenantId: companyId,
-          workspaceId: currentWs?.id,
+          workspaceId: explicitWsId,
           userId: user?.id,
+          userIdentifiers,
+          userWorkspaceIds: user?.workspaceIds,
           isSuperAdmin: isMaster,
         });
 
@@ -1580,7 +1590,7 @@ export const StorageService = {
       const workspaceId = `ws-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
       const userId = `user-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
 
-      // 1. Cria usuário Dono
+      // 1. Cria usuário Dono já com vínculo explícito de companyId / tenantId / workspaceId
       const cleanUsername = rawEmail.replace(/\s+/g, '');
       const userResult = await this.registerUser({
         name: cleanOwnerName,
@@ -1590,9 +1600,11 @@ export const StorageService = {
         role: 'dono',
         workspaceIds: [workspaceId],
         workspaceId,
+        companyId: clientId,
+        tenantId: clientId,
       });
 
-      const finalUser = userResult.user || {
+      const finalUser: User = userResult.user || {
         id: userId,
         name: cleanOwnerName,
         username: cleanUsername,
@@ -1605,10 +1617,21 @@ export const StorageService = {
         isActive: true,
         companyId: clientId,
         tenantId: clientId,
+        workspaceId,
+        workspaceIds: [workspaceId],
         createdAt: new Date().toISOString(),
       };
       finalUser.companyId = clientId;
       finalUser.tenantId = clientId;
+      finalUser.workspaceId = workspaceId;
+      finalUser.workspaceIds = Array.from(new Set([...(finalUser.workspaceIds || []), workspaceId]));
+
+      // Garante persistência do vínculo de empresa/workspace no usuário salvo
+      const currentUsersList = this.getUsers();
+      const updatedUsersList = currentUsersList.some((u) => u.id === finalUser.id)
+        ? currentUsersList.map((u) => (u.id === finalUser.id ? { ...u, ...finalUser } : u))
+        : [...currentUsersList, finalUser];
+      this.saveUsers(updatedUsersList, true);
 
       // 2. Cria Workspace inicial do Cliente (sem poluir membros com Master global)
       const newWs: Workspace = {
@@ -2702,11 +2725,20 @@ export const StorageService = {
       isActive: true,
       tenantId: assignedCompanyId,
       companyId: assignedCompanyId,
+      workspaceId: targetWorkspaceIds[0],
+      workspaceIds: targetWorkspaceIds,
       createdAt: new Date().toISOString(),
     };
 
-    // 0. Se Supabase estiver configurado, grava UMA única vez no Supabase (auth.users + profiles + todos os workspace_members)
+    const workspaceObjects = workspacesBefore.filter((w) => targetWorkspaceIds.includes(w.id));
+
+    // 0. Se Supabase estiver configurado, garante que os workspaces alvo existam no Supabase (evita erro FK) e registra o usuário
     if (SupabaseService.isConfigured()) {
+      for (const wsObj of workspaceObjects) {
+        try {
+          await SupabaseService.createWorkspace(wsObj);
+        } catch {}
+      }
       try {
         const sbResult = await SupabaseService.registerUser({
           name: cleanName,
@@ -2721,7 +2753,15 @@ export const StorageService = {
           avatarColor: chosenColor,
         });
         if (sbResult.success && sbResult.user) {
-          newUser = { ...newUser, ...sbResult.user, id: sbResult.user.id };
+          newUser = {
+            ...newUser,
+            ...sbResult.user,
+            id: sbResult.user.id,
+            companyId: sbResult.user.companyId || assignedCompanyId,
+            tenantId: sbResult.user.tenantId || assignedCompanyId,
+            workspaceId: targetWorkspaceIds[0],
+            workspaceIds: targetWorkspaceIds,
+          };
         }
       } catch (sbErr) {
         console.warn('[OperaTask] Supabase registration notice:', sbErr);
@@ -2731,7 +2771,6 @@ export const StorageService = {
     // 1. Grava no servidor central via POST /api/auth/register enviando os objetos completos dos workspaces selecionados
     if (typeof window !== 'undefined') {
       try {
-        const workspaceObjects = workspacesBefore.filter((w) => targetWorkspaceIds.includes(w.id));
         const resp = await fetch('/api/auth/register', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -2754,7 +2793,16 @@ export const StorageService = {
         if (resp.ok) {
           const resData = await resp.json();
           if (resData.user) {
-            newUser = { ...newUser, ...resData.user, status: 'active', isActive: true };
+            newUser = {
+              ...newUser,
+              ...resData.user,
+              companyId: resData.user.companyId || assignedCompanyId,
+              tenantId: resData.user.tenantId || assignedCompanyId,
+              workspaceId: targetWorkspaceIds[0],
+              workspaceIds: targetWorkspaceIds,
+              status: 'active',
+              isActive: true,
+            };
           }
           if (Array.isArray(resData.users)) {
             this.saveUsers(resData.users, true);
@@ -2765,12 +2813,15 @@ export const StorageService = {
       }
     }
 
-    // 2. Garante persistência local do novo usuário no navegador atual
+    // 2. Garante persistência local do novo usuário com metadados completos no navegador atual
     const freshUsers = this.getUsers();
-    if (!freshUsers.some((u) => u.id === newUser.id)) {
+    const existingIdx = freshUsers.findIndex((u) => u.id === newUser.id);
+    if (existingIdx !== -1) {
+      freshUsers[existingIdx] = { ...freshUsers[existingIdx], ...newUser };
+    } else {
       freshUsers.push(newUser);
-      this.saveUsers(freshUsers, true);
     }
+    this.saveUsers(freshUsers, true);
 
     // 3. Reconcilia workspaces locais + snapshot pré-rede por ID para jamais perder nenhum workspace criado
     const workspacesAfter = this.getWorkspaces();
@@ -2829,7 +2880,7 @@ export const StorageService = {
 
     if (SupabaseService.isConfigured()) {
       for (const wsId of targetWorkspaceIds) {
-        SupabaseService.upsertWorkspaceMember(wsId, newUser.id, params.role).catch(() => {});
+        await SupabaseService.upsertWorkspaceMember(wsId, newUser.id, params.role).catch(() => {});
       }
     }
 

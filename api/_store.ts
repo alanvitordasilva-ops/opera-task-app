@@ -10,6 +10,10 @@ export interface ServerUser {
   systemRole?: 'master' | 'admin' | 'member';
   isSuperAdmin?: boolean;
   tipo?: string;
+  companyId?: string;
+  tenantId?: string;
+  workspaceId?: string;
+  workspaceIds?: string[];
   status: 'active' | 'pending' | 'inactive';
   isActive: boolean;
   createdAt: string;
