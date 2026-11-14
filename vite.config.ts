@@ -172,7 +172,29 @@ function operataskRealtimePlugin() {
           try {
             const data = JSON.parse(raw.toString());
             if (data.type === 'SYNC_UPDATE' && data.entity) {
-              sharedCache[data.entity] = data.payload;
+              if (data.entity === 'tasks' && Array.isArray(data.payload)) {
+                const action = String(data.actionMeta?.action || '');
+                if (action.includes('delete') || action.includes('reset')) {
+                  sharedCache.tasks = data.payload;
+                } else {
+                  const getTs = (t: any) => {
+                    const ts = Date.parse(t?.updatedAt || t?.createdAt || '');
+                    return Number.isNaN(ts) ? 0 : ts;
+                  };
+                  const taskMap = new Map<string, any>();
+                  (sharedCache.tasks || []).forEach((t: any) => t?.id && taskMap.set(t.id, t));
+                  data.payload.forEach((t: any) => {
+                    if (!t?.id) return;
+                    const prev = taskMap.get(t.id);
+                    if (!prev || getTs(t) >= getTs(prev)) {
+                      taskMap.set(t.id, prev ? { ...prev, ...t } : t);
+                    }
+                  });
+                  sharedCache.tasks = Array.from(taskMap.values());
+                }
+              } else {
+                sharedCache[data.entity] = data.payload;
+              }
               writeDb(sharedCache);
               broadcastWs(data, ws);
             } else if (data.type === 'PING') {
@@ -251,8 +273,45 @@ function operataskRealtimePlugin() {
                     : mergedWs;
                 }
               }
-              if (Array.isArray(body.projects)) sharedCache.projects = body.projects;
-              if (Array.isArray(body.tasks)) sharedCache.tasks = body.tasks;
+              if (Array.isArray(body.projects)) {
+                if (body.replaceAll) {
+                  sharedCache.projects = body.projects;
+                } else {
+                  const projMap = new Map();
+                  (sharedCache.projects || []).forEach((p: any) => p?.id && projMap.set(p.id, p));
+                  body.projects.forEach((p: any) => {
+                    if (p?.id) projMap.set(p.id, { ...projMap.get(p.id), ...p });
+                  });
+                  sharedCache.projects = Array.from(projMap.values());
+                }
+              }
+              const deletedSet = new Set<string>(
+                Array.isArray(body.deletedTaskIds) ? body.deletedTaskIds.map((id: any) => String(id)) : []
+              );
+              if (Array.isArray(body.tasks)) {
+                if (body.replaceAll) {
+                  sharedCache.tasks = body.tasks.filter((t: any) => t?.id && !deletedSet.has(t.id));
+                } else {
+                  const getTs = (t: any) => {
+                    const ts = Date.parse(t?.updatedAt || t?.createdAt || '');
+                    return Number.isNaN(ts) ? 0 : ts;
+                  };
+                  const taskMap = new Map();
+                  (sharedCache.tasks || []).forEach((t: any) => {
+                    if (t?.id && !deletedSet.has(t.id)) taskMap.set(t.id, t);
+                  });
+                  body.tasks.forEach((t: any) => {
+                    if (!t?.id || deletedSet.has(t.id)) return;
+                    const prev = taskMap.get(t.id);
+                    if (!prev || getTs(t) >= getTs(prev)) {
+                      taskMap.set(t.id, prev ? { ...prev, ...t } : t);
+                    }
+                  });
+                  sharedCache.tasks = Array.from(taskMap.values());
+                }
+              } else if (deletedSet.size > 0) {
+                sharedCache.tasks = (sharedCache.tasks || []).filter((t: any) => t?.id && !deletedSet.has(t.id));
+              }
               if (Array.isArray(body.tags)) sharedCache.tags = body.tags;
               if (Array.isArray(body.activities)) sharedCache.activities = body.activities;
               if (Array.isArray(body.fichas_tecnicas)) sharedCache.fichas_tecnicas = body.fichas_tecnicas;
@@ -260,7 +319,12 @@ function operataskRealtimePlugin() {
               if (Array.isArray(body.clients)) sharedCache.clients = body.clients;
 
               writeDb(sharedCache);
-              broadcastWs({ type: 'INITIAL_STATE', payload: sharedCache });
+              broadcastWs({
+                type: 'INITIAL_STATE',
+                payload: sharedCache,
+                clientId: body.clientId || undefined,
+                actionMeta: deletedSet.size > 0 ? { action: 'delete_task' } : undefined,
+              });
             }
             res.end(JSON.stringify({ status: 'ok', timestamp: new Date().toISOString() }));
             return;

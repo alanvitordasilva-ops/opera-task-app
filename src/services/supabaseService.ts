@@ -1259,38 +1259,12 @@ export class SupabaseService {
 
       // 3. Tarefas / Cards (Grava em cards e tasks)
       if (data.tasks.length > 0) {
-        const cardsPayload = data.tasks.map((t) => ({
-          id: t.id,
-          workspace_id: t.workspaceId,
-          project_id: t.projectId,
-          column_id: t.columnId,
-          title: t.title,
-          description: t.description || '',
-          priority: t.priority,
-          assignee_ids: t.assigneeIds || [],
-          due_date: t.dueDate,
-          tags: t.tags || [],
-          checklist: t.checklist || [],
-          comments: t.comments || [],
-          activities: t.activities || [],
-          attachments: t.attachments || [],
-          ficha_tecnica: t.fichaTecnica || null,
-          production_records: t.productionRecords || [],
-          frame_color: t.frameColor || null,
-          is_completed: Boolean(t.isCompleted),
-          completed_at: t.completedAt || null,
-          is_archived: Boolean(t.isArchived),
-          archived_at: t.archivedAt || null,
-          order_index: t.order || 0,
-          created_at: t.createdAt,
-          updated_at: t.updatedAt || new Date().toISOString(),
-        }));
-
+        const cardsPayload = data.tasks.map((t) => this.mapTaskToRow(t));
         try {
-          await client.from('cards').upsert(cardsPayload);
+          await this.safeUpsertCards('cards', cardsPayload);
         } catch {}
         try {
-          await client.from('tasks').upsert(cardsPayload);
+          await this.safeUpsertCards('tasks', cardsPayload);
         } catch {}
       }
 
@@ -1311,6 +1285,48 @@ export class SupabaseService {
       console.error('Falha geral na sincronização com Supabase:', err);
       return { success: false, error: err.message };
     }
+  }
+
+  private static extractUnknownColumn(err: any): string | null {
+    const msg = String(err?.message || err?.details || '');
+    const m1 = msg.match(/column\s+["']?([a-zA-Z0-9_]+)["']?\s+(?:of relation|does not exist)/i);
+    if (m1?.[1]) return m1[1];
+    const m2 = msg.match(/Could not find the ['"]([a-zA-Z0-9_]+)['"] column/i);
+    if (m2?.[1]) return m2[1];
+    return null;
+  }
+
+  private static async safeUpsertCards(
+    table: 'cards' | 'tasks',
+    rows: any[],
+    returningSingle = false
+  ): Promise<{ data: any; error: any }> {
+    const client = this.getClient();
+    if (!client) return { data: null, error: { message: 'Supabase não configurado' } };
+
+    let currentRows = rows.map((r) => ({ ...r }));
+    const optionalCols = ['frame_color', 'ficha_tecnica', 'production_records', 'archived_at', 'completed_at', 'order_index', 'activities'];
+
+    for (let attempt = 0; attempt < optionalCols.length + 2; attempt++) {
+      const payload = returningSingle ? currentRows[0] : currentRows;
+      const query = returningSingle
+        ? client.from(table).upsert(payload).select().maybeSingle()
+        : client.from(table).upsert(payload);
+      const { data, error } = await query;
+      if (!error) return { data, error: null };
+
+      const badCol = this.extractUnknownColumn(error);
+      if (badCol && currentRows.some((r) => badCol in r)) {
+        currentRows = currentRows.map((r) => {
+          const clone = { ...r };
+          delete clone[badCol];
+          return clone;
+        });
+        continue;
+      }
+      return { data, error };
+    }
+    return { data: null, error: { message: 'Falha ao persistir card no Supabase.' } };
   }
 
   // ==========================================================================
@@ -1408,6 +1424,16 @@ export class SupabaseService {
 
       let { data, error } = await query;
 
+      // Se der erro em order_index, tenta sem ordenação específica
+      if (error && error.message?.includes('order_index')) {
+        let retryQ = client.from('cards').select('*');
+        if (workspaceId) retryQ = retryQ.eq('workspace_id', workspaceId);
+        if (projectId && projectId !== 'all') retryQ = retryQ.eq('project_id', projectId);
+        const retryRes = await retryQ;
+        data = retryRes.data;
+        error = retryRes.error;
+      }
+
       // Se a tabela 'cards' não existir ou der erro de tabela, tenta a tabela 'tasks'
       if (error && (error.code === '42P01' || error.message?.includes('does not exist'))) {
         let taskQuery = client.from('tasks').select('*');
@@ -1448,17 +1474,17 @@ export class SupabaseService {
     try {
       const row = this.mapTaskToRow(task);
 
-      // Upsert na tabela 'cards'
-      let { data, error } = await client.from('cards').upsert(row).select().maybeSingle();
+      // Upsert resiliente na tabela 'cards'
+      let { data, error } = await this.safeUpsertCards('cards', [row], true);
 
       // Fallback para 'tasks' se 'cards' não existir
       if (error && (error.code === '42P01' || error.message?.includes('does not exist'))) {
-        const fallback = await client.from('tasks').upsert(row).select().maybeSingle();
+        const fallback = await this.safeUpsertCards('tasks', [row], true);
         data = fallback.data;
         error = fallback.error;
-      } else {
+      } else if (!error) {
         // Tenta espelhar de forma silenciosa para 'tasks'
-        Promise.resolve(client.from('tasks').upsert(row)).catch(() => {});
+        this.safeUpsertCards('tasks', [row], false).catch(() => {});
       }
 
       if (error) {
@@ -1487,24 +1513,38 @@ export class SupabaseService {
       const rowUpdates = this.mapTaskToRow(updates);
       delete rowUpdates.id; // Garante que o ID não seja alterado
 
-      let { data, error } = await client
-        .from('cards')
-        .update(rowUpdates)
-        .eq('id', taskId)
-        .select()
-        .maybeSingle();
+      const runSafeUpdate = async (table: 'cards' | 'tasks'): Promise<{ data: any; error: any }> => {
+        let currentUpdates = { ...rowUpdates };
+        for (let attempt = 0; attempt < 8; attempt++) {
+          if (Object.keys(currentUpdates).length === 0) {
+            return { data: null, error: null };
+          }
+          const res = await client
+            .from(table)
+            .update(currentUpdates)
+            .eq('id', taskId)
+            .select()
+            .maybeSingle();
+          if (!res.error) return res;
+
+          const badCol = this.extractUnknownColumn(res.error);
+          if (badCol && badCol in currentUpdates) {
+            delete currentUpdates[badCol];
+            continue;
+          }
+          return res;
+        }
+        return { data: null, error: { message: 'Falha ao atualizar card no Supabase.' } };
+      };
+
+      let { data, error } = await runSafeUpdate('cards');
 
       if (error && (error.code === '42P01' || error.message?.includes('does not exist'))) {
-        const fallback = await client
-          .from('tasks')
-          .update(rowUpdates)
-          .eq('id', taskId)
-          .select()
-          .maybeSingle();
+        const fallback = await runSafeUpdate('tasks');
         data = fallback.data;
         error = fallback.error;
-      } else {
-        Promise.resolve(client.from('tasks').update(rowUpdates).eq('id', taskId)).catch(() => {});
+      } else if (!error) {
+        runSafeUpdate('tasks').catch(() => {});
       }
 
       if (error) {

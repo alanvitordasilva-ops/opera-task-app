@@ -181,8 +181,42 @@ export const TaskModal: React.FC<TaskModalProps> = ({
     : false;
   const isCompletedBlocked = isTaskCompleted && !canModifyCompleted;
 
+  const autoSaveTimerRef = useRef<any>(null);
+  const hydratedKeyRef = useRef<string | null>(null);
+  const isHydratingRef = useRef(false);
+  const hasDirtyChangesRef = useRef(false);
+
+  const projectsRef = useRef(projects);
+  projectsRef.current = projects;
+  const currentUserRef = useRef(currentUser);
+  currentUserRef.current = currentUser;
+  const defaultColRef = useRef(defaultColumnId);
+  defaultColRef.current = defaultColumnId;
+  const defaultProjRef = useRef(defaultProjectId);
+  defaultProjRef.current = defaultProjectId;
+
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+        autoSaveTimerRef.current = null;
+      }
+      hydratedKeyRef.current = null;
+      hasDirtyChangesRef.current = false;
+      isHydratingRef.current = false;
+      return;
+    }
+
+    const nextKey = taskToEdit
+      ? `edit:${taskToEdit.id}`
+      : `new:${defaultProjRef.current || ''}:${defaultColRef.current || ''}`;
+
+    // Só hidrata ao abrir o modal ou trocar de card; nunca sobrescreve edição em curso por re-renders externos
+    if (hydratedKeyRef.current === nextKey) return;
+    hydratedKeyRef.current = nextKey;
+    hasDirtyChangesRef.current = false;
+    isHydratingRef.current = true;
+
     if (taskToEdit) {
       setTitle(taskToEdit.title);
       setDescription(taskToEdit.description || '');
@@ -211,18 +245,21 @@ export const TaskModal: React.FC<TaskModalProps> = ({
       setFichaTecnica(taskToEdit.fichaTecnica || null);
       setProductionRecords(taskToEdit.productionRecords || []);
     } else {
-      const activeProj = defaultProjectId && defaultProjectId !== 'all'
-        ? projects.find((p) => p.id === defaultProjectId) || projects[0]
-        : projects[0];
+      const latestProjects = projectsRef.current;
+      const defProj = defaultProjRef.current;
+      const defCol = defaultColRef.current;
+      const activeProj = defProj && defProj !== 'all'
+        ? latestProjects.find((p) => p.id === defProj) || latestProjects[0]
+        : latestProjects[0];
 
       setTitle('');
       setDescription('');
       setPriority('none');
       setProjectId(activeProj?.id || '');
-      setColumnId(defaultColumnId || activeProj?.columns[0]?.id || '');
+      setColumnId(defCol || activeProj?.columns[0]?.id || '');
       setDueDateDate('');
       setDueDateTime('');
-      setAssigneeIds([currentUser.id]);
+      setAssigneeIds([currentUserRef.current.id]);
       setSelectedTagIds([]);
       setChecklist([]);
       setComments([]);
@@ -234,61 +271,65 @@ export const TaskModal: React.FC<TaskModalProps> = ({
     setIsCreatingTag(false);
     setShowMentionMenu(false);
     setNoFichaAlert(null);
-  }, [taskToEdit, isOpen, defaultColumnId, defaultProjectId, projects, currentUser]);
 
-  // Salvamento Automático em tempo real para cards já existentes (com debounce suave para digitação)
-  const autoSaveTimerRef = useRef<any>(null);
-  const isLoadedRef = useRef(false);
-
-  useEffect(() => {
-    if (isOpen) {
-      // Pequeno atraso para não disparar auto-save na hidratação inicial do modal
-      const t = setTimeout(() => {
-        isLoadedRef.current = true;
-      }, 300);
-      return () => {
-        clearTimeout(t);
-        isLoadedRef.current = false;
-      };
-    }
+    const releaseTimer = setTimeout(() => {
+      isHydratingRef.current = false;
+    }, 0);
+    return () => clearTimeout(releaseTimer);
   }, [isOpen, taskToEdit?.id]);
 
-  useEffect(() => {
-    if (!isOpen || !taskToEdit || !isLoadedRef.current || !title.trim()) return;
+  const buildPayload = (isExisting: boolean): Partial<Task> & { id?: string } => {
+    const selectedTags = tags.filter((t) => selectedTagIds.includes(t.id));
+    const effectiveProjectId =
+      isCompletedBlocked && taskToEdit
+        ? taskToEdit.projectId
+        : projectId || projects[0]?.id || '';
+    const effectiveProject =
+      projects.find((p) => p.id === effectiveProjectId) || currentProject;
+    const effectiveColumnId =
+      isCompletedBlocked && taskToEdit
+        ? taskToEdit.columnId
+        : columnId || effectiveProject?.columns[0]?.id || '';
+    const targetCol = effectiveProject?.columns.find((c) => c.id === effectiveColumnId);
+    const isCompleted = targetCol?.isCompletedColumn || false;
+    const finalDueDate = computeFinalDueDate(dueDateDate, dueDateTime);
 
+    return {
+      ...(isExisting && taskToEdit ? { id: taskToEdit.id } : {}),
+      title: title.trim(),
+      description: description.trim(),
+      priority,
+      projectId: effectiveProjectId,
+      columnId: effectiveColumnId,
+      dueDate: finalDueDate,
+      assigneeIds,
+      tags: selectedTags,
+      checklist,
+      attachments,
+      comments,
+      isCompleted,
+      frameColor: frameColor || undefined,
+      fichaTecnica: fichaTecnica || undefined,
+      productionRecords: productionRecords || undefined,
+    };
+  };
+
+  useEffect(() => {
+    if (!isOpen || !taskToEdit || isHydratingRef.current || !title.trim()) return;
+
+    hasDirtyChangesRef.current = true;
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
 
     autoSaveTimerRef.current = setTimeout(() => {
-      const selectedTags = tags.filter((t) => selectedTagIds.includes(t.id));
-      const targetCol = currentProject?.columns.find((c) => c.id === columnId);
-      const isCompleted = targetCol?.isCompletedColumn || false;
-      const finalDueDate = computeFinalDueDate(dueDateDate, dueDateTime);
-
-      const effectiveProjectId = isCompletedBlocked && taskToEdit ? taskToEdit.projectId : (projectId || projects[0]?.id || '');
-      const effectiveColumnId = isCompletedBlocked && taskToEdit ? taskToEdit.columnId : (columnId || currentProject?.columns[0]?.id || '');
-
-      onSaveTask({
-        id: taskToEdit.id,
-        title: title.trim(),
-        description: description.trim(),
-        priority,
-        projectId: effectiveProjectId,
-        columnId: effectiveColumnId,
-        dueDate: finalDueDate,
-        assigneeIds,
-        tags: selectedTags,
-        checklist,
-        attachments,
-        comments,
-        isCompleted,
-        frameColor: frameColor || undefined,
-        fichaTecnica: fichaTecnica || undefined,
-        productionRecords: productionRecords || undefined,
-      });
-    }, 450);
+      autoSaveTimerRef.current = null;
+      hasDirtyChangesRef.current = false;
+      onSaveTask(buildPayload(true));
+    }, 350);
 
     return () => {
-      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+      }
     };
   }, [
     title,
@@ -308,38 +349,31 @@ export const TaskModal: React.FC<TaskModalProps> = ({
     productionRecords,
   ]);
 
+  const handleCloseWithFlush = () => {
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+    if (taskToEdit && hasDirtyChangesRef.current && title.trim()) {
+      hasDirtyChangesRef.current = false;
+      onSaveTask(buildPayload(true));
+    }
+    onClose();
+  };
+
   if (!isOpen) return null;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) return;
 
-    const selectedTags = tags.filter((t) => selectedTagIds.includes(t.id));
-    const effectiveProjectId = isCompletedBlocked && taskToEdit ? taskToEdit.projectId : (projectId || projects[0]?.id || '');
-    const effectiveColumnId = isCompletedBlocked && taskToEdit ? taskToEdit.columnId : (columnId || currentProject?.columns[0]?.id || '');
-    const targetCol = currentProject?.columns.find((c) => c.id === effectiveColumnId);
-    const isCompleted = targetCol?.isCompletedColumn || false;
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+    hasDirtyChangesRef.current = false;
 
-    const finalDueDate = computeFinalDueDate(dueDateDate, dueDateTime);
-
-    onSaveTask({
-      ...(taskToEdit ? { id: taskToEdit.id } : {}),
-      title: title.trim(),
-      description: description.trim(),
-      priority,
-      projectId: effectiveProjectId,
-      columnId: effectiveColumnId,
-      dueDate: finalDueDate,
-      assigneeIds,
-      tags: selectedTags,
-      checklist,
-      attachments,
-      comments,
-      isCompleted,
-      frameColor: frameColor || undefined,
-      fichaTecnica: fichaTecnica || undefined,
-      productionRecords: productionRecords || undefined,
-    });
+    onSaveTask(buildPayload(Boolean(taskToEdit)));
     onClose();
   };
 
@@ -720,7 +754,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
             )}
             <button
               type="button"
-              onClick={onClose}
+              onClick={handleCloseWithFlush}
               className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"
             >
               <X className="w-5 h-5" />
@@ -1685,7 +1719,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
               )}
               <button
                 type="button"
-                onClick={onClose}
+                onClick={handleCloseWithFlush}
                 className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl"
               >
                 {taskToEdit ? 'Fechar' : 'Cancelar'}

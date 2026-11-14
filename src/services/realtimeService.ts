@@ -9,6 +9,7 @@
 
 import { SupabaseService } from './supabaseService.ts';
 import { StorageService, isServerApiAvailable, setServerApiAvailable } from './storage.ts';
+import { mergeTaskLists, getDeletedTaskIds, markTaskDeleted } from '../utils/helpers.ts';
 
 export type SyncEntity =
   | 'tasks'
@@ -52,6 +53,10 @@ class RealtimeServiceImpl {
 
   constructor() {
     this.clientId = `client_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  }
+
+  public getClientId(): string {
+    return this.clientId;
   }
 
   public init() {
@@ -322,14 +327,12 @@ class RealtimeServiceImpl {
 
       let nextTasks: any[];
       if (eventType === 'DELETE') {
+        markTaskDeleted(mapped.id);
         nextTasks = currentTasks.filter((t: any) => t.id !== mapped.id);
       } else {
-        const exists = currentTasks.some((t: any) => t.id === mapped.id);
-        if (exists) {
-          nextTasks = currentTasks.map((t: any) => (t.id === mapped.id ? { ...t, ...mapped } : t));
-        } else {
-          nextTasks = [mapped, ...currentTasks];
-        }
+        const deletedIds = getDeletedTaskIds();
+        if (deletedIds.includes(mapped.id)) return;
+        nextTasks = mergeTaskLists(currentTasks, [mapped], deletedIds);
       }
       this.notifyEntityListeners('tasks', nextTasks, {
         action: `supabase_${eventType.toLowerCase()}`,
@@ -383,7 +386,11 @@ class RealtimeServiceImpl {
 
     if (msg.type === 'INITIAL_STATE' && msg.payload) {
       Object.entries(msg.payload).forEach(([entity, data]) => {
-        this.notifyEntityListeners(entity as SyncEntity, data, { action: 'initial_sync' });
+        const meta =
+          entity === 'tasks' && msg.actionMeta?.action
+            ? msg.actionMeta
+            : { action: 'initial_sync' };
+        this.notifyEntityListeners(entity as SyncEntity, data, meta);
       });
       return;
     }
@@ -411,7 +418,25 @@ class RealtimeServiceImpl {
     const isDestructiveAction =
       action.includes('delete') || action.includes('reset');
 
+    if (entity === 'tasks' && isDestructiveAction && meta?.targetId) {
+      markTaskDeleted(meta.targetId);
+    }
+
     if (
+      storageKey &&
+      typeof window !== 'undefined' &&
+      Array.isArray(data) &&
+      entity === 'tasks' &&
+      !isDestructiveAction
+    ) {
+      try {
+        const existingRaw = localStorage.getItem(storageKey);
+        const existingArr = existingRaw ? JSON.parse(existingRaw) : [];
+        if (Array.isArray(existingArr)) {
+          resolvedData = mergeTaskLists(existingArr, data, getDeletedTaskIds());
+        }
+      } catch {}
+    } else if (
       storageKey &&
       typeof window !== 'undefined' &&
       Array.isArray(data) &&

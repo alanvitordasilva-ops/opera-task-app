@@ -799,3 +799,99 @@ import { FLAT_COLOR_LIST } from './colors.ts';
 
 export const COLOR_PALETTE = FLAT_COLOR_LIST;
 
+export function buildUniqueTaskId(prefix: string = 'task'): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+}
+
+/**
+ * Mescla duas listas de cards/tarefas de forma não-destrutiva:
+ * - Respeita tombstones de exclusão explícita (`deletedTaskIds`)
+ * - Preserva cards locais que ainda não subiram para o servidor/nuvem
+ * - Entre versões com o mesmo ID, mantém a versão com `updatedAt` mais recente
+ */
+export function mergeTaskLists(
+  baseTasks: Task[],
+  incomingTasks: Task[],
+  deletedTaskIds?: Iterable<string> | null
+): Task[] {
+  const deletedSet = new Set<string>(deletedTaskIds ? Array.from(deletedTaskIds) : []);
+  const map = new Map<string, Task>();
+  const orderKeys: string[] = [];
+
+  const getTimestamp = (t?: Partial<Task>): number => {
+    if (!t) return 0;
+    const raw = t.updatedAt || t.createdAt;
+    if (!raw) return 0;
+    const parsed = Date.parse(raw);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  };
+
+  if (Array.isArray(baseTasks)) {
+    for (const task of baseTasks) {
+      if (!task || !task.id || deletedSet.has(task.id)) continue;
+      if (!map.has(task.id)) orderKeys.push(task.id);
+      map.set(task.id, task);
+    }
+  }
+
+  if (Array.isArray(incomingTasks)) {
+    for (const incoming of incomingTasks) {
+      if (!incoming || !incoming.id || deletedSet.has(incoming.id)) continue;
+      const existing = map.get(incoming.id);
+      if (!existing) {
+        map.set(incoming.id, incoming);
+        orderKeys.unshift(incoming.id);
+      } else {
+        const existingTs = getTimestamp(existing);
+        const incomingTs = getTimestamp(incoming);
+        if (incomingTs >= existingTs) {
+          // Mantém campos locais se o remoto vier parcial (undefined), mas prioriza o registro mais novo
+          map.set(incoming.id, { ...existing, ...incoming });
+        }
+      }
+    }
+  }
+
+  const seen = new Set<string>();
+  const result: Task[] = [];
+  for (const id of orderKeys) {
+    if (seen.has(id) || deletedSet.has(id)) continue;
+    const item = map.get(id);
+    if (item) {
+      seen.add(id);
+      result.push(item);
+    }
+  }
+  return result;
+}
+
+const DELETED_TASKS_STORAGE_KEY = 'operatask_deleted_task_ids_v1';
+
+export function getDeletedTaskIds(): string[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(DELETED_TASKS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((id) => typeof id === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+export function markTaskDeleted(taskId: string): void {
+  if (typeof window === 'undefined' || !taskId) return;
+  try {
+    const existing = getDeletedTaskIds().filter((id) => id !== taskId);
+    const next = [taskId, ...existing].slice(0, 200);
+    localStorage.setItem(DELETED_TASKS_STORAGE_KEY, JSON.stringify(next));
+  } catch {}
+}
+
+export function clearTaskDeleted(taskId: string): void {
+  if (typeof window === 'undefined' || !taskId) return;
+  try {
+    const next = getDeletedTaskIds().filter((id) => id !== taskId);
+    localStorage.setItem(DELETED_TASKS_STORAGE_KEY, JSON.stringify(next));
+  } catch {}
+}

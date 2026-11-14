@@ -31,6 +31,9 @@ import {
   isTaskInDoneColumn,
   canRegisterUser,
   sortWorkspacesByOrder,
+  mergeTaskLists,
+  getDeletedTaskIds,
+  buildUniqueTaskId,
 } from './utils/helpers.ts';
 import { SplashScreen } from './components/SplashScreen.tsx';
 import { RegisterUserModal } from './components/RegisterUserModal.tsx';
@@ -338,6 +341,10 @@ export default function App() {
 
   // Modais
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
+  const isTaskModalOpenRef = useRef(isTaskModalOpen);
+  isTaskModalOpenRef.current = isTaskModalOpen;
+  const tasksRef = useRef(tasks);
+  tasksRef.current = tasks;
   const [taskToEdit, setTaskToEdit] = useState<Task | null>(null);
   const [defaultColumnId, setDefaultColumnId] = useState<string | undefined>(undefined);
 
@@ -449,8 +456,8 @@ export default function App() {
 
         try {
           const cloudRes = await StorageService.fetchTasksCloud(liveWs.id);
-          if (cloudRes.success && cloudRes.tasks.length > 0) {
-            setTasks(cloudRes.tasks);
+          if (cloudRes.success && Array.isArray(cloudRes.tasks)) {
+            setTasks((prev) => mergeTaskLists(prev, cloudRes.tasks, getDeletedTaskIds()));
           }
         } catch (e) {
           console.warn('[OperaTask] Aviso ao carregar tarefas do Supabase:', e);
@@ -478,9 +485,7 @@ export default function App() {
       setWorkspaces(freshWorkspaces);
       setProjects(freshProjects);
       setClients(freshClients);
-      if (!SupabaseService.isConfigured()) {
-        setTasks(freshTasks);
-      }
+      setTasks((prev) => mergeTaskLists(prev, freshTasks, getDeletedTaskIds()));
       setTags(freshTags);
 
       // Nunca sobrescreve o usuário ou workspace antes da autenticação ou com referência desatualizada de closure
@@ -529,7 +534,7 @@ export default function App() {
         });
         StorageService.fetchTasksCloud(currentWorkspace.id).then((res) => {
           if (res.success && Array.isArray(res.tasks)) {
-            setTasks(res.tasks);
+            setTasks((prev) => mergeTaskLists(prev, res.tasks, getDeletedTaskIds()));
           }
         });
       }
@@ -580,7 +585,7 @@ export default function App() {
   }, [projects]);
 
   useEffect(() => {
-    StorageService.saveTasks(tasks);
+    StorageService.saveTasks(tasks, false, { skipCloudPush: true });
   }, [tasks]);
 
   useEffect(() => {
@@ -599,15 +604,24 @@ export default function App() {
   useEffect(() => {
     RealtimeService.init();
 
-    // Sincronização de Tarefas (Cards)
+    // Sincronização de Tarefas (Cards) com mesclagem não-destrutiva
     const unsubTasks = RealtimeService.subscribe('tasks', (incomingTasks: Task[], meta) => {
       if (Array.isArray(incomingTasks)) {
+        const action = String(meta?.action || '');
+        const isDestructive = action.includes('delete') || action.includes('reset');
+        const deletedIds = getDeletedTaskIds();
+
         setTasks((prev) => {
-          if (JSON.stringify(prev) === JSON.stringify(incomingTasks)) return prev;
-          return incomingTasks;
+          const next = isDestructive
+            ? incomingTasks.filter((t) => t && t.id && !deletedIds.includes(t.id))
+            : mergeTaskLists(prev, incomingTasks, deletedIds);
+          if (JSON.stringify(prev) === JSON.stringify(next)) return prev;
+          return next;
         });
+
         setTaskToEdit((currentOpen) => {
           if (!currentOpen) return null;
+          if (isTaskModalOpenRef.current) return currentOpen;
           const fresh = incomingTasks.find((t) => t.id === currentOpen.id);
           return fresh || currentOpen;
         });
@@ -1010,13 +1024,23 @@ export default function App() {
   // Ações de Tarefa (Conectadas Assincronamente à Nuvem do Supabase)
   const handleSaveTask = (taskData: Partial<Task> & { id?: string }) => {
     const projId = taskData.projectId || activeProject?.id || workspaceProjects[0]?.id || 'proj-1';
-    const targetProject = projects.find((p) => p.id === projId);
+    const targetProject =
+      projects.find((p) => p.id === projId) ||
+      workspaceProjects.find((p) => p.id === projId);
+
+    // Garante que o projeto alvo exista no estado persistido caso tenha vindo do fallback
+    if (targetProject && !projects.some((p) => p.id === targetProject.id)) {
+      setProjects((prev) => (prev.some((p) => p.id === targetProject.id) ? prev : [...prev, targetProject]));
+    }
+
     const colId = taskData.columnId || targetProject?.columns[0]?.id || 'col-1';
     const isCompleted = targetProject?.columns.find((c) => c.id === colId)?.isCompletedColumn || false;
 
     if (taskData.id) {
       // Edição de tarefa existente (U do CRUD Supabase)
-      const existingTask = tasks.find((t) => t.id === taskData.id);
+      const existingTask =
+        tasksRef.current.find((t) => t.id === taskData.id) ||
+        tasks.find((t) => t.id === taskData.id);
       if (existingTask) {
         const wasDone = isTaskInDoneColumn(existingTask, targetProject?.columns);
         if (wasDone && taskData.columnId && taskData.columnId !== existingTask.columnId) {
@@ -1032,14 +1056,23 @@ export default function App() {
 
       const updatedFields: Partial<Task> = {
         ...taskData,
+        projectId: projId,
         columnId: colId,
         isCompleted,
         completedAt: isCompleted && !existingTask?.isCompleted ? new Date().toISOString() : existingTask?.completedAt,
         updatedAt: new Date().toISOString(),
       };
 
-      setTasks((prev) =>
-        prev.map((t) => {
+      const mergedSnapshot: Task | undefined = existingTask
+        ? { ...existingTask, ...updatedFields }
+        : undefined;
+
+      setTasks((prev) => {
+        const exists = prev.some((t) => t.id === taskData.id);
+        if (!exists && mergedSnapshot) {
+          return [mergedSnapshot, ...prev];
+        }
+        return prev.map((t) => {
           if (t.id !== taskData.id) return t;
 
           // Detectar novos responsáveis para notificação
@@ -1062,15 +1095,16 @@ export default function App() {
             ...t,
             ...updatedFields,
           };
-        })
-      );
+        });
+      });
 
-      // Persistência assíncrona na nuvem do Supabase
-      StorageService.updateTaskAsync(taskData.id, updatedFields);
-      recordActivity('atualizou os detalhes da tarefa', taskData.title, projId, taskData.id);
+      // Persistência assíncrona na nuvem do Supabase (com fallback upsert caso ainda não exista remotamente)
+      StorageService.updateTaskAsync(taskData.id, updatedFields, mergedSnapshot);
+      recordActivity('atualizou os detalhes da tarefa', taskData.title || existingTask?.title, projId, taskData.id);
     } else {
       // Criação de nova tarefa (C do CRUD Supabase)
-      const newTaskId = `task-${Date.now()}`;
+      const newTaskId = buildUniqueTaskId('task');
+      const nowIso = new Date().toISOString();
       const newTask: Task = {
         id: newTaskId,
         workspaceId: currentWorkspace.id,
@@ -1083,23 +1117,28 @@ export default function App() {
         dueDate: taskData.dueDate || '',
         tags: taskData.tags || [],
         checklist: taskData.checklist || [],
-        comments: [],
+        comments: taskData.comments || [],
         activities: [
           {
-            id: `act-init-${Date.now()}`,
+            id: `act-init-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
             userId: currentUser.id,
             action: `criou a tarefa no projeto ${targetProject?.name || 'Geral'}`,
-            timestamp: new Date().toISOString(),
+            timestamp: nowIso,
           },
         ],
         attachments: taskData.attachments || [],
+        frameColor: taskData.frameColor,
+        fichaTecnica: taskData.fichaTecnica,
+        productionRecords: taskData.productionRecords,
         isCompleted,
-        order: workspaceTasks.filter((t) => t.columnId === colId).length,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
+        order: tasksRef.current.filter(
+          (t) => t.workspaceId === currentWorkspace.id && !t.isArchived && t.columnId === colId
+        ).length,
+        createdAt: nowIso,
+        updatedAt: nowIso,
       };
 
-      setTasks((prev) => [newTask, ...prev]);
+      setTasks((prev) => [newTask, ...prev.filter((t) => t.id !== newTask.id)]);
 
       // Criação assíncrona na nuvem do Supabase
       StorageService.createTaskAsync(newTask);
@@ -1199,52 +1238,75 @@ export default function App() {
       }
     }
 
-    setTasks((prev) => {
-      const updateMap = new Map(updates.map((u) => [u.id, u]));
+    const nowIso = new Date().toISOString();
+    const updateMap = new Map(updates.map((u) => [u.id, u]));
+    const batchUpdates: Array<{
+      id: string;
+      columnId: string;
+      order: number;
+      isCompleted: boolean;
+      completedAt?: string | null;
+      activities: Task['activities'];
+    }> = [];
 
-      return prev.map((t) => {
-        const u = updateMap.get(t.id);
-        if (!u) return t;
+    tasksRef.current.forEach((t) => {
+      const u = updateMap.get(t.id);
+      if (!u) return;
 
-        let isCompleted = t.isCompleted;
-        let completedAt = t.completedAt;
-        let activities = t.activities;
+      let isCompleted = t.isCompleted;
+      let completedAt = t.completedAt;
+      let activities = t.activities || [];
 
-        if (u.columnId !== t.columnId) {
-          const project = projects.find((p) => p.id === t.projectId);
-          const targetCol = project?.columns.find((c) => c.id === u.columnId);
-          isCompleted = targetCol?.isCompletedColumn || false;
-          completedAt = isCompleted && !t.isCompleted ? new Date().toISOString() : t.completedAt;
-          activities = [
-            {
-              id: `act-${Date.now()}`,
-              userId: currentUser.id,
-              action: `moveu para "${targetCol?.title || 'outra coluna'}"`,
-              timestamp: new Date().toISOString(),
-            },
-            ...(t.activities || []),
-          ];
-        }
+      if (u.columnId !== t.columnId) {
+        const project = projects.find((p) => p.id === t.projectId);
+        const targetCol = project?.columns.find((c) => c.id === u.columnId);
+        isCompleted = targetCol?.isCompletedColumn || false;
+        completedAt = isCompleted && !t.isCompleted ? nowIso : t.completedAt;
+        activities = [
+          {
+            id: `act-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
+            userId: currentUser.id,
+            action: `moveu para "${targetCol?.title || 'outra coluna'}"`,
+            timestamp: nowIso,
+          },
+          ...(t.activities || []),
+        ];
+      }
 
-        return {
-          ...t,
-          columnId: u.columnId,
-          order: u.order,
-          isCompleted,
-          completedAt,
-          activities,
-          updatedAt: new Date().toISOString(),
-        };
-      });
-    });
-
-    // Atualização assíncrona de reordenações no Supabase
-    updates.forEach((u) => {
-      StorageService.updateTaskAsync(u.id, {
+      batchUpdates.push({
+        id: t.id,
         columnId: u.columnId,
         order: u.order,
+        isCompleted,
+        completedAt,
+        activities,
       });
     });
+
+    const batchUpdateMap = new Map(batchUpdates.map((b) => [b.id, b]));
+
+    setTasks((prev) =>
+      prev.map((t) => {
+        const b = batchUpdateMap.get(t.id);
+        if (!b) return t;
+        return {
+          ...t,
+          columnId: b.columnId,
+          order: b.order,
+          isCompleted: b.isCompleted,
+          completedAt: b.completedAt,
+          activities: b.activities,
+          updatedAt: nowIso,
+        };
+      })
+    );
+
+    // Atualização em lote única no armazenamento e Supabase
+    StorageService.batchUpdateTasksAsync(
+      batchUpdates.length > 0
+        ? batchUpdates
+        : updates.map((u) => ({ id: u.id, columnId: u.columnId, order: u.order }))
+    );
 
     if (meta && meta.targetColumnId !== meta.prevColumnId) {
       const task = tasks.find((t) => t.id === meta.taskId);
@@ -1331,7 +1393,7 @@ export default function App() {
   };
 
   const handleDuplicateTask = (originalTask: Task) => {
-    const newTaskId = `task-${Date.now()}`;
+    const newTaskId = buildUniqueTaskId('task');
     const targetProject = projects.find((p) => p.id === originalTask.projectId);
 
     // Duplicar checklist com novos IDs

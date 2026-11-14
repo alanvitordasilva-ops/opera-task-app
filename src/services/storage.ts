@@ -24,7 +24,15 @@ import {
 } from '../types/index.ts';
 import { SupabaseService } from './supabaseService.ts';
 import { RealtimeService, SyncEntity } from './realtimeService.ts';
-import { isUserMaster, getUserIdentifiers, sortWorkspacesByOrder } from '../utils/helpers.ts';
+import {
+  isUserMaster,
+  getUserIdentifiers,
+  sortWorkspacesByOrder,
+  mergeTaskLists,
+  getDeletedTaskIds,
+  markTaskDeleted,
+  clearTaskDeleted,
+} from '../utils/helpers.ts';
 
 const STORAGE_KEYS = {
   USERS: 'operatask_clean_v1_users',
@@ -444,7 +452,7 @@ if (typeof window !== 'undefined') {
   });
 }
 
-let debounceTimer: any = null;
+const debounceTimers: Record<string, any> = {};
 let pendingCount = 0;
 
 let _serverApiAvailable: boolean = true;
@@ -457,7 +465,20 @@ export function setServerApiAvailable(val: boolean): void {
   _serverApiAvailable = val;
 }
 
-function handleSaveMutation(entityKey: string, data: any, immediate: boolean = false) {
+interface SaveMutationOptions {
+  action?: string;
+  targetId?: string;
+  replaceAll?: boolean;
+  deletedTaskIds?: string[];
+  skipCloudPush?: boolean;
+}
+
+function handleSaveMutation(
+  entityKey: string,
+  data: any,
+  immediate: boolean = false,
+  options?: SaveMutationOptions
+) {
   pendingCount++;
   const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
 
@@ -473,7 +494,11 @@ function handleSaveMutation(entityKey: string, data: any, immediate: boolean = f
   };
   const entity = keyToEntityMap[entityKey];
   if (entity) {
-    RealtimeService.broadcast(entity, data);
+    RealtimeService.broadcast(
+      entity,
+      data,
+      options?.action ? { action: options.action, targetId: options.targetId } : undefined
+    );
   }
 
   emitSaveStatus({
@@ -487,21 +512,29 @@ function handleSaveMutation(entityKey: string, data: any, immediate: boolean = f
       // 1. Grava no IndexedDB de forma assíncrona para suporte ilimitado
       await writeIndexedDB(entityKey, data);
 
-      // 2. Se estiver online e Supabase habilitado, sincroniza
+      // 2. Se estiver online e Supabase habilitado, sincroniza (exceto quando operação CRUD individual já está persistindo diretamente)
       const currentOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
       const supaConfig = SupabaseService.getConfig();
 
-      if (currentOnline && supaConfig.enabled && supaConfig.url) {
+      if (currentOnline && supaConfig.enabled && supaConfig.url && !options?.skipCloudPush) {
         // Dispara sync em background sem travar
         StorageService.syncWithCloud().catch(() => {});
       }
 
       // 3. Persistência Centralizada e Compartilhada no Servidor (apenas se API estiver disponível)
       if (currentOnline && typeof window !== 'undefined' && entity && isServerApiAvailable()) {
+        const bodyPayload: Record<string, any> = {
+          [entity]: data,
+          clientId: RealtimeService.getClientId(),
+        };
+        if (options?.replaceAll) bodyPayload.replaceAll = true;
+        if (options?.deletedTaskIds && options.deletedTaskIds.length > 0) {
+          bodyPayload.deletedTaskIds = options.deletedTaskIds;
+        }
         fetch('/api/sync/state', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ [entity]: data }),
+          body: JSON.stringify(bodyPayload),
         }).catch((err) => {
           setServerApiAvailable(false);
           console.warn('[OperaTask] Servidor de sincronização indisponível:', err);
@@ -528,11 +561,17 @@ function handleSaveMutation(entityKey: string, data: any, immediate: boolean = f
   };
 
   if (immediate) {
-    if (debounceTimer) clearTimeout(debounceTimer);
+    if (debounceTimers[entityKey]) {
+      clearTimeout(debounceTimers[entityKey]);
+      delete debounceTimers[entityKey];
+    }
     runPersistence();
   } else {
-    if (debounceTimer) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(runPersistence, 300);
+    if (debounceTimers[entityKey]) clearTimeout(debounceTimers[entityKey]);
+    debounceTimers[entityKey] = setTimeout(() => {
+      delete debounceTimers[entityKey];
+      runPersistence();
+    }, 300);
   }
 }
 
@@ -691,12 +730,7 @@ export const StorageService = {
           }
           if (Array.isArray(data.tasks) && data.tasks.length > 0) {
             const currentTasks = this.getTasks();
-            const mergedTasks = [...data.tasks];
-            currentTasks.forEach((ct) => {
-              if (!mergedTasks.some((mt) => mt.id === ct.id)) {
-                mergedTasks.push(ct);
-              }
-            });
+            const mergedTasks = mergeTaskLists(currentTasks, data.tasks, getDeletedTaskIds());
             localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(mergedTasks));
           }
           if (Array.isArray(data.tags)) {
@@ -2336,30 +2370,19 @@ export const StorageService = {
     try {
       const data = localStorage.getItem(STORAGE_KEYS.TASKS);
       if (!data) {
-        this.saveTasks(DEFAULT_TASKS);
+        localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(DEFAULT_TASKS));
         return DEFAULT_TASKS;
       }
       const parsed: Task[] = JSON.parse(data);
-      let needsResave = false;
-      const normalized = parsed.map((t) => {
-        if (t.dueDate && !t.dueDate.includes('T')) {
-          needsResave = true;
-          return { ...t, dueDate: `${t.dueDate}T23:59` };
-        }
-        return t;
-      });
-      if (needsResave) {
-        this.saveTasks(normalized);
-      }
-      return normalized;
+      return Array.isArray(parsed) ? parsed : DEFAULT_TASKS;
     } catch {
       return DEFAULT_TASKS;
     }
   },
 
-  saveTasks(tasks: Task[], immediate = false): void {
+  saveTasks(tasks: Task[], immediate = false, options?: SaveMutationOptions): void {
     localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(tasks));
-    handleSaveMutation(STORAGE_KEYS.TASKS, tasks, immediate);
+    handleSaveMutation(STORAGE_KEYS.TASKS, tasks, immediate, options);
   },
 
   // ========================================================================
@@ -2368,23 +2391,17 @@ export const StorageService = {
 
   /**
    * Buscar tarefas da nuvem do Supabase de forma assíncrona com fallback local
+   * Sem apagar cards locais mais recentes ou ainda não sincronizados.
    */
   async fetchTasksCloud(workspaceId?: string, projectId?: string): Promise<{ success: boolean; tasks: Task[]; fromCloud: boolean }> {
     if (SupabaseService.isConfigured()) {
       try {
         const res = await SupabaseService.fetchTasks(workspaceId, projectId);
         if (res.success && Array.isArray(res.tasks)) {
-          // Atualiza o cache local mantendo o estado sincronizado
           const localTasks = this.getTasks();
-          // Se buscou filtrado por workspace, mescla
-          let merged: Task[];
-          if (workspaceId) {
-            const others = localTasks.filter((t) => t.workspaceId !== workspaceId);
-            merged = [...others, ...res.tasks];
-          } else {
-            merged = res.tasks;
-          }
-          this.saveTasks(merged, true);
+          const merged = mergeTaskLists(localTasks, res.tasks, getDeletedTaskIds());
+          localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(merged));
+          writeIndexedDB(STORAGE_KEYS.TASKS, merged).catch(() => {});
           return { success: true, tasks: merged, fromCloud: true };
         }
       } catch (err) {
@@ -2401,18 +2418,22 @@ export const StorageService = {
    * Criar tarefa diretamente no Supabase e refletir no armazenamento local
    */
   async createTaskAsync(task: Task): Promise<{ success: boolean; task: Task }> {
+    clearTaskDeleted(task.id);
     // 1. Atualiza estado local imediatamente
     const current = this.getTasks();
     const nextList = [task, ...current.filter((t) => t.id !== task.id)];
-    this.saveTasks(nextList, true);
+    this.saveTasks(nextList, true, { action: 'create_task', targetId: task.id, skipCloudPush: true });
 
     // 2. Persiste diretamente no Supabase se configurado
     if (SupabaseService.isConfigured()) {
       try {
         const cloudRes = await SupabaseService.createTask(task);
         if (cloudRes.success && cloudRes.task) {
-          const updatedList = nextList.map((t) => (t.id === task.id ? cloudRes.task! : t));
-          this.saveTasks(updatedList, true);
+          // Re-lê a lista MAIS RECENTE do storage após await para jamais perder outros cards adicionados concorrentemente
+          const latest = this.getTasks();
+          const updatedList = mergeTaskLists(latest, [cloudRes.task], getDeletedTaskIds());
+          localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(updatedList));
+          writeIndexedDB(STORAGE_KEYS.TASKS, updatedList).catch(() => {});
           return { success: true, task: cloudRes.task };
         }
       } catch (e) {
@@ -2425,18 +2446,92 @@ export const StorageService = {
   /**
    * Atualizar tarefa diretamente no Supabase e refletir no armazenamento local
    */
-  async updateTaskAsync(taskId: string, updates: Partial<Task>): Promise<{ success: boolean }> {
-    // 1. Atualiza estado local imediatamente
+  async updateTaskAsync(
+    taskId: string,
+    updates: Partial<Task>,
+    fallbackFullTask?: Task
+  ): Promise<{ success: boolean }> {
+    const nowIso = updates.updatedAt || new Date().toISOString();
+    const normalizedUpdates: Partial<Task> = { ...updates, updatedAt: nowIso };
+
+    // 1. Atualiza estado local imediatamente (com upsert se o card ainda não estava na lista local)
     const current = this.getTasks();
-    const updatedList = current.map((t) => (t.id === taskId ? { ...t, ...updates, updatedAt: new Date().toISOString() } : t));
-    this.saveTasks(updatedList, true);
+    const existsLocally = current.some((t) => t.id === taskId);
+    const updatedList = existsLocally
+      ? current.map((t) => (t.id === taskId ? { ...t, ...normalizedUpdates } : t))
+      : fallbackFullTask
+      ? [{ ...fallbackFullTask, ...normalizedUpdates }, ...current]
+      : current;
+
+    this.saveTasks(updatedList, true, { action: 'update_task', targetId: taskId, skipCloudPush: true });
 
     // 2. Persiste diretamente no Supabase se configurado
     if (SupabaseService.isConfigured()) {
       try {
-        await SupabaseService.updateTask(taskId, updates);
+        const cloudRes = await SupabaseService.updateTask(taskId, normalizedUpdates);
+        // Se a linha ainda não existia no Supabase (.update afetou 0 linhas), faz upsert completo
+        if (!cloudRes.success || !cloudRes.task) {
+          const fullTask = this.getTasks().find((t) => t.id === taskId) || fallbackFullTask;
+          if (fullTask) {
+            await SupabaseService.createTask({ ...fullTask, ...normalizedUpdates });
+          }
+        }
       } catch (e) {
         console.warn('[StorageService] Erro ao atualizar tarefa no Supabase:', e);
+      }
+    }
+    return { success: true };
+  },
+
+  /**
+   * Atualização em lote (reordenação / mudança de coluna) sem rajada concorrente
+   */
+  async batchUpdateTasksAsync(
+    updates: Array<{
+      id: string;
+      columnId?: string;
+      order?: number;
+      isCompleted?: boolean;
+      completedAt?: string | null;
+      activities?: any[];
+    }>
+  ): Promise<{ success: boolean }> {
+    if (!Array.isArray(updates) || updates.length === 0) return { success: true };
+    const nowIso = new Date().toISOString();
+    const updateMap = new Map(updates.map((u) => [u.id, u]));
+    const current = this.getTasks();
+    const updatedList = current.map((t) => {
+      const u = updateMap.get(t.id);
+      if (!u) return t;
+      return {
+        ...t,
+        ...(u.columnId !== undefined ? { columnId: u.columnId } : {}),
+        ...(u.order !== undefined ? { order: u.order } : {}),
+        ...(u.isCompleted !== undefined ? { isCompleted: u.isCompleted } : {}),
+        ...(u.completedAt !== undefined ? { completedAt: u.completedAt } : {}),
+        ...(u.activities !== undefined ? { activities: u.activities } : {}),
+        updatedAt: nowIso,
+      };
+    });
+
+    this.saveTasks(updatedList, true, { action: 'reorder_tasks', skipCloudPush: true });
+
+    if (SupabaseService.isConfigured()) {
+      try {
+        await Promise.all(
+          updates.map((u) =>
+            SupabaseService.updateTask(u.id, {
+              ...(u.columnId !== undefined ? { columnId: u.columnId } : {}),
+              ...(u.order !== undefined ? { order: u.order } : {}),
+              ...(u.isCompleted !== undefined ? { isCompleted: u.isCompleted } : {}),
+              ...(u.completedAt !== undefined ? { completedAt: u.completedAt } : {}),
+              ...(u.activities !== undefined ? { activities: u.activities } : {}),
+              updatedAt: nowIso,
+            })
+          )
+        );
+      } catch (e) {
+        console.warn('[StorageService] Erro ao atualizar lote de tarefas no Supabase:', e);
       }
     }
     return { success: true };
@@ -2446,10 +2541,17 @@ export const StorageService = {
    * Excluir tarefa diretamente no Supabase e refletir no armazenamento local
    */
   async deleteTaskAsync(taskId: string): Promise<{ success: boolean }> {
-    // 1. Remove do estado local
+    markTaskDeleted(taskId);
+    // 1. Remove do estado local com tombstone explícito
     const current = this.getTasks();
     const filtered = current.filter((t) => t.id !== taskId);
-    this.saveTasks(filtered, true);
+    this.saveTasks(filtered, true, {
+      action: 'delete_task',
+      targetId: taskId,
+      replaceAll: true,
+      deletedTaskIds: [taskId],
+      skipCloudPush: true,
+    });
 
     // 2. Exclui diretamente no Supabase se configurado
     if (SupabaseService.isConfigured()) {

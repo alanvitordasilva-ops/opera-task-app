@@ -53,8 +53,46 @@ export default async function handler(req: any, res: any) {
           : mergedWs;
       }
     }
-    if (Array.isArray(body.projects)) store.projects = body.projects;
-    if (Array.isArray(body.tasks)) store.tasks = body.tasks;
+    if (Array.isArray(body.projects)) {
+      if (body.replaceAll) {
+        store.projects = body.projects;
+      } else {
+        const projMap = new Map<string, any>();
+        (store.projects || []).forEach((p: any) => p?.id && projMap.set(p.id, p));
+        body.projects.forEach((p: any) => {
+          if (p?.id) projMap.set(p.id, { ...projMap.get(p.id), ...p });
+        });
+        store.projects = Array.from(projMap.values());
+      }
+    }
+    if (Array.isArray(body.tasks)) {
+      const deletedSet = new Set<string>(
+        Array.isArray(body.deletedTaskIds) ? body.deletedTaskIds.map((id: any) => String(id)) : []
+      );
+      if (body.replaceAll) {
+        store.tasks = body.tasks.filter((t: any) => t?.id && !deletedSet.has(t.id));
+      } else {
+        const getTs = (t: any) => {
+          const ts = Date.parse(t?.updatedAt || t?.createdAt || '');
+          return Number.isNaN(ts) ? 0 : ts;
+        };
+        const taskMap = new Map<string, any>();
+        (store.tasks || []).forEach((t: any) => {
+          if (t?.id && !deletedSet.has(t.id)) taskMap.set(t.id, t);
+        });
+        body.tasks.forEach((t: any) => {
+          if (!t?.id || deletedSet.has(t.id)) return;
+          const prev = taskMap.get(t.id);
+          if (!prev || getTs(t) >= getTs(prev)) {
+            taskMap.set(t.id, prev ? { ...prev, ...t } : t);
+          }
+        });
+        store.tasks = Array.from(taskMap.values());
+      }
+    } else if (Array.isArray(body.deletedTaskIds) && body.deletedTaskIds.length > 0) {
+      const deletedSet = new Set<string>(body.deletedTaskIds.map((id: any) => String(id)));
+      store.tasks = (store.tasks || []).filter((t: any) => t?.id && !deletedSet.has(t.id));
+    }
     return res.status(200).json({ success: true, message: 'Estado sincronizado' });
   }
 
