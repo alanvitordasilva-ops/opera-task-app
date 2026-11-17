@@ -1303,39 +1303,35 @@ export const StorageService = {
   },
 
   /**
-   * Excluir Projeto / Quadro com remoção imediata de tarefas locais e no Supabase
+   * Excluir Projeto / Quadro com remoção imediata de tarefas locais, no servidor e no Supabase
    */
   async deleteProjectAsync(projectId: string): Promise<{ success: boolean; error?: string }> {
-    // 1. Remove do estado local de projetos
+    // 1. Remove tarefas associadas e registra tombstones para evitar ressurreição no sync
+    const currentTasks = this.getTasks();
+    const deletedTaskIds = currentTasks.filter((t) => t.projectId === projectId).map((t) => t.id);
+    deletedTaskIds.forEach((id) => markTaskDeleted(id));
+    const filteredTasks = currentTasks.filter((t) => t.projectId !== projectId);
+
+    // 2. Remove do estado local de projetos
     const current = this.getProjects();
     const filteredProjects = current.filter((p) => p.id !== projectId);
-    this.saveProjects(filteredProjects, true);
 
-    // 2. Remove tarefas associadas ao projeto
-    const currentTasks = this.getTasks();
-    const filteredTasks = currentTasks.filter((t) => t.projectId !== projectId);
-    this.saveTasks(filteredTasks, true);
-
-    // 3. Notifica em tempo real
-    RealtimeService.broadcast('projects', filteredProjects, {
+    this.saveProjects(filteredProjects, true, {
       action: 'delete_project',
       targetId: projectId,
+      replaceAll: true,
+      skipCloudPush: true,
     });
-    RealtimeService.broadcast('tasks', filteredTasks, {
+
+    this.saveTasks(filteredTasks, true, {
       action: 'delete_project_tasks',
       targetId: projectId,
+      replaceAll: true,
+      deletedTaskIds,
+      skipCloudPush: true,
     });
 
-    // 4. Atualiza servidor central
-    if (isServerApiAvailable()) {
-      fetch('/api/sync/state', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projects: filteredProjects, tasks: filteredTasks }),
-      }).catch(() => {});
-    }
-
-    // 5. Exclui no Supabase
+    // 3. Exclui no Supabase
     if (SupabaseService.isConfigured()) {
       try {
         await SupabaseService.deleteProject(projectId);
@@ -2361,9 +2357,9 @@ export const StorageService = {
     }
   },
 
-  saveProjects(projects: Project[], immediate = true): void {
+  saveProjects(projects: Project[], immediate = true, options?: SaveMutationOptions): void {
     localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify(projects));
-    handleSaveMutation(STORAGE_KEYS.PROJECTS, projects, immediate);
+    handleSaveMutation(STORAGE_KEYS.PROJECTS, projects, immediate, options);
   },
 
   getTasks(): Task[] {
@@ -2441,6 +2437,43 @@ export const StorageService = {
       }
     }
     return { success: true, task };
+  },
+
+  /**
+   * Criar lote de tarefas (ex: duplicação de quadro ou coluna com todos os cards)
+   */
+  async batchCreateTasksAsync(newTasks: Task[]): Promise<{ success: boolean; tasks: Task[] }> {
+    if (!Array.isArray(newTasks) || newTasks.length === 0) {
+      return { success: true, tasks: [] };
+    }
+
+    newTasks.forEach((t) => clearTaskDeleted(t.id));
+    const newIds = new Set(newTasks.map((t) => t.id));
+    const current = this.getTasks();
+    const nextList = [...newTasks, ...current.filter((t) => !newIds.has(t.id))];
+
+    this.saveTasks(nextList, true, { action: 'create_tasks_batch', skipCloudPush: true });
+
+    if (SupabaseService.isConfigured()) {
+      try {
+        const results = await Promise.all(
+          newTasks.map((t) => SupabaseService.createTask(t).catch(() => ({ success: false, task: undefined })))
+        );
+        const cloudTasks = results
+          .filter((r): r is { success: boolean; task: Task } => Boolean(r?.success && r?.task))
+          .map((r) => r.task);
+        if (cloudTasks.length > 0) {
+          const latest = this.getTasks();
+          const updatedList = mergeTaskLists(latest, cloudTasks, getDeletedTaskIds());
+          localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(updatedList));
+          writeIndexedDB(STORAGE_KEYS.TASKS, updatedList).catch(() => {});
+        }
+      } catch (e) {
+        console.warn('[StorageService] Erro ao criar lote de tarefas no Supabase:', e);
+      }
+    }
+
+    return { success: true, tasks: newTasks };
   },
 
   /**

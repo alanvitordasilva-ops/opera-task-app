@@ -12,6 +12,7 @@ import {
   Clock,
   MoreVertical,
   Copy,
+  CopyPlus,
   Archive,
   Trash2,
   Edit3,
@@ -63,6 +64,8 @@ interface KanbanViewProps {
   onArchiveTask: (taskId: string) => void;
   onDeleteTask: (taskId: string) => void;
   onDeleteColumn?: (columnId: string) => void;
+  onArchiveColumn?: (columnId: string) => void;
+  onDuplicateColumn?: (columnId: string, includeCards: boolean) => void;
   onQuickAddTask: (columnId: string) => void;
 }
 
@@ -80,11 +83,14 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
   onArchiveTask,
   onDeleteTask,
   onDeleteColumn,
+  onArchiveColumn,
+  onDuplicateColumn,
   onQuickAddTask,
 }) => {
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
   const [activeDropColumnId, setActiveDropColumnId] = useState<string | null>(null);
   const [openMenuTaskId, setOpenMenuTaskId] = useState<string | null>(null);
+  const [openMenuColumnId, setOpenMenuColumnId] = useState<string | null>(null);
   const [selectedMobileColumn, setSelectedMobileColumn] = useState<string | 'all'>(() => {
     try {
       return sessionStorage.getItem(`operatask_mobile_col_${project.id}`) || 'all';
@@ -129,18 +135,25 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
     position: 'before' | 'after' | 'end';
   } | null>(null);
 
-  // Fechar dropdown de ações ao clicar fora
+  // Fechar dropdowns de ações (card ou coluna) ao clicar fora
   useEffect(() => {
-    const handleClickOutside = () => setOpenMenuTaskId(null);
-    if (openMenuTaskId) {
+    const handleClickOutside = () => {
+      setOpenMenuTaskId(null);
+      setOpenMenuColumnId(null);
+    };
+    if (openMenuTaskId || openMenuColumnId) {
       document.addEventListener('click', handleClickOutside);
     }
     return () => {
       document.removeEventListener('click', handleClickOutside);
     };
-  }, [openMenuTaskId]);
+  }, [openMenuTaskId, openMenuColumnId]);
 
-  const columns = project.columns || [];
+  const columns = (project.columns || []).filter((c) => !c.isArchived);
+  const effectiveMobileColumn =
+    selectedMobileColumn === 'all' || columns.some((c) => c.id === selectedMobileColumn)
+      ? selectedMobileColumn
+      : 'all';
 
   const handleDragStart = (e: React.DragEvent, taskId: string) => {
     const targetTask = tasks.find((t) => t.id === taskId);
@@ -363,7 +376,7 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
           type="button"
           onClick={() => setSelectedMobileColumn('all')}
           className={`flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all active:scale-95 ${
-            selectedMobileColumn === 'all'
+            effectiveMobileColumn === 'all'
               ? 'bg-blue-600 text-white shadow-sm'
               : 'bg-slate-200/80 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
           }`}
@@ -373,7 +386,7 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
 
         {columns.map((col) => {
           const count = tasks.filter((t) => t.columnId === col.id).length;
-          const isSelected = selectedMobileColumn === col.id;
+          const isSelected = effectiveMobileColumn === col.id;
           return (
             <button
               key={col.id}
@@ -403,7 +416,7 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
         className="flex gap-4 sm:gap-5 pb-8 overflow-x-auto min-h-[calc(100vh-220px)] items-start select-none snap-x snap-mandatory scroll-smooth"
       >
       {columns
-        .filter((col) => selectedMobileColumn === 'all' || col.id === selectedMobileColumn)
+        .filter((col) => effectiveMobileColumn === 'all' || col.id === effectiveMobileColumn)
         .map((col) => {
         // Tarefas ordenadas estritamente pela propriedade 'order'
         const columnTasks = tasks
@@ -415,6 +428,8 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
             return a.createdAt.localeCompare(b.createdAt);
           });
         const isDropTarget = activeDropColumnId === col.id;
+        const canManageCol = canDeleteColumn(currentUserRole, isMaster);
+        const isColMenuOpen = openMenuColumnId === col.id;
 
         return (
           <div
@@ -430,7 +445,7 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
           >
             {/* Cabeçalho da Coluna: Fixo no topo da coluna */}
             <div className="flex items-center justify-between px-2 py-1.5 mb-1.5 shrink-0">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 min-w-0">
                 <span
                   className="w-2.5 h-2.5 rounded-full shrink-0"
                   style={{ backgroundColor: col.color }}
@@ -438,12 +453,12 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                 <h3 className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate">
                   {col.title}
                 </h3>
-                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-200/60 dark:border-slate-700/60">
+                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-200/60 dark:border-slate-700/60 shrink-0">
                   {columnTasks.length}
                 </span>
               </div>
 
-              <div className="flex items-center gap-0.5">
+              <div className="flex items-center gap-0.5 shrink-0">
                 <button
                   type="button"
                   onClick={() => onQuickAddTask(col.id)}
@@ -452,23 +467,113 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                 >
                   <Plus className="w-3.5 h-3.5" />
                 </button>
-                {canDeleteColumn(currentUserRole) && onDeleteColumn && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setDeleteConfirmState({
-                        isOpen: true,
-                        type: 'column',
-                        id: col.id,
-                        name: col.title,
-                        message: `Tem certeza que deseja excluir a coluna "${col.title}"? As tarefas desta coluna serão transferidas para outra coluna ou removidas. Esta ação não pode ser desfeita.`,
-                      })
-                    }
-                    className="p-1 text-slate-400 hover:text-red-600 dark:hover:text-red-400 rounded-lg hover:bg-white dark:hover:bg-slate-800 transition-colors cursor-pointer"
-                    title={`Excluir coluna ${col.title}`}
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+
+                {(onDuplicateColumn || (canManageCol && (onArchiveColumn || onDeleteColumn))) && (
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setOpenMenuTaskId(null);
+                        setOpenMenuColumnId(isColMenuOpen ? null : col.id);
+                      }}
+                      className={`p-1 rounded-lg transition-colors cursor-pointer ${
+                        isColMenuOpen
+                          ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 shadow-2xs'
+                          : 'text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-white dark:hover:bg-slate-800'
+                      }`}
+                      title={`Opções da coluna ${col.title}`}
+                    >
+                      <MoreVertical className="w-3.5 h-3.5" />
+                    </button>
+
+                    {isColMenuOpen && (
+                      <div
+                        className="absolute right-0 top-7 w-56 bg-white dark:bg-slate-800 rounded-xl shadow-xl border border-slate-200 dark:border-slate-700 py-1.5 z-40 animate-in fade-in zoom-in-95 duration-100"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {onDuplicateColumn && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOpenMenuColumnId(null);
+                                onDuplicateColumn(col.id, false);
+                              }}
+                              className="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 flex items-center gap-2 transition-colors cursor-pointer"
+                            >
+                              <Copy className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                              <span>Copiar coluna</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOpenMenuColumnId(null);
+                                onDuplicateColumn(col.id, true);
+                              }}
+                              className="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 flex items-center gap-2 transition-colors cursor-pointer"
+                            >
+                              <CopyPlus className="w-3.5 h-3.5 text-teal-500 shrink-0" />
+                              <span>Duplicar com todos os cards</span>
+                            </button>
+                          </>
+                        )}
+
+                        {canManageCol && (onArchiveColumn || onDeleteColumn) && (
+                          <>
+                            {onDuplicateColumn && (
+                              <div className="my-1 border-t border-slate-100 dark:border-slate-700/60" />
+                            )}
+
+                            {onArchiveColumn && (
+                              <button
+                                type="button"
+                                disabled={columns.length <= 1}
+                                onClick={() => {
+                                  setOpenMenuColumnId(null);
+                                  onArchiveColumn(col.id);
+                                }}
+                                className={`w-full px-3 py-1.5 text-xs text-left flex items-center gap-2 transition-colors ${
+                                  columns.length <= 1
+                                    ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
+                                    : 'text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30 cursor-pointer'
+                                }`}
+                                title={
+                                  columns.length <= 1
+                                    ? 'Mantenha pelo menos uma coluna ativa no quadro'
+                                    : 'Arquivar coluna'
+                                }
+                              >
+                                <Archive className="w-3.5 h-3.5 shrink-0" />
+                                <span>Arquivar</span>
+                              </button>
+                            )}
+
+                            {onDeleteColumn && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setOpenMenuColumnId(null);
+                                  setDeleteConfirmState({
+                                    isOpen: true,
+                                    type: 'column',
+                                    id: col.id,
+                                    name: col.title,
+                                    message: `Tem certeza que deseja excluir a coluna "${col.title}"? As tarefas desta coluna serão transferidas para outra coluna ou removidas. Esta ação não pode ser desfeita.`,
+                                  });
+                                }}
+                                className="w-full px-3 py-1.5 text-xs text-left text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 flex items-center gap-2 transition-colors font-medium cursor-pointer"
+                              >
+                                <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                                <span>Excluir</span>
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
             </div>
@@ -1097,9 +1202,14 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                   onArchiveTask(deleteConfirmState.id);
                   setDeleteConfirmState(null);
                 }
+              : deleteConfirmState.type === 'column' && onArchiveColumn && columns.length > 1
+              ? () => {
+                  onArchiveColumn(deleteConfirmState.id);
+                  setDeleteConfirmState(null);
+                }
               : undefined
           }
-          archiveButtonText="Arquivar card"
+          archiveButtonText={deleteConfirmState.type === 'task' ? 'Arquivar card' : 'Arquivar coluna'}
         />
       )}
     </div>

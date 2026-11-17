@@ -112,8 +112,10 @@ export const ProjectModal: React.FC<ProjectModalProps> = ({
   };
 
   const handleRequestRemoveColumn = (colId: string, colTitle: string) => {
-    if (columns.length <= 1) {
-      setColumnAlert('O projeto precisa manter pelo menos uma coluna no quadro.');
+    const activeCols = columns.filter((c) => !c.isArchived);
+    const targetCol = columns.find((c) => c.id === colId);
+    if (activeCols.length <= 1 && !targetCol?.isArchived) {
+      setColumnAlert('O projeto precisa manter pelo menos uma coluna ativa no quadro.');
       setTimeout(() => setColumnAlert(null), 4000);
       return;
     }
@@ -192,7 +194,7 @@ export const ProjectModal: React.FC<ProjectModalProps> = ({
             }`}
           >
             <Columns className="w-3.5 h-3.5" />
-            Colunas dos Quadros ({columns.length})
+            Colunas dos Quadros ({columns.filter((c) => !c.isArchived).length})
           </button>
           <button
             type="button"
@@ -312,9 +314,11 @@ export const ProjectModal: React.FC<ProjectModalProps> = ({
                 Personalize as colunas do fluxo de trabalho (Quadros) deste projeto. Você pode adicionar, renomear e marcar a coluna de conclusão.
               </p>
 
-              {/* Lista de Colunas Atuais */}
+              {/* Lista de Colunas Ativas */}
               <div className="space-y-2">
-                {columns.map((col, idx) => (
+                {columns
+                  .filter((c) => !c.isArchived)
+                  .map((col, idx) => (
                   <div
                     key={col.id}
                     className="flex items-center justify-between p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50"
@@ -372,6 +376,61 @@ export const ProjectModal: React.FC<ProjectModalProps> = ({
                   </div>
                 ))}
               </div>
+
+              {/* Colunas Arquivadas (Restauração) */}
+              {columns.some((c) => c.isArchived) && (
+                <div className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-2">
+                  <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">
+                    <Archive className="w-3.5 h-3.5" />
+                    <span>Colunas Arquivadas ({columns.filter((c) => c.isArchived).length})</span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {columns
+                      .filter((c) => c.isArchived)
+                      .map((col) => (
+                        <div
+                          key={col.id}
+                          className="flex items-center justify-between p-2 rounded-xl border border-amber-200/70 dark:border-amber-900/50 bg-amber-50/40 dark:bg-amber-950/20"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span
+                              className="w-2.5 h-2.5 rounded-full shrink-0 opacity-70"
+                              style={{ backgroundColor: col.color }}
+                            />
+                            <span className="text-xs font-medium text-slate-700 dark:text-slate-300 truncate">
+                              {col.title}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setColumns((prev) =>
+                                  prev.map((c) => (c.id === col.id ? { ...c, isArchived: false } : c))
+                                )
+                              }
+                              className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40 rounded-lg transition-colors cursor-pointer"
+                              title="Restaurar coluna para o quadro"
+                            >
+                              <RotateCcw className="w-3 h-3" />
+                              <span>Restaurar</span>
+                            </button>
+                            {canDeleteColumn(currentUserRole) && (
+                              <button
+                                type="button"
+                                onClick={() => handleRequestRemoveColumn(col.id, col.title)}
+                                className="p-1 text-slate-400 hover:text-red-600 dark:hover:text-red-400 rounded hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors cursor-pointer"
+                                title="Excluir coluna definitivamente"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              )}
 
               {columnAlert && (
                 <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/50 text-amber-800 dark:text-amber-300 text-xs flex items-center gap-2">

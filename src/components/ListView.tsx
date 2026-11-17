@@ -332,7 +332,9 @@ export const ListView: React.FC<ListViewProps> = ({
                       }`}
                       title={isActionBlocked ? 'Card concluído protegido: apenas Dono e Administrador podem alterar coluna' : undefined}
                     >
-                      {project.columns.map((col) => (
+                      {project.columns
+                        .filter((col) => !col.isArchived || col.id === task.columnId)
+                        .map((col) => (
                         <option key={col.id} value={col.id}>
                           {col.title}
                         </option>

@@ -256,7 +256,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
       setDescription('');
       setPriority('none');
       setProjectId(activeProj?.id || '');
-      setColumnId(defCol || activeProj?.columns[0]?.id || '');
+      setColumnId(defCol || activeProj?.columns.find((c) => !c.isArchived)?.id || activeProj?.columns[0]?.id || '');
       setDueDateDate('');
       setDueDateTime('');
       setAssigneeIds([currentUserRef.current.id]);
@@ -1295,7 +1295,8 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                       setProjectId(nextProjId);
                       const p = projects.find((proj) => proj.id === nextProjId);
                       if (p && p.columns.length > 0) {
-                        setColumnId(p.columns[0].id);
+                        const firstActive = p.columns.find((c) => !c.isArchived) || p.columns[0];
+                        setColumnId(firstActive.id);
                       }
                     }}
                     className={`w-full px-3 py-2 text-xs font-medium rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 ${
@@ -1333,7 +1334,9 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                     }`}
                     title={isCompletedBlocked ? 'Card concluído: apenas Dono e Administrador podem alterar a coluna' : undefined}
                   >
-                    {currentProject?.columns.map((c) => (
+                    {currentProject?.columns
+                      .filter((c) => !c.isArchived || c.id === columnId)
+                      .map((c) => (
                       <option key={c.id} value={c.id}>
                         {c.title} {c.isCompletedColumn ? '(Conclusão)' : ''}
                       </option>

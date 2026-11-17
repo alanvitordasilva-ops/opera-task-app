@@ -411,6 +411,7 @@ export interface BoardColumn {
   color: string;
   order: number;
   isCompletedColumn?: boolean;
+  isArchived?: boolean;
 }
 
 export interface Tag {

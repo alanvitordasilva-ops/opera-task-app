@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Task,
   Project,
+  BoardColumn,
   Tag,
   User,
   Workspace,
@@ -745,10 +746,11 @@ export default function App() {
   // Projetos do workspace atual com garantia de persistência e fallback ativo anti-vazio
   const workspaceProjects = useMemo(() => {
     if (!currentWorkspace?.id) return [];
-    const list = projects.filter((p) => p.workspaceId === currentWorkspace.id && !p.isArchived);
+    const allWsProjects = projects.filter((p) => p.workspaceId === currentWorkspace.id);
+    const activeList = allWsProjects.filter((p) => !p.isArchived);
 
-    // Se o workspace não possuir quadros cadastrados, provê imediatamente o Quadro Principal ativo
-    if (list.length === 0) {
+    // Se o workspace ainda não possuir nenhum quadro cadastrado, provê imediatamente o Quadro Principal ativo
+    if (allWsProjects.length === 0) {
       const fallbackProject: Project = {
         id: `proj-${currentWorkspace.id}-principal`,
         workspaceId: currentWorkspace.id,
@@ -768,7 +770,13 @@ export default function App() {
       };
       return [fallbackProject];
     }
-    return list;
+    return activeList;
+  }, [projects, currentWorkspace]);
+
+  // Quadros arquivados do workspace atual
+  const archivedWorkspaceProjects = useMemo(() => {
+    if (!currentWorkspace?.id) return [];
+    return projects.filter((p) => p.workspaceId === currentWorkspace.id && !!p.isArchived);
   }, [projects, currentWorkspace]);
 
   // Tarefas ativas do workspace atual (exclui arquivados)
@@ -971,7 +979,7 @@ export default function App() {
       const done = pTasks.filter((t) => t.isCompleted).length;
       return {
         title: activeProject.name,
-        subtitle: `${pending} pendentes · ${done} concluídas · ${activeProject.columns.length} colunas`,
+        subtitle: `${pending} pendentes · ${done} concluídas · ${activeProject.columns.filter((c) => !c.isArchived).length} colunas`,
       };
     }
 
@@ -1033,7 +1041,7 @@ export default function App() {
       setProjects((prev) => (prev.some((p) => p.id === targetProject.id) ? prev : [...prev, targetProject]));
     }
 
-    const colId = taskData.columnId || targetProject?.columns[0]?.id || 'col-1';
+    const colId = taskData.columnId || targetProject?.columns.find((c) => !c.isArchived)?.id || targetProject?.columns[0]?.id || 'col-1';
     const isCompleted = targetProject?.columns.find((c) => c.id === colId)?.isCompletedColumn || false;
 
     if (taskData.id) {
@@ -1340,8 +1348,9 @@ export default function App() {
 
     const nextDone = !targetTask.isCompleted;
     // Encontra coluna de conclusão ou primeira coluna
-    const completedCol = project?.columns.find((c) => c.isCompletedColumn) || project?.columns[project.columns.length - 1];
-    const initialCol = project?.columns[0];
+    const activeCols = project?.columns.filter((c) => !c.isArchived) || project?.columns || [];
+    const completedCol = activeCols.find((c) => c.isCompletedColumn) || activeCols[activeCols.length - 1];
+    const initialCol = activeCols[0];
     const nextColId = nextDone ? completedCol?.id || targetTask.columnId : initialCol?.id || targetTask.columnId;
     const completedAt = nextDone ? new Date().toISOString() : null;
 
@@ -2018,25 +2027,30 @@ export default function App() {
       return;
     }
 
-    if (activeProject.columns.length <= 1) {
+    const targetCol = activeProject.columns.find((c) => c.id === columnId);
+    const activeColumns = activeProject.columns.filter((c) => !c.isArchived);
+
+    if (activeColumns.length <= 1 && !targetCol?.isArchived) {
       showToast({
         type: 'error',
-        message: 'O projeto precisa manter pelo menos uma coluna no quadro.',
+        message: 'O projeto precisa manter pelo menos uma coluna ativa no quadro.',
       });
       return;
     }
-    const deletedCol = activeProject.columns.find((c) => c.id === columnId);
+    const deletedCol = targetCol;
     const remainingCols = activeProject.columns.filter((c) => c.id !== columnId);
-    const fallbackColId = remainingCols[0].id;
+    const fallbackCol = remainingCols.find((c) => !c.isArchived) || remainingCols[0];
 
     // Move tarefas da coluna excluída para a coluna remanescente
-    setTasks((prev) =>
-      prev.map((t) =>
-        t.projectId === activeProject.id && t.columnId === columnId
-          ? { ...t, columnId: fallbackColId, updatedAt: new Date().toISOString() }
-          : t
-      )
-    );
+    if (fallbackCol) {
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.projectId === activeProject.id && t.columnId === columnId
+            ? { ...t, columnId: fallbackCol.id, updatedAt: new Date().toISOString() }
+            : t
+        )
+      );
+    }
 
     // Atualiza colunas do projeto
     const updatedColumns = remainingCols.map((c, idx) => ({ ...c, order: idx }));
@@ -2055,7 +2069,254 @@ export default function App() {
     recordActivity(`excluiu a coluna "${deletedCol?.title || 'Coluna'}" do projeto "${activeProject.name}"`);
     showToast({
       type: 'info',
-      message: `Coluna "${deletedCol?.title || 'Coluna'}" excluída. Tarefas transferidas para "${remainingCols[0].title}".`,
+      message: `Coluna "${deletedCol?.title || 'Coluna'}" excluída. Tarefas transferidas para "${fallbackCol?.title || 'outra coluna'}".`,
+    });
+  };
+
+  const buildClonedTask = (
+    origTask: Task,
+    targetProjectId: string,
+    targetColumnId: string,
+    indexSuffix: number,
+    resetCompletion = false
+  ): Task => {
+    const nowIso = new Date().toISOString();
+    const stamp = `${Date.now()}-${indexSuffix}-${Math.random().toString(36).slice(2, 5)}`;
+    const newTaskId = buildUniqueTaskId('task');
+
+    return {
+      ...origTask,
+      id: newTaskId,
+      projectId: targetProjectId,
+      columnId: targetColumnId,
+      isCompleted: resetCompletion ? false : origTask.isCompleted,
+      completedAt: resetCompletion ? undefined : origTask.completedAt,
+      checklist: (origTask.checklist || []).map((item, cIdx) => ({
+        ...item,
+        id: `check-${stamp}-${cIdx}`,
+      })),
+      attachments: origTask.attachments
+        ? origTask.attachments.map((att, aIdx) => ({
+            ...att,
+            id: `att-${stamp}-${aIdx}`,
+            uploadedAt: att.uploadedAt || nowIso,
+          }))
+        : [],
+      fichaTecnica: origTask.fichaTecnica
+        ? {
+            ...origTask.fichaTecnica,
+            ingredientes: (origTask.fichaTecnica.ingredientes || []).map((ing, iIdx) => ({
+              ...ing,
+              id: `ing-${stamp}-${iIdx}`,
+            })),
+          }
+        : undefined,
+      productionRecords: origTask.productionRecords ? [...origTask.productionRecords] : undefined,
+      comments: (origTask.comments || []).map((cmt, mIdx) => ({
+        ...cmt,
+        id: `cmt-${stamp}-${mIdx}`,
+      })),
+      activities: [
+        {
+          id: `act-${stamp}`,
+          userId: currentUser.id,
+          action: `duplicou o card "${origTask.title}"`,
+          timestamp: nowIso,
+        },
+      ],
+      tags: [...(origTask.tags || [])],
+      assigneeIds: [...(origTask.assigneeIds || [])],
+      isArchived: false,
+      archivedAt: undefined,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+  };
+
+  const handleDuplicateColumn = (columnId: string, includeCards: boolean) => {
+    if (!activeProject) return;
+    const cols = activeProject.columns || [];
+    const origIdx = cols.findIndex((c) => c.id === columnId);
+    if (origIdx === -1) return;
+
+    const origCol = cols[origIdx];
+    const newColId = `col-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const newCol: BoardColumn = {
+      ...origCol,
+      id: newColId,
+      title: `${origCol.title} (Cópia)`,
+      isCompletedColumn: false,
+      isArchived: false,
+    };
+
+    const nextColsRaw = [...cols];
+    nextColsRaw.splice(origIdx + 1, 0, newCol);
+    const updatedColumns = nextColsRaw.map((c, idx) => ({ ...c, order: idx }));
+
+    setProjects((prev) =>
+      prev.map((p) => (p.id === activeProject.id ? { ...p, columns: updatedColumns } : p))
+    );
+    StorageService.updateProjectAsync(activeProject.id, { columns: updatedColumns });
+
+    if (includeCards) {
+      const colTasks = tasks
+        .filter((t) => t.projectId === activeProject.id && t.columnId === columnId && !t.isArchived)
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
+      const clonedTasks = colTasks.map((t, idx) =>
+        buildClonedTask(t, activeProject.id, newColId, idx, true)
+      );
+
+      if (clonedTasks.length > 0) {
+        setTasks((prev) => [...clonedTasks, ...prev]);
+        StorageService.batchCreateTasksAsync(clonedTasks);
+      }
+
+      recordActivity(
+        `duplicou a coluna "${origCol.title}" com ${clonedTasks.length} card(s) no quadro "${activeProject.name}"`
+      );
+      showToast({
+        type: 'success',
+        message: `Coluna "${origCol.title}" duplicada com ${clonedTasks.length} card(s)!`,
+      });
+    } else {
+      recordActivity(`copiou a estrutura da coluna "${origCol.title}" no quadro "${activeProject.name}"`);
+      showToast({
+        type: 'success',
+        message: `Coluna "${origCol.title}" copiada com sucesso!`,
+      });
+    }
+  };
+
+  const handleArchiveColumn = (columnId: string, restore = false) => {
+    if (!activeProject) return;
+
+    const isMasterUser = isUserMaster(currentUser);
+    const member = currentWorkspace?.members?.find((m) => m.userId === currentUser.id);
+    const role = (member?.role || currentUserRole || '').toLowerCase();
+    const canArchiveCol =
+      isMasterUser ||
+      role === 'owner' ||
+      role === 'dono' ||
+      role === 'admin' ||
+      role === 'administrador' ||
+      currentWorkspace?.ownerId === currentUser.id;
+
+    if (!canArchiveCol) {
+      showToast({
+        type: 'error',
+        message: 'Ação não permitida: Apenas Administradores ou Donos do Workspace podem arquivar colunas.',
+      });
+      return;
+    }
+
+    const cols = activeProject.columns || [];
+    const targetCol = cols.find((c) => c.id === columnId);
+    if (!targetCol) return;
+
+    const activeCols = cols.filter((c) => !c.isArchived);
+    if (!restore && activeCols.length <= 1) {
+      showToast({
+        type: 'error',
+        message: 'O quadro precisa manter pelo menos uma coluna ativa.',
+      });
+      return;
+    }
+
+    const updatedColumns = cols.map((c) =>
+      c.id === columnId ? { ...c, isArchived: !restore } : c
+    );
+
+    setProjects((prev) =>
+      prev.map((p) => (p.id === activeProject.id ? { ...p, columns: updatedColumns } : p))
+    );
+    StorageService.updateProjectAsync(activeProject.id, { columns: updatedColumns });
+
+    recordActivity(
+      `${restore ? 'restaurou' : 'arquivou'} a coluna "${targetCol.title}" no quadro "${activeProject.name}"`
+    );
+    showToast({
+      type: 'info',
+      message: restore
+        ? `Coluna "${targetCol.title}" restaurada para o quadro.`
+        : `Coluna "${targetCol.title}" arquivada. Você pode restaurá-la nas configurações do projeto.`,
+      actionLabel: !restore ? 'Desfazer' : undefined,
+      onAction: !restore ? () => handleArchiveColumn(columnId, true) : undefined,
+    });
+  };
+
+  const handleDuplicateProject = (projectId: string, includeCards: boolean) => {
+    const origProj = projects.find((p) => p.id === projectId);
+    if (!origProj) return;
+
+    const check = StorageService.validateWorkspaceLimit(origProj.workspaceId, 'create_board');
+    if (!check.allowed) {
+      setPlanLimitState({
+        isOpen: true,
+        limitType: 'create_board',
+        currentCount: check.currentCount,
+        maxLimit: check.maxLimit,
+        planName: check.planName,
+        customMessage: check.reason,
+      });
+      return;
+    }
+
+    const nowIso = new Date().toISOString();
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const newProjId = `proj-${stamp}`;
+
+    const colIdMap = new Map<string, string>();
+    const clonedColumns: BoardColumn[] = (origProj.columns || []).map((col, idx) => {
+      const newColId = `col-${stamp}-${idx}`;
+      colIdMap.set(col.id, newColId);
+      return {
+        ...col,
+        id: newColId,
+      };
+    });
+
+    const newProj: Project = {
+      ...origProj,
+      id: newProjId,
+      name: `${origProj.name} (Cópia)`,
+      columns: clonedColumns,
+      memberIds: [...(origProj.memberIds || [])],
+      isArchived: false,
+      createdAt: nowIso,
+    };
+
+    const activeFirstColId = clonedColumns.find((c) => !c.isArchived)?.id || clonedColumns[0]?.id || 'col-1';
+    const clonedTasks: Task[] = includeCards
+      ? tasks
+          .filter((t) => t.projectId === origProj.id && !t.isArchived)
+          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+          .map((t, idx) =>
+            buildClonedTask(t, newProjId, colIdMap.get(t.columnId) || activeFirstColId, idx, false)
+          )
+      : [];
+
+    setProjects((prev) => [...prev, newProj]);
+    if (origProj.workspaceId === currentWorkspace.id) {
+      setSelectedProjectId(newProjId);
+    }
+    StorageService.createProjectAsync(newProj);
+
+    if (clonedTasks.length > 0) {
+      setTasks((prev) => [...clonedTasks, ...prev]);
+      StorageService.batchCreateTasksAsync(clonedTasks);
+    }
+
+    recordActivity(
+      includeCards
+        ? `duplicou o quadro "${origProj.name}" com ${clonedTasks.length} card(s)`
+        : `copiou a estrutura do quadro "${origProj.name}"`
+    );
+    showToast({
+      type: 'success',
+      message: includeCards
+        ? `Quadro "${origProj.name}" duplicado com ${clonedTasks.length} card(s)!`
+        : `Quadro "${origProj.name}" copiado com sucesso!`,
     });
   };
 
@@ -2063,9 +2324,22 @@ export default function App() {
     setProjects((prev) =>
       prev.map((p) => (p.id === projectId ? { ...p, isArchived } : p))
     );
+    if (isArchived && selectedProjectId === projectId) {
+      setSelectedProjectId('all');
+    } else if (!isArchived) {
+      setSelectedProjectId(projectId);
+    }
     StorageService.updateProjectAsync(projectId, { isArchived });
     const proj = projects.find((p) => p.id === projectId);
-    recordActivity(`${isArchived ? 'arquivou' : 'desarquivou'} o projeto "${proj?.name}"`);
+    recordActivity(`${isArchived ? 'arquivou' : 'desarquivou'} o quadro "${proj?.name || 'Quadro'}"`);
+    showToast({
+      type: 'info',
+      message: isArchived
+        ? `Quadro "${proj?.name || 'Quadro'}" arquivado.`
+        : `Quadro "${proj?.name || 'Quadro'}" restaurado com sucesso.`,
+      actionLabel: isArchived ? 'Desfazer' : undefined,
+      onAction: isArchived ? () => handleArchiveProject(projectId, false) : undefined,
+    });
   };
 
   // Gestão de Tags
@@ -2238,6 +2512,7 @@ export default function App() {
         onOpenCreateWorkspaceModal={() => setIsCreateWorkspaceModalOpen(true)}
         onOpenWorkspaceSettingsModal={() => setIsWorkspaceModalOpen(true)}
         projects={workspaceProjects}
+        archivedProjects={archivedWorkspaceProjects}
         selectedProjectId={selectedProjectId}
         onSelectProject={(id) => setSelectedProjectId(id)}
         activeView={viewMode}
@@ -2256,6 +2531,9 @@ export default function App() {
           setProjectToEdit(p);
           setIsProjectModalOpen(true);
         }}
+        onDuplicateProject={handleDuplicateProject}
+        onArchiveProject={handleArchiveProject}
+        onDeleteProject={handleDeleteProject}
         archivedTasks={archivedWorkspaceTasks}
         onRestoreTask={handleRestoreTask}
         onPermanentDeleteTask={handlePermanentDeleteTask}
@@ -2349,7 +2627,7 @@ export default function App() {
           onToggleTheme={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
           onOpenNewTaskModal={() => {
             setTaskToEdit(null);
-            setDefaultColumnId(activeProject?.columns[0]?.id);
+            setDefaultColumnId(activeProject?.columns.find((c) => !c.isArchived)?.id || activeProject?.columns[0]?.id);
             setIsTaskModalOpen(true);
           }}
         />
@@ -2458,6 +2736,8 @@ export default function App() {
                     onArchiveTask={handleArchiveTask}
                     onDeleteTask={handleDeleteTask}
                     onDeleteColumn={handleDeleteColumn}
+                    onArchiveColumn={(colId) => handleArchiveColumn(colId, false)}
+                    onDuplicateColumn={handleDuplicateColumn}
                     onQuickAddTask={(colId) => {
                       setDefaultColumnId(colId);
                       setTaskToEdit(null);
@@ -2484,7 +2764,7 @@ export default function App() {
                     onDeleteTask={handleDeleteTask}
                     onAddNewTask={() => {
                       setTaskToEdit(null);
-                      setDefaultColumnId(activeProject?.columns[0]?.id);
+                      setDefaultColumnId(activeProject?.columns.find((c) => !c.isArchived)?.id || activeProject?.columns[0]?.id);
                       setIsTaskModalOpen(true);
                     }}
                   />
@@ -2546,7 +2826,7 @@ export default function App() {
           canAccessDashboard={canViewDashboard}
           onOpenNewTaskModal={() => {
             setTaskToEdit(null);
-            setDefaultColumnId(activeProject?.columns[0]?.id);
+            setDefaultColumnId(activeProject?.columns.find((c) => !c.isArchived)?.id || activeProject?.columns[0]?.id);
             setIsTaskModalOpen(true);
           }}
           onOpenSidebar={() => setIsMobileSidebarOpen(true)}
@@ -2727,6 +3007,9 @@ export default function App() {
         }}
         onRenameWorkspace={(wsId, newName) => handleSaveWorkspace({ name: newName }, wsId)}
         onReorderWorkspaces={handleReorderWorkspaces}
+        onDuplicateProject={handleDuplicateProject}
+        onArchiveProject={handleArchiveProject}
+        onDeleteProject={handleDeleteProject}
         onEnterSupportMode={handleEnterSupportMode}
         onShowToast={showToast}
       />

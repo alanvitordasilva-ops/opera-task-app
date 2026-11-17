@@ -32,6 +32,9 @@ import {
   Archive,
   RefreshCw,
   Copy,
+  CopyPlus,
+  RotateCcw,
+  MoreVertical,
   Check,
   MessageSquare,
   Sliders,
@@ -61,6 +64,9 @@ interface MasterAdminModalProps {
   onSelectWorkspace: (workspaceId: string) => void;
   onRenameWorkspace?: (workspaceId: string, newName: string) => void;
   onReorderWorkspaces?: (orderedWorkspaces: Workspace[]) => void;
+  onDuplicateProject?: (projectId: string, includeCards: boolean) => void;
+  onArchiveProject?: (projectId: string, isArchived: boolean) => void;
+  onDeleteProject?: (projectId: string) => void;
   onEnterSupportMode?: (client: ClientCompany) => void;
   onShowToast: (params: { type: 'success' | 'info' | 'error'; message: string }) => void;
 }
@@ -82,11 +88,15 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
   onSelectWorkspace,
   onRenameWorkspace,
   onReorderWorkspaces,
+  onDuplicateProject,
+  onArchiveProject,
+  onDeleteProject,
   onEnterSupportMode,
   onShowToast,
 }) => {
   const [activeTab, setActiveTab] = useState<'clientes' | 'usuarios' | 'workspaces' | 'quadros' | 'planos' | 'sistema'>('clientes');
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
+  const [openMenuProjectId, setOpenMenuProjectId] = useState<string | null>(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -97,6 +107,16 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
       });
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    const handleClickOutside = () => setOpenMenuProjectId(null);
+    if (openMenuProjectId) {
+      document.addEventListener('click', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('click', handleClickOutside);
+    };
+  }, [openMenuProjectId]);
 
   const clientsList = useMemo(() => {
     const local = StorageService.getClients();
@@ -495,16 +515,36 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
 
   const handleConfirmDeleteProject = () => {
     if (!deleteTargetProject) return;
-    const updatedProjects = projects.filter((p) => p.id !== deleteTargetProject.id);
-    const updatedTasks = tasks.filter((t) => t.projectId !== deleteTargetProject.id);
-
-    onUpdateProjects(updatedProjects);
-    onUpdateTasks(updatedTasks);
-    onShowToast({
-      type: 'success',
-      message: `Quadro "${deleteTargetProject.name}" excluído pelo Master.`,
-    });
+    if (onDeleteProject) {
+      onDeleteProject(deleteTargetProject.id);
+    } else {
+      const updatedProjects = projects.filter((p) => p.id !== deleteTargetProject.id);
+      const updatedTasks = tasks.filter((t) => t.projectId !== deleteTargetProject.id);
+      onUpdateProjects(updatedProjects);
+      onUpdateTasks(updatedTasks);
+      StorageService.deleteProjectAsync(deleteTargetProject.id);
+      onShowToast({
+        type: 'success',
+        message: `Quadro "${deleteTargetProject.name}" excluído pelo Master.`,
+      });
+    }
     setDeleteTargetProject(null);
+  };
+
+  const handleMasterArchiveProject = (project: Project, isArchived: boolean) => {
+    if (onArchiveProject) {
+      onArchiveProject(project.id, isArchived);
+    } else {
+      const updated = projects.map((p) => (p.id === project.id ? { ...p, isArchived } : p));
+      onUpdateProjects(updated);
+      StorageService.updateProjectAsync(project.id, { isArchived });
+      onShowToast({
+        type: 'info',
+        message: isArchived
+          ? `Quadro "${project.name}" arquivado pelo Master.`
+          : `Quadro "${project.name}" restaurado pelo Master.`,
+      });
+    }
   };
 
   // Métricas do Sistema
@@ -1005,7 +1045,7 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
                 />
               </div>
 
-              <div className="rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden bg-white dark:bg-slate-800/60 shadow-xs">
+              <div className="rounded-2xl border border-slate-200 dark:border-slate-700 overflow-visible bg-white dark:bg-slate-800/60 shadow-xs">
                 <table className="w-full text-left text-xs">
                   <thead className="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 text-slate-500 font-semibold uppercase text-[10px] tracking-wider">
                     <tr>
@@ -1018,9 +1058,11 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-700/60">
-                    {filteredProjects.map((p) => {
+                    {filteredProjects.map((p, rowIdx) => {
                       const ws = workspaces.find((w) => w.id === p.workspaceId);
-                      const pTasks = tasks.filter((t) => t.projectId === p.id);
+                      const pTasks = tasks.filter((t) => t.projectId === p.id && !t.isArchived);
+                      const isMenuOpen = openMenuProjectId === p.id;
+                      const openUpwards = filteredProjects.length > 2 && rowIdx >= filteredProjects.length - 2;
 
                       return (
                         <tr key={p.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-700/30">
@@ -1032,7 +1074,7 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
                             {ws?.name || p.workspaceId}
                           </td>
                           <td className="px-4 py-3 text-slate-500">
-                            {p.columns.length} colunas
+                            {p.columns.filter((c) => !c.isArchived).length} colunas
                           </td>
                           <td className="px-4 py-3 text-slate-500 font-semibold">
                             {pTasks.length} cards
@@ -1049,14 +1091,95 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
                             )}
                           </td>
                           <td className="px-4 py-3 text-right">
-                            <button
-                              type="button"
-                              onClick={() => setDeleteTargetProject(p)}
-                              className="p-1.5 rounded-lg text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors"
-                              title="Excluir Quadro Definitivamente"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
+                            <div className="relative inline-block text-left">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setOpenMenuProjectId(isMenuOpen ? null : p.id);
+                                }}
+                                className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                                  isMenuOpen
+                                    ? 'bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-slate-100'
+                                    : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-700/60'
+                                }`}
+                                title={`Opções do quadro ${p.name}`}
+                              >
+                                <MoreVertical className="w-4 h-4" />
+                              </button>
+
+                              {isMenuOpen && (
+                                <div
+                                  className={`absolute right-0 ${
+                                    openUpwards ? 'bottom-full mb-1' : 'top-full mt-1'
+                                  } w-56 bg-white dark:bg-slate-800 rounded-xl shadow-xl border border-slate-200 dark:border-slate-700 py-1.5 z-50 animate-in fade-in zoom-in-95 duration-100`}
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  {onDuplicateProject && (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setOpenMenuProjectId(null);
+                                          onDuplicateProject(p.id, false);
+                                        }}
+                                        className="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 flex items-center gap-2 transition-colors cursor-pointer"
+                                      >
+                                        <Copy className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                                        <span>Copiar quadro</span>
+                                      </button>
+
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setOpenMenuProjectId(null);
+                                          onDuplicateProject(p.id, true);
+                                        }}
+                                        className="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 flex items-center gap-2 transition-colors cursor-pointer"
+                                      >
+                                        <CopyPlus className="w-3.5 h-3.5 text-teal-500 shrink-0" />
+                                        <span>Duplicar com todos os cards</span>
+                                      </button>
+
+                                      <div className="my-1 border-t border-slate-100 dark:border-slate-700/60" />
+                                    </>
+                                  )}
+
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setOpenMenuProjectId(null);
+                                      handleMasterArchiveProject(p, !p.isArchived);
+                                    }}
+                                    className="w-full px-3 py-1.5 text-xs text-left text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30 flex items-center gap-2 transition-colors cursor-pointer"
+                                  >
+                                    {p.isArchived ? (
+                                      <>
+                                        <RotateCcw className="w-3.5 h-3.5 shrink-0" />
+                                        <span>Desarquivar quadro</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Archive className="w-3.5 h-3.5 shrink-0" />
+                                        <span>Arquivar</span>
+                                      </>
+                                    )}
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setOpenMenuProjectId(null);
+                                      setDeleteTargetProject(p);
+                                    }}
+                                    className="w-full px-3 py-1.5 text-xs text-left text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 flex items-center gap-2 transition-colors font-medium cursor-pointer"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                                    <span>Excluir</span>
+                                  </button>
+                                </div>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       );
@@ -1623,6 +1746,15 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
           itemType="este quadro"
           message={`Tem certeza que deseja excluir o quadro "${deleteTargetProject.name}"? Todos os cards desta lista serão excluídos.`}
           confirmButtonText="Excluir Quadro"
+          onArchiveInstead={
+            !deleteTargetProject.isArchived
+              ? () => {
+                  handleMasterArchiveProject(deleteTargetProject, true);
+                  setDeleteTargetProject(null);
+                }
+              : undefined
+          }
+          archiveButtonText="Arquivar Quadro"
         />
       )}
 

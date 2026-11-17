@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useMemo, useEffect } from 'react';
 import {
   Workspace,
   Project,
@@ -41,6 +41,9 @@ import {
   ArrowUpDown,
   GripVertical,
   Check,
+  MoreVertical,
+  Copy,
+  CopyPlus,
 } from 'lucide-react';
 import { ProjectIcon } from './ProjectIcon.tsx';
 import {
@@ -51,6 +54,7 @@ import {
   getUserRoleInWorkspace,
   getUserIdentifiers,
   canManageWorkspace,
+  canDeleteProject,
 } from '../utils/helpers.ts';
 import { PWAInstallPrompt } from './PWAInstallPrompt.tsx';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
@@ -72,6 +76,7 @@ interface SidebarProps {
   onOpenCreateWorkspaceModal: () => void;
   onOpenWorkspaceSettingsModal: () => void;
   projects: Project[];
+  archivedProjects?: Project[];
   selectedProjectId: string;
   onSelectProject: (projectId: string) => void;
   activeView: ViewMode;
@@ -89,6 +94,9 @@ interface SidebarProps {
   onToggleTheme: () => void;
   onOpenNewProjectModal: () => void;
   onEditProject: (project: Project) => void;
+  onDuplicateProject?: (projectId: string, includeCards: boolean) => void;
+  onArchiveProject?: (projectId: string, isArchived: boolean) => void;
+  onDeleteProject?: (projectId: string) => void;
   onExportBackup: () => void;
   onImportBackup: (fileContent: string) => void;
   onResetData: () => void;
@@ -106,6 +114,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenCreateWorkspaceModal,
   onOpenWorkspaceSettingsModal,
   projects,
+  archivedProjects = [],
   selectedProjectId,
   onSelectProject,
   activeView,
@@ -123,6 +132,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onToggleTheme,
   onOpenNewProjectModal,
   onEditProject,
+  onDuplicateProject,
+  onArchiveProject,
+  onDeleteProject,
   onExportBackup,
   onImportBackup,
   onResetData,
@@ -142,9 +154,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [isUserSwitcherOpen, setIsUserSwitcherOpen] = useState(false);
   const isMaster = isUserMaster(currentUser);
   const [expandedArchivedProjects, setExpandedArchivedProjects] = useState<Record<string, boolean>>({});
+  const [openMenuProjectId, setOpenMenuProjectId] = useState<string | null>(null);
+  const [isArchivedBoardsExpanded, setIsArchivedBoardsExpanded] = useState(false);
+  const [deleteConfirmProject, setDeleteConfirmProject] = useState<Project | null>(null);
   const [deleteConfirmTask, setDeleteConfirmTask] = useState<Task | null>(null);
   const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = () => setOpenMenuProjectId(null);
+    if (openMenuProjectId) {
+      document.addEventListener('click', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('click', handleClickOutside);
+    };
+  }, [openMenuProjectId]);
 
   const handleCommitWorkspaceRename = (wsId: string) => {
     const trimmed = editingWorkspaceName.trim();
@@ -784,7 +809,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         <span className="truncate">{proj.name}</span>
                       </button>
 
-                      <div className="flex items-center gap-1">
+                      <div className="flex items-center gap-1 relative shrink-0">
                         <span className="text-[11px] text-slate-400">
                           {stats.pending}
                         </span>
@@ -792,13 +817,98 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            onEditProject(proj);
+                            setOpenMenuProjectId(openMenuProjectId === proj.id ? null : proj.id);
                           }}
-                          className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 rounded transition-opacity"
-                          title="Configurar projeto e colunas"
+                          className={`p-1 rounded-md transition-all cursor-pointer ${
+                            openMenuProjectId === proj.id
+                              ? 'opacity-100 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 shadow-2xs'
+                              : 'opacity-70 sm:opacity-0 group-hover:opacity-100 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-white/80 dark:hover:bg-slate-700/70'
+                          }`}
+                          title={`Opções do quadro ${proj.name}`}
                         >
-                          <Edit2 className="w-3 h-3" />
+                          <MoreVertical className="w-3.5 h-3.5" />
                         </button>
+
+                        {openMenuProjectId === proj.id && (
+                          <div
+                            className="absolute right-0 top-7 w-52 bg-white dark:bg-slate-800 rounded-xl shadow-xl border border-slate-200 dark:border-slate-700 py-1.5 z-50 animate-in fade-in zoom-in-95 duration-100"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOpenMenuProjectId(null);
+                                onEditProject(proj);
+                              }}
+                              className="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 flex items-center gap-2 transition-colors cursor-pointer"
+                            >
+                              <Edit2 className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                              <span>Configurar quadro</span>
+                            </button>
+
+                            {onDuplicateProject && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setOpenMenuProjectId(null);
+                                    onDuplicateProject(proj.id, false);
+                                  }}
+                                  className="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 flex items-center gap-2 transition-colors cursor-pointer"
+                                >
+                                  <Copy className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                                  <span>Copiar quadro</span>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setOpenMenuProjectId(null);
+                                    onDuplicateProject(proj.id, true);
+                                  }}
+                                  className="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 flex items-center gap-2 transition-colors cursor-pointer"
+                                >
+                                  <CopyPlus className="w-3.5 h-3.5 text-teal-500 shrink-0" />
+                                  <span>Duplicar com todos os cards</span>
+                                </button>
+                              </>
+                            )}
+
+                            {canDeleteProject(userRole, isMaster) && (onArchiveProject || onDeleteProject) && (
+                              <>
+                                <div className="my-1 border-t border-slate-100 dark:border-slate-700/60" />
+
+                                {onArchiveProject && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setOpenMenuProjectId(null);
+                                      onArchiveProject(proj.id, true);
+                                    }}
+                                    className="w-full px-3 py-1.5 text-xs text-left text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30 flex items-center gap-2 transition-colors cursor-pointer"
+                                  >
+                                    <Archive className="w-3.5 h-3.5 shrink-0" />
+                                    <span>Arquivar</span>
+                                  </button>
+                                )}
+
+                                {onDeleteProject && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setOpenMenuProjectId(null);
+                                      setDeleteConfirmProject(proj);
+                                    }}
+                                    className="w-full px-3 py-1.5 text-xs text-left text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 flex items-center gap-2 transition-colors font-medium cursor-pointer"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                                    <span>Excluir</span>
+                                  </button>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -904,6 +1014,70 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 );
               })}
             </div>
+            )}
+
+            {/* Seção de Quadros Arquivados (Restauração / Exclusão) */}
+            {canViewArchived && archivedProjects.length > 0 && (
+              <div className="pt-2 mt-2 border-t border-slate-100 dark:border-slate-800/80 space-y-1">
+                <button
+                  type="button"
+                  onClick={() => setIsArchivedBoardsExpanded((prev) => !prev)}
+                  className="w-full flex items-center justify-between px-2 py-1 rounded-lg text-[11px] font-semibold text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-100/70 dark:hover:bg-slate-800/40 transition-colors cursor-pointer"
+                >
+                  <span className="flex items-center gap-1.5 truncate">
+                    <Archive className="w-3 h-3 text-amber-500 shrink-0" />
+                    <span className="truncate">Quadros Arquivados ({archivedProjects.length})</span>
+                  </span>
+                  {isArchivedBoardsExpanded ? (
+                    <ChevronDown className="w-3 h-3 shrink-0" />
+                  ) : (
+                    <ChevronRight className="w-3 h-3 shrink-0" />
+                  )}
+                </button>
+
+                {isArchivedBoardsExpanded && (
+                  <div className="space-y-1 pl-2">
+                    {archivedProjects.map((ap) => (
+                      <div
+                        key={ap.id}
+                        className="flex items-center justify-between gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200/70 dark:border-slate-700/60 text-xs"
+                      >
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          <span
+                            className="w-2 h-2 rounded-full shrink-0 opacity-60"
+                            style={{ backgroundColor: ap.color }}
+                          />
+                          <span className="truncate text-[11px] font-medium text-slate-600 dark:text-slate-300">
+                            {ap.name}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-0.5 shrink-0">
+                          {onArchiveProject && (
+                            <button
+                              type="button"
+                              onClick={() => onArchiveProject(ap.id, false)}
+                              className="p-1 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded transition-colors cursor-pointer"
+                              title="Desarquivar / Restaurar quadro"
+                            >
+                              <RotateCcw className="w-3 h-3" />
+                            </button>
+                          )}
+                          {canDeleteProject(userRole, isMaster) && onDeleteProject && (
+                            <button
+                              type="button"
+                              onClick={() => setDeleteConfirmProject(ap)}
+                              className="p-1 text-slate-400 hover:text-red-600 dark:hover:text-red-400 rounded transition-colors cursor-pointer"
+                              title="Excluir quadro permanentemente"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -1134,6 +1308,32 @@ export const Sidebar: React.FC<SidebarProps> = ({
             itemType="este card"
             message={`Tem certeza que deseja excluir permanentemente o card arquivado "${deleteConfirmTask.title}"? Esta ação não pode ser desfeita.`}
             confirmButtonText="Excluir Definitivamente"
+          />
+        )}
+
+        {/* Modal de Confirmação Padronizado para Quadros */}
+        {deleteConfirmProject && onDeleteProject && (
+          <ConfirmDeleteModal
+            isOpen={!!deleteConfirmProject}
+            onClose={() => setDeleteConfirmProject(null)}
+            onConfirm={() => {
+              onDeleteProject(deleteConfirmProject.id);
+              setDeleteConfirmProject(null);
+            }}
+            title="Excluir quadro permanentemente?"
+            itemName={deleteConfirmProject.name}
+            itemType="este quadro"
+            message={`Tem certeza que deseja excluir permanentemente o quadro "${deleteConfirmProject.name}" e todos os seus cards? Esta ação não pode ser desfeita.`}
+            confirmButtonText="Excluir Quadro"
+            onArchiveInstead={
+              !deleteConfirmProject.isArchived && onArchiveProject
+                ? () => {
+                    onArchiveProject(deleteConfirmProject.id, true);
+                    setDeleteConfirmProject(null);
+                  }
+                : undefined
+            }
+            archiveButtonText="Arquivar Quadro"
           />
         )}
 
