@@ -246,9 +246,17 @@ export default function App() {
       setCurrentWorkspace(resolvedActiveWs);
       currentWorkspaceRef.current = resolvedActiveWs;
       StorageService.setCurrentWorkspaceId(resolvedActiveWs.id);
-      StorageService.ensureWorkspaceProject(resolvedActiveWs.id, resolvedActiveWs.name);
-      setProjects(StorageService.getProjects());
+      const ensuredProj = StorageService.ensureWorkspaceProject(resolvedActiveWs.id, resolvedActiveWs.name);
+      const freshProjs = StorageService.getProjects();
+      setProjects(freshProjs);
+      setSelectedProjectId((prevProjId) => {
+        const wsProjs = freshProjs.filter((p) => p.workspaceId === resolvedActiveWs!.id && !p.isArchived);
+        if (wsProjs.some((p) => p.id === prevProjId)) return prevProjId;
+        return wsProjs[0]?.id || ensuredProj.id;
+      });
       setClients(StorageService.getClients());
+      setActivities(StorageService.getActivities());
+      setNotifications(StorageService.getNotifications());
     } else {
       const userCompany = resolvedUser.companyId || resolvedUser.tenantId;
       const wsId = `ws-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
@@ -271,6 +279,9 @@ export default function App() {
       setCurrentWorkspace(createdWs);
       currentWorkspaceRef.current = createdWs;
       setProjects(StorageService.getProjects());
+      setClients(StorageService.getClients());
+      setActivities(StorageService.getActivities());
+      setNotifications(StorageService.getNotifications());
     }
 
     StorageService.setAuthenticated(true);
@@ -640,9 +651,17 @@ export default function App() {
     });
 
     // Sincronização de Workspaces e Membros
-    const unsubWorkspaces = RealtimeService.subscribe('workspaces', (incomingWorkspaces: Workspace[]) => {
+    const unsubWorkspaces = RealtimeService.subscribe('workspaces', (incomingWorkspaces: Workspace[], meta) => {
       if (Array.isArray(incomingWorkspaces) && incomingWorkspaces.length > 0) {
+        const action = String(meta?.action || '');
+        const isDestructive =
+          action.includes('reset') || action.includes('replace') || action.includes('delete');
         setWorkspaces((prev) => {
+          if (isDestructive) {
+            const next = sortWorkspacesByOrder(incomingWorkspaces);
+            if (JSON.stringify(prev) === JSON.stringify(next)) return prev;
+            return next;
+          }
           const map = new Map<string, Workspace>();
           prev.forEach((w) => map.set(w.id, w));
           incomingWorkspaces.forEach((w) => {
@@ -662,8 +681,14 @@ export default function App() {
         });
         setCurrentWorkspace((prev) => {
           const updatedCurrent = incomingWorkspaces.find((w) => w.id === prev.id);
-          if (updatedCurrent && JSON.stringify(prev) !== JSON.stringify(updatedCurrent)) {
-            return updatedCurrent;
+          if (updatedCurrent) {
+            if (JSON.stringify(prev) !== JSON.stringify(updatedCurrent)) {
+              return updatedCurrent;
+            }
+            return prev;
+          }
+          if (isDestructive && incomingWorkspaces[0]) {
+            return incomingWorkspaces[0];
           }
           return prev;
         });
@@ -3011,6 +3036,34 @@ export default function App() {
         onArchiveProject={handleArchiveProject}
         onDeleteProject={handleDeleteProject}
         onEnterSupportMode={handleEnterSupportMode}
+        onResetComplete={() => {
+          const freshUsers = StorageService.getUsers();
+          const freshWorkspaces = StorageService.getWorkspaces();
+          const freshProjects = StorageService.getProjects();
+          const freshClients = StorageService.getClients();
+          const mainWs = freshWorkspaces[0];
+          const mainProj = freshProjects.find((p) => p.workspaceId === mainWs?.id) || freshProjects[0];
+
+          setUsers(freshUsers);
+          if (freshUsers[0]) {
+            setCurrentUser(freshUsers[0]);
+            currentUserRef.current = freshUsers[0];
+          }
+          setWorkspaces(freshWorkspaces);
+          if (mainWs) {
+            setCurrentWorkspace(mainWs);
+            currentWorkspaceRef.current = mainWs;
+          }
+          setProjects(freshProjects);
+          if (mainProj) {
+            setSelectedProjectId(mainProj.id);
+          }
+          setTasks([]);
+          setActivities([]);
+          setNotifications([]);
+          setClients(freshClients);
+          setSupportMode(null);
+        }}
         onShowToast={showToast}
       />
 

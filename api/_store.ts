@@ -61,6 +61,10 @@ const globalStore = global as unknown as {
   __operatask_tasks?: any[];
   __operatask_tags?: any[];
   __operatask_activities?: any[];
+  __operatask_notifications?: any[];
+  __operatask_fichas_tecnicas?: any[];
+  __operatask_clients?: any[];
+  __operatask_last_reset_at?: string | null;
 };
 
 if (!globalStore.__operatask_users) {
@@ -75,12 +79,77 @@ if (!globalStore.__operatask_projects) {
 if (!globalStore.__operatask_tasks) {
   globalStore.__operatask_tasks = [];
 }
+if (!globalStore.__operatask_activities) {
+  globalStore.__operatask_activities = [];
+}
+if (!globalStore.__operatask_notifications) {
+  globalStore.__operatask_notifications = [];
+}
+if (!globalStore.__operatask_fichas_tecnicas) {
+  globalStore.__operatask_fichas_tecnicas = [];
+}
+if (!globalStore.__operatask_clients) {
+  globalStore.__operatask_clients = [];
+}
+if (globalStore.__operatask_last_reset_at === undefined) {
+  globalStore.__operatask_last_reset_at = null;
+}
 
 export function getServerStore() {
   return {
-    users: globalStore.__operatask_users!,
-    workspaces: globalStore.__operatask_workspaces!,
-    projects: globalStore.__operatask_projects!,
-    tasks: globalStore.__operatask_tasks!,
+    get users() {
+      return globalStore.__operatask_users!;
+    },
+    set users(val: ServerUser[]) {
+      globalStore.__operatask_users = val;
+    },
+    get workspaces() {
+      return globalStore.__operatask_workspaces!;
+    },
+    set workspaces(val: any[]) {
+      globalStore.__operatask_workspaces = val;
+    },
+    get projects() {
+      return globalStore.__operatask_projects!;
+    },
+    set projects(val: any[]) {
+      globalStore.__operatask_projects = val;
+    },
+    get tasks() {
+      return globalStore.__operatask_tasks!;
+    },
+    set tasks(val: any[]) {
+      globalStore.__operatask_tasks = val;
+    },
+    get activities() {
+      return globalStore.__operatask_activities!;
+    },
+    set activities(val: any[]) {
+      globalStore.__operatask_activities = val;
+    },
+    get notifications() {
+      return globalStore.__operatask_notifications!;
+    },
+    set notifications(val: any[]) {
+      globalStore.__operatask_notifications = val;
+    },
+    get fichas_tecnicas() {
+      return globalStore.__operatask_fichas_tecnicas!;
+    },
+    set fichas_tecnicas(val: any[]) {
+      globalStore.__operatask_fichas_tecnicas = val;
+    },
+    get clients() {
+      return globalStore.__operatask_clients!;
+    },
+    set clients(val: any[]) {
+      globalStore.__operatask_clients = val;
+    },
+    get lastResetAt() {
+      return globalStore.__operatask_last_reset_at ?? null;
+    },
+    set lastResetAt(val: string | null) {
+      globalStore.__operatask_last_reset_at = val;
+    },
   };
 }

@@ -1,4 +1,4 @@
-import { getServerStore } from '../_store.js';
+import { getServerStore, INITIAL_USERS, INITIAL_WORKSPACES } from '../_store.js';
 
 export default async function handler(req: any, res: any) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -13,13 +13,32 @@ export default async function handler(req: any, res: any) {
 
   if (req.method === 'POST') {
     const body = req.body || {};
+
+    if (body.resetTestData === true) {
+      const resetAt = body.resetAt || new Date().toISOString();
+      store.users = Array.isArray(body.users) ? body.users : [...INITIAL_USERS];
+      store.workspaces = Array.isArray(body.workspaces) ? body.workspaces : [...INITIAL_WORKSPACES];
+      store.projects = Array.isArray(body.projects) ? body.projects : [];
+      store.tasks = Array.isArray(body.tasks) ? body.tasks : [];
+      store.activities = Array.isArray(body.activities) ? body.activities : [];
+      store.notifications = Array.isArray(body.notifications) ? body.notifications : [];
+      store.fichas_tecnicas = Array.isArray(body.fichas_tecnicas) ? body.fichas_tecnicas : [];
+      store.clients = Array.isArray(body.clients) ? body.clients : [];
+      store.lastResetAt = resetAt;
+      return res.status(200).json({ success: true, reset: true, lastResetAt: resetAt });
+    }
+
     if (Array.isArray(body.users)) {
-      const userMap = new Map<string, any>();
-      (store.users || []).forEach((u: any) => u?.id && userMap.set(u.id, u));
-      body.users.forEach((u: any) => {
-        if (u?.id) userMap.set(u.id, { ...userMap.get(u.id), ...u, status: 'active', isActive: true });
-      });
-      store.users = Array.from(userMap.values());
+      if (body.replaceAll) {
+        store.users = body.users;
+      } else {
+        const userMap = new Map<string, any>();
+        (store.users || []).forEach((u: any) => u?.id && userMap.set(u.id, u));
+        body.users.forEach((u: any) => {
+          if (u?.id) userMap.set(u.id, { ...userMap.get(u.id), ...u, status: 'active', isActive: true });
+        });
+        store.users = Array.from(userMap.values());
+      }
     }
     if (Array.isArray(body.workspaces)) {
       if (body.replaceAll) {
@@ -93,6 +112,11 @@ export default async function handler(req: any, res: any) {
       const deletedSet = new Set<string>(body.deletedTaskIds.map((id: any) => String(id)));
       store.tasks = (store.tasks || []).filter((t: any) => t?.id && !deletedSet.has(t.id));
     }
+    if (Array.isArray(body.activities)) store.activities = body.activities;
+    if (Array.isArray(body.notifications)) store.notifications = body.notifications;
+    if (Array.isArray(body.fichas_tecnicas)) store.fichas_tecnicas = body.fichas_tecnicas;
+    if (Array.isArray(body.clients)) store.clients = body.clients;
+
     return res.status(200).json({ success: true, message: 'Estado sincronizado' });
   }
 
@@ -103,10 +127,20 @@ export default async function handler(req: any, res: any) {
       workspaces: store.workspaces,
       projects: store.projects,
       tasks: store.tasks,
+      activities: store.activities,
+      notifications: store.notifications,
+      fichas_tecnicas: store.fichas_tecnicas,
+      clients: store.clients,
+      lastResetAt: store.lastResetAt,
     },
     users: store.users,
     workspaces: store.workspaces,
     projects: store.projects,
     tasks: store.tasks,
+    activities: store.activities,
+    notifications: store.notifications,
+    fichas_tecnicas: store.fichas_tecnicas,
+    clients: store.clients,
+    lastResetAt: store.lastResetAt,
   });
 }

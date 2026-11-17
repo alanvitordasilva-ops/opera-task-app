@@ -68,6 +68,7 @@ interface MasterAdminModalProps {
   onArchiveProject?: (projectId: string, isArchived: boolean) => void;
   onDeleteProject?: (projectId: string) => void;
   onEnterSupportMode?: (client: ClientCompany) => void;
+  onResetComplete?: () => void;
   onShowToast: (params: { type: 'success' | 'info' | 'error'; message: string }) => void;
 }
 
@@ -92,6 +93,7 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
   onArchiveProject,
   onDeleteProject,
   onEnterSupportMode,
+  onResetComplete,
   onShowToast,
 }) => {
   const [activeTab, setActiveTab] = useState<'clientes' | 'usuarios' | 'workspaces' | 'quadros' | 'planos' | 'sistema'>('clientes');
@@ -1764,12 +1766,16 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
           isOpen={isResetModalOpen}
           onClose={() => setIsResetModalOpen(false)}
           onResetComplete={() => {
-            onUpdateUsers(StorageService.getUsers());
-            onUpdateWorkspaces(StorageService.getWorkspaces());
-            onUpdateProjects(StorageService.getProjects());
-            onUpdateTasks(StorageService.getTasks());
-            if (onUpdateClients) {
-              onUpdateClients(StorageService.getClients());
+            if (onResetComplete) {
+              onResetComplete();
+            } else {
+              onUpdateUsers(StorageService.getUsers());
+              onUpdateWorkspaces(StorageService.getWorkspaces());
+              onUpdateProjects(StorageService.getProjects());
+              onUpdateTasks(StorageService.getTasks());
+              if (onUpdateClients) {
+                onUpdateClients(StorageService.getClients());
+              }
             }
           }}
           onShowToast={onShowToast}

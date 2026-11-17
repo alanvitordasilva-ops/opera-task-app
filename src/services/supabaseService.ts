@@ -1753,31 +1753,67 @@ export class SupabaseService {
     if (!client) return { success: false, error: 'Supabase não conectado' };
 
     try {
-      // 1. Apaga tarefas/cards de teste (não pertencentes a ws-principal)
-      await client.from('tasks').delete().neq('workspace_id', 'ws-principal');
-      await client.from('cards').delete().neq('workspace_id', 'ws-principal');
+      const errors: string[] = [];
 
-      // 2. Apaga projetos que não sejam o principal
-      await client.from('projects').delete().neq('workspace_id', 'ws-principal');
+      // 1. Apaga TODAS as tarefas e cards de teste (inclusive dentro do ws-principal ou com workspace_id nulo)
+      const { error: tasksErr } = await client.from('tasks').delete().not('id', 'is', null);
+      if (tasksErr && !tasksErr.message?.includes('does not exist')) errors.push(`tasks: ${tasksErr.message}`);
 
-      // 3. Apaga membros que não sejam o Master
-      await client.from('workspace_members').delete().neq('user_id', 'user-master-alan');
+      const { error: cardsErr } = await client.from('cards').delete().not('id', 'is', null);
+      if (cardsErr && !cardsErr.message?.includes('does not exist')) errors.push(`cards: ${cardsErr.message}`);
 
-      // 4. Apaga workspaces de teste (mantendo ws-principal)
-      await client.from('workspaces').delete().neq('id', 'ws-principal');
+      // 2. Apaga fichas técnicas secundárias/de teste (qualquer workspace_id nulo ou != ws-principal)
+      const { error: ftErr } = await client
+        .from('fichas_tecnicas')
+        .delete()
+        .or('workspace_id.neq.ws-principal,workspace_id.is.null');
+      if (ftErr && !ftErr.message?.includes('does not exist')) errors.push(`fichas_tecnicas: ${ftErr.message}`);
 
-      // 5. Apaga tenants de teste (mantendo tenant-matriz)
-      await client.from('tenants').delete().neq('id', 'tenant-matriz');
+      // 3. Apaga projetos/quadros secundários de teste (inclusive quadros extras em ws-principal)
+      const { error: projErr } = await client
+        .from('projects')
+        .delete()
+        .neq('id', 'proj-ws-principal-principal');
+      if (projErr && !projErr.message?.includes('does not exist')) errors.push(`projects: ${projErr.message}`);
 
-      // 6. Apaga perfis de teste na tabela profiles (mantendo master)
-      await client
+      // 4. Apaga vínculos de membros que não sejam o Master
+      const { error: wmUserErr } = await client.from('workspace_members').delete().neq('user_id', 'user-master-alan');
+      if (wmUserErr && !wmUserErr.message?.includes('does not exist')) errors.push(`workspace_members(user): ${wmUserErr.message}`);
+
+      const { error: wmWsErr } = await client.from('workspace_members').delete().neq('workspace_id', 'ws-principal');
+      if (wmWsErr && !wmWsErr.message?.includes('does not exist')) errors.push(`workspace_members(ws): ${wmWsErr.message}`);
+
+      // 5. Apaga workspaces de teste (mantendo ws-principal)
+      const { error: wsErr } = await client.from('workspaces').delete().neq('id', 'ws-principal');
+      if (wsErr && !wsErr.message?.includes('does not exist')) errors.push(`workspaces: ${wsErr.message}`);
+
+      // 6. Apaga empresas/tenants de teste (mantendo apenas a Matriz)
+      const { error: tenantsErr } = await client
+        .from('tenants')
+        .delete()
+        .not('id', 'in', '("tenant-matriz","client-matriz")');
+      if (tenantsErr && !tenantsErr.message?.includes('does not exist')) errors.push(`tenants: ${tenantsErr.message}`);
+
+      // 7. Apaga perfis de teste na tabela profiles (sem .neq('id', 'user-master-alan') pois id é UUID!)
+      const { error: profErr } = await client
         .from('profiles')
         .delete()
-        .neq('id', 'user-master-alan')
+        .neq('tipo', 'master')
         .not('email', 'in', '("alanvitordasilva@gmail.com.br","alanvitordasilva@gmail.com")');
+      if (profErr && !profErr.message?.includes('does not exist')) errors.push(`profiles: ${profErr.message}`);
 
-      // 7. Apaga fichas técnicas de teste vinculadas a outros workspaces
-      await client.from('fichas_tecnicas').delete().neq('workspace_id', 'ws-principal');
+      // 8. Limpa atividades e notificações de teste se existirem
+      try {
+        await client.from('activities').delete().not('id', 'is', null);
+      } catch {}
+      try {
+        await client.from('notifications').delete().not('id', 'is', null);
+      } catch {}
+
+      if (errors.length > 0) {
+        console.warn('[SupabaseService] Avisos durante limpeza de dados no Supabase:', errors);
+        return { success: false, error: errors.join(' | ') };
+      }
 
       return { success: true };
     } catch (err: any) {

@@ -32,6 +32,7 @@ export interface SyncMessage<T = any> {
     action: string;
     targetId?: string;
     userName?: string;
+    lastResetAt?: string | null;
   };
 }
 
@@ -385,11 +386,29 @@ class RealtimeServiceImpl {
     }
 
     if (msg.type === 'INITIAL_STATE' && msg.payload) {
+      const incomingAction = String(msg.actionMeta?.action || '');
+      const incomingResetAt = msg.actionMeta?.lastResetAt || (msg.payload as any)?.lastResetAt || null;
+      let isReset = incomingAction.includes('reset') || incomingAction.includes('replace');
+
+      if (incomingResetAt && typeof window !== 'undefined') {
+        try {
+          const localResetRaw = localStorage.getItem('operatask_clean_v1_last_reset_at');
+          const localResetTs = localResetRaw ? Date.parse(localResetRaw) : 0;
+          const serverResetTs = Date.parse(incomingResetAt);
+          if (!Number.isNaN(serverResetTs) && serverResetTs > (Number.isNaN(localResetTs) ? 0 : localResetTs)) {
+            localStorage.setItem('operatask_clean_v1_last_reset_at', incomingResetAt);
+            isReset = true;
+          }
+        } catch {}
+      }
+
       Object.entries(msg.payload).forEach(([entity, data]) => {
-        const meta =
-          entity === 'tasks' && msg.actionMeta?.action
-            ? msg.actionMeta
-            : { action: 'initial_sync' };
+        if (entity === 'lastResetAt') return;
+        const meta = isReset
+          ? { action: 'reset_test_data' }
+          : entity === 'tasks' && msg.actionMeta?.action
+          ? msg.actionMeta
+          : { action: 'initial_sync' };
         this.notifyEntityListeners(entity as SyncEntity, data, meta);
       });
       return;
@@ -416,7 +435,7 @@ class RealtimeServiceImpl {
     let resolvedData = data;
     const action = String(meta?.action || '');
     const isDestructiveAction =
-      action.includes('delete') || action.includes('reset');
+      action.includes('delete') || action.includes('reset') || action.includes('replace');
 
     if (entity === 'tasks' && isDestructiveAction && meta?.targetId) {
       markTaskDeleted(meta.targetId);
@@ -503,8 +522,24 @@ class RealtimeServiceImpl {
         const json = await res.json();
         const data = json.data || json;
         if (data && typeof data === 'object') {
+          const serverResetAt = data.lastResetAt || json.lastResetAt || null;
+          let syncAction = 'http_sync';
+          try {
+            const localResetRaw = localStorage.getItem('operatask_clean_v1_last_reset_at');
+            const localResetTs = localResetRaw ? Date.parse(localResetRaw) : 0;
+            const serverResetTs = serverResetAt ? Date.parse(serverResetAt) : 0;
+            if (!Number.isNaN(serverResetTs) && serverResetTs > (Number.isNaN(localResetTs) ? 0 : localResetTs)) {
+              localStorage.setItem('operatask_clean_v1_last_reset_at', serverResetAt);
+              syncAction = 'reset_test_data';
+            } else if (!Number.isNaN(localResetTs) && localResetTs > (Number.isNaN(serverResetTs) ? 0 : serverResetTs)) {
+              // Local já foi resetado mais recentemente: força reconciliação via StorageService em vez de restaurar dados velhos
+              return false;
+            }
+          } catch {}
+
           Object.entries(data).forEach(([entity, val]) => {
-            this.notifyEntityListeners(entity as SyncEntity, val, { action: 'http_sync' });
+            if (entity === 'lastResetAt') return;
+            this.notifyEntityListeners(entity as SyncEntity, val, { action: syncAction });
           });
           return true;
         }

@@ -40,6 +40,8 @@ export default async function handler(req: any, res: any) {
         workspaces: store.workspaces,
         projects: store.projects,
         tasks: store.tasks,
+        clients: store.clients || [],
+        lastResetAt: store.lastResetAt || null,
       });
     } else {
       return res.status(401).json({ success: false, error: 'Senha inválida' });
@@ -102,5 +104,7 @@ export default async function handler(req: any, res: any) {
     workspaces: store.workspaces,
     projects: store.projects,
     tasks: store.tasks,
+    clients: store.clients || [],
+    lastResetAt: store.lastResetAt || null,
   });
 }
