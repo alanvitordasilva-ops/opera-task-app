@@ -32,6 +32,10 @@ import {
   getDeletedTaskIds,
   markTaskDeleted,
   clearTaskDeleted,
+  getDeletedProjectIds,
+  markProjectDeleted,
+  clearProjectDeleted,
+  mergeProjectColumns,
 } from '../utils/helpers.ts';
 
 const STORAGE_KEYS = {
@@ -825,16 +829,32 @@ export const StorageService = {
           }
           if (Array.isArray(data.projects) && data.projects.length > 0) {
             const currentProj = this.getProjects();
+            const deletedProjIds = new Set(getDeletedProjectIds());
             const filteredServerProj = data.projects.filter(
-              (mp: Project) => !isPreResetZombieRecord(mp, effectiveResetMs)
+              (mp: Project) => mp?.id && !deletedProjIds.has(mp.id) && !isPreResetZombieRecord(mp, effectiveResetMs)
             );
-            const mergedProj = [...filteredServerProj];
+            const projMap = new Map<string, Project>();
             currentProj.forEach((cp) => {
-              if (!mergedProj.some((mp) => mp.id === cp.id)) {
-                mergedProj.push(cp);
+              if (cp?.id && !deletedProjIds.has(cp.id)) {
+                projMap.set(cp.id, cp);
               }
             });
-            localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify(mergedProj));
+            const currentTasksForCols = this.getTasks();
+            filteredServerProj.forEach((sp: Project) => {
+              const prev = projMap.get(sp.id);
+              if (prev) {
+                const resolvedCols = mergeProjectColumns(
+                  prev.columns,
+                  sp.columns,
+                  sp.id,
+                  currentTasksForCols
+                );
+                projMap.set(sp.id, { ...prev, ...sp, columns: resolvedCols });
+              } else {
+                projMap.set(sp.id, sp);
+              }
+            });
+            localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify(Array.from(projMap.values())));
           }
           if (Array.isArray(data.tasks) && data.tasks.length > 0) {
             const currentTasks = this.getTasks();
@@ -1293,16 +1313,40 @@ export const StorageService = {
 
         if (res.success && Array.isArray(res.projects) && res.projects.length > 0) {
           const resetMs = getLocalLastResetAtMs();
-          const validCloudProjects = res.projects.filter((cp) => !isPreResetZombieRecord(cp, resetMs));
+          const deletedProjIds = new Set(getDeletedProjectIds());
+          const validCloudProjects = res.projects.filter(
+            (cp) => cp?.id && !deletedProjIds.has(cp.id) && !isPreResetZombieRecord(cp, resetMs)
+          );
           const localProjects = this.getProjects();
-          let merged: Project[];
-          if (workspaceId) {
-            const others = localProjects.filter((p) => p.workspaceId !== workspaceId);
-            merged = [...others, ...validCloudProjects];
-          } else {
-            merged = validCloudProjects.length > 0 ? validCloudProjects : localProjects;
-          }
-          this.saveProjects(merged, true, { skipCloudPush: true });
+          const projMap = new Map<string, Project>();
+
+          // Preserva todos os projetos locais não-excluídos (incluindo quadros recém-duplicados)
+          localProjects.forEach((lp) => {
+            if (lp?.id && !deletedProjIds.has(lp.id)) {
+              projMap.set(lp.id, lp);
+            }
+          });
+
+          // Mescla projetos da nuvem preservando colunas locais caso a nuvem venha vazia ou sem coluna recém-duplicada
+          const localTasksForCols = this.getTasks();
+          validCloudProjects.forEach((cp) => {
+            const prev = projMap.get(cp.id);
+            if (prev) {
+              const resolvedCols = mergeProjectColumns(
+                prev.columns,
+                cp.columns,
+                cp.id,
+                localTasksForCols
+              );
+              projMap.set(cp.id, { ...prev, ...cp, columns: resolvedCols });
+            } else {
+              projMap.set(cp.id, cp);
+            }
+          });
+
+          const merged = Array.from(projMap.values());
+          localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify(merged));
+          writeIndexedDB(STORAGE_KEYS.PROJECTS, merged).catch(() => {});
           return { success: true, projects: merged, fromCloud: true };
         }
       } catch (err) {
@@ -1357,23 +1401,10 @@ export const StorageService = {
    * Criar Projeto / Quadro com persistência imediata local, no servidor e no Supabase
    */
   async createProjectAsync(project: Project): Promise<{ success: boolean; project: Project; error?: string }> {
+    clearProjectDeleted(project.id);
     const current = this.getProjects();
     const nextList = [...current.filter((p) => p.id !== project.id), project];
-    this.saveProjects(nextList, true);
-
-    RealtimeService.broadcast('projects', nextList, {
-      action: 'create_project',
-      targetId: project.id,
-      userName: project.name,
-    });
-
-    if (isServerApiAvailable()) {
-      fetch('/api/sync/state', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projects: nextList }),
-      }).catch(() => {});
-    }
+    this.saveProjects(nextList, true, { action: 'create_project', targetId: project.id, skipCloudPush: true });
 
     if (SupabaseService.isConfigured()) {
       try {
@@ -1390,29 +1421,183 @@ export const StorageService = {
   },
 
   /**
+   * Duplicar Projeto / Quadro com todos os seus cards de forma atômica:
+   * 1. Grava projetos + cards imediatamente no localStorage/IndexedDB e servidor
+   * 2. Persiste o novo projeto no Supabase ANTES de inserir os cards em lote (evita violação de FK)
+   */
+  async duplicateProjectWithTasksAsync(
+    newProj: Project,
+    clonedTasks: Task[]
+  ): Promise<{ success: boolean; project: Project; tasks: Task[] }> {
+    clearProjectDeleted(newProj.id);
+    clonedTasks.forEach((t) => clearTaskDeleted(t.id));
+
+    // 1. Gravação local síncrona e imediata (sobrevive a refresh instantâneo)
+    const currentProjects = this.getProjects();
+    const nextProjects = [...currentProjects.filter((p) => p.id !== newProj.id), newProj];
+    localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify(nextProjects));
+    writeIndexedDB(STORAGE_KEYS.PROJECTS, nextProjects).catch(() => {});
+
+    const newTaskIds = new Set(clonedTasks.map((t) => t.id));
+    const currentTasks = this.getTasks();
+    const nextTasks =
+      clonedTasks.length > 0
+        ? [...clonedTasks, ...currentTasks.filter((t) => !newTaskIds.has(t.id))]
+        : currentTasks;
+    if (clonedTasks.length > 0) {
+      localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(nextTasks));
+      writeIndexedDB(STORAGE_KEYS.TASKS, nextTasks).catch(() => {});
+    }
+
+    // 2. Broadcast em tempo real
+    RealtimeService.broadcast('projects', nextProjects, {
+      action: 'duplicate_project',
+      targetId: newProj.id,
+      userName: newProj.name,
+    });
+    if (clonedTasks.length > 0) {
+      RealtimeService.broadcast('tasks', nextTasks, {
+        action: 'create_tasks_batch',
+        targetId: newProj.id,
+      });
+    }
+
+    // 3. Persistência atômica no servidor central (/api/sync/state) com payload delta compacto para keepalive sobreviver a F5 imediato
+    if (typeof window !== 'undefined' && isServerApiAvailable()) {
+      const payloadStr = JSON.stringify({
+        projects: [newProj],
+        tasks: clonedTasks,
+        clientId: RealtimeService.getClientId(),
+        action: 'duplicate_project',
+      });
+      fetch('/api/sync/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payloadStr,
+        keepalive: payloadStr.length < 60000,
+      }).catch(() => {});
+    }
+
+    // 4. Persistência sequencial no Supabase: primeiro o projeto pai, depois os cards em lote
+    if (SupabaseService.isConfigured()) {
+      emitSaveStatus({ state: 'saving' });
+      try {
+        await SupabaseService.createProject(newProj);
+        if (clonedTasks.length > 0) {
+          const batchRes = await SupabaseService.createTasksBatch(clonedTasks, newProj);
+          if (batchRes.success && batchRes.tasks.length > 0) {
+            const latest = this.getTasks();
+            const updatedList = mergeTaskLists(latest, batchRes.tasks, getDeletedTaskIds());
+            localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(updatedList));
+            writeIndexedDB(STORAGE_KEYS.TASKS, updatedList).catch(() => {});
+          }
+        }
+        emitSaveStatus({ state: 'saved', lastSavedAt: new Date().toISOString() });
+      } catch (e: any) {
+        console.warn('[StorageService] Erro ao duplicar quadro com cards no Supabase:', e);
+        emitSaveStatus({ state: 'error', errorMessage: e?.message || 'Erro ao sincronizar duplicação.' });
+      }
+    }
+
+    return { success: true, project: newProj, tasks: clonedTasks };
+  },
+
+  /**
+   * Duplicar Coluna com todos os seus cards de forma atômica:
+   * 1. Grava colunas atualizadas + cards imediatamente no localStorage/IndexedDB e servidor
+   * 2. Atualiza o projeto no Supabase ANTES de inserir os cards clonados em lote
+   */
+  async duplicateColumnWithTasksAsync(
+    projectId: string,
+    updatedColumns: BoardColumn[],
+    clonedTasks: Task[]
+  ): Promise<{ success: boolean; tasks: Task[] }> {
+    clonedTasks.forEach((t) => clearTaskDeleted(t.id));
+
+    // 1. Gravação local síncrona e imediata
+    const currentProjects = this.getProjects();
+    const nextProjects = currentProjects.map((p) =>
+      p.id === projectId ? { ...p, columns: updatedColumns } : p
+    );
+    const updatedProject = nextProjects.find((p) => p.id === projectId);
+    localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify(nextProjects));
+    writeIndexedDB(STORAGE_KEYS.PROJECTS, nextProjects).catch(() => {});
+
+    const newTaskIds = new Set(clonedTasks.map((t) => t.id));
+    const currentTasks = this.getTasks();
+    const nextTasks =
+      clonedTasks.length > 0
+        ? [...clonedTasks, ...currentTasks.filter((t) => !newTaskIds.has(t.id))]
+        : currentTasks;
+    if (clonedTasks.length > 0) {
+      localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(nextTasks));
+      writeIndexedDB(STORAGE_KEYS.TASKS, nextTasks).catch(() => {});
+    }
+
+    // 2. Broadcast em tempo real
+    RealtimeService.broadcast('projects', nextProjects, {
+      action: 'update_project',
+      targetId: projectId,
+    });
+    if (clonedTasks.length > 0) {
+      RealtimeService.broadcast('tasks', nextTasks, {
+        action: 'create_tasks_batch',
+        targetId: projectId,
+      });
+    }
+
+    // 3. Persistência atômica no servidor central (/api/sync/state) com payload delta compacto para keepalive sobreviver a F5 imediato
+    if (typeof window !== 'undefined' && isServerApiAvailable()) {
+      const payloadStr = JSON.stringify({
+        projects: updatedProject ? [updatedProject] : nextProjects,
+        tasks: clonedTasks,
+        clientId: RealtimeService.getClientId(),
+        action: 'duplicate_column',
+      });
+      fetch('/api/sync/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payloadStr,
+        keepalive: payloadStr.length < 60000,
+      }).catch(() => {});
+    }
+
+    // 4. Persistência sequencial no Supabase: primeiro as colunas do projeto, depois os cards em lote
+    if (SupabaseService.isConfigured()) {
+      emitSaveStatus({ state: 'saving' });
+      try {
+        await SupabaseService.updateProject(projectId, { columns: updatedColumns }, updatedProject);
+        if (clonedTasks.length > 0) {
+          const batchRes = await SupabaseService.createTasksBatch(clonedTasks, updatedProject);
+          if (batchRes.success && batchRes.tasks.length > 0) {
+            const latest = this.getTasks();
+            const updatedList = mergeTaskLists(latest, batchRes.tasks, getDeletedTaskIds());
+            localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(updatedList));
+            writeIndexedDB(STORAGE_KEYS.TASKS, updatedList).catch(() => {});
+          }
+        }
+        emitSaveStatus({ state: 'saved', lastSavedAt: new Date().toISOString() });
+      } catch (e: any) {
+        console.warn('[StorageService] Erro ao duplicar coluna com cards no Supabase:', e);
+        emitSaveStatus({ state: 'error', errorMessage: e?.message || 'Erro ao sincronizar coluna duplicada.' });
+      }
+    }
+
+    return { success: true, tasks: clonedTasks };
+  },
+
+  /**
    * Atualizar Projeto / Quadro com persistência imediata local, no servidor e no Supabase
    */
   async updateProjectAsync(projectId: string, updates: Partial<Project>): Promise<{ success: boolean; error?: string }> {
     const current = this.getProjects();
     const nextList = current.map((p) => (p.id === projectId ? { ...p, ...updates } : p));
-    this.saveProjects(nextList, true);
-
-    RealtimeService.broadcast('projects', nextList, {
-      action: 'update_project',
-      targetId: projectId,
-    });
-
-    if (isServerApiAvailable()) {
-      fetch('/api/sync/state', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projects: nextList }),
-      }).catch(() => {});
-    }
+    const updatedProject = nextList.find((p) => p.id === projectId);
+    this.saveProjects(nextList, true, { action: 'update_project', targetId: projectId, skipCloudPush: true });
 
     if (SupabaseService.isConfigured()) {
       try {
-        await SupabaseService.updateProject(projectId, updates);
+        await SupabaseService.updateProject(projectId, updates, updatedProject);
       } catch (e: any) {
         console.warn('[StorageService] Falha ao atualizar projeto no Supabase:', e);
       }
@@ -1425,6 +1610,7 @@ export const StorageService = {
    * Excluir Projeto / Quadro com remoção imediata de tarefas locais, no servidor e no Supabase
    */
   async deleteProjectAsync(projectId: string): Promise<{ success: boolean; error?: string }> {
+    markProjectDeleted(projectId);
     // 1. Remove tarefas associadas e registra tombstones para evitar ressurreição no sync
     const currentTasks = this.getTasks();
     const deletedTaskIds = currentTasks.filter((t) => t.projectId === projectId).map((t) => t.id);
@@ -2626,7 +2812,10 @@ export const StorageService = {
   /**
    * Criar lote de tarefas (ex: duplicação de quadro ou coluna com todos os cards)
    */
-  async batchCreateTasksAsync(newTasks: Task[]): Promise<{ success: boolean; tasks: Task[] }> {
+  async batchCreateTasksAsync(
+    newTasks: Task[],
+    fallbackProject?: Project
+  ): Promise<{ success: boolean; tasks: Task[] }> {
     if (!Array.isArray(newTasks) || newTasks.length === 0) {
       return { success: true, tasks: [] };
     }
@@ -2640,15 +2829,13 @@ export const StorageService = {
 
     if (SupabaseService.isConfigured()) {
       try {
-        const results = await Promise.all(
-          newTasks.map((t) => SupabaseService.createTask(t).catch(() => ({ success: false, task: undefined })))
-        );
-        const cloudTasks = results
-          .filter((r): r is { success: boolean; task: Task } => Boolean(r?.success && r?.task))
-          .map((r) => r.task);
-        if (cloudTasks.length > 0) {
+        const parentProj =
+          fallbackProject ||
+          this.getProjects().find((p) => p.id === newTasks[0]?.projectId);
+        const batchRes = await SupabaseService.createTasksBatch(newTasks, parentProj);
+        if (batchRes.success && batchRes.tasks.length > 0) {
           const latest = this.getTasks();
-          const updatedList = mergeTaskLists(latest, cloudTasks, getDeletedTaskIds());
+          const updatedList = mergeTaskLists(latest, batchRes.tasks, getDeletedTaskIds());
           localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(updatedList));
           writeIndexedDB(STORAGE_KEYS.TASKS, updatedList).catch(() => {});
         }

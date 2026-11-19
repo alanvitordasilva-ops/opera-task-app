@@ -593,7 +593,7 @@ export default function App() {
   }, [currentWorkspace.id]);
 
   useEffect(() => {
-    StorageService.saveProjects(projects);
+    StorageService.saveProjects(projects, false, { skipCloudPush: true });
   }, [projects]);
 
   useEffect(() => {
@@ -2103,7 +2103,8 @@ export default function App() {
     targetProjectId: string,
     targetColumnId: string,
     indexSuffix: number,
-    resetCompletion = false
+    resetCompletion = false,
+    targetWorkspaceId?: string
   ): Task => {
     const nowIso = new Date().toISOString();
     const stamp = `${Date.now()}-${indexSuffix}-${Math.random().toString(36).slice(2, 5)}`;
@@ -2112,10 +2113,12 @@ export default function App() {
     return {
       ...origTask,
       id: newTaskId,
+      workspaceId: targetWorkspaceId || origTask.workspaceId || currentWorkspace.id,
       projectId: targetProjectId,
       columnId: targetColumnId,
+      order: typeof origTask.order === 'number' ? origTask.order : indexSuffix,
       isCompleted: resetCompletion ? false : origTask.isCompleted,
-      completedAt: resetCompletion ? undefined : origTask.completedAt,
+      completedAt: resetCompletion ? null : (origTask.completedAt ?? null),
       checklist: (origTask.checklist || []).map((item, cIdx) => ({
         ...item,
         id: `check-${stamp}-${cIdx}`,
@@ -2135,8 +2138,8 @@ export default function App() {
               id: `ing-${stamp}-${iIdx}`,
             })),
           }
-        : undefined,
-      productionRecords: origTask.productionRecords ? [...origTask.productionRecords] : undefined,
+        : null,
+      productionRecords: origTask.productionRecords ? [...origTask.productionRecords] : [],
       comments: (origTask.comments || []).map((cmt, mIdx) => ({
         ...cmt,
         id: `cmt-${stamp}-${mIdx}`,
@@ -2178,23 +2181,25 @@ export default function App() {
     nextColsRaw.splice(origIdx + 1, 0, newCol);
     const updatedColumns = nextColsRaw.map((c, idx) => ({ ...c, order: idx }));
 
+    const clonedTasks: Task[] = includeCards
+      ? tasks
+          .filter((t) => t.projectId === activeProject.id && t.columnId === columnId && !t.isArchived)
+          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+          .map((t, idx) =>
+            buildClonedTask(t, activeProject.id, newColId, idx, true, activeProject.workspaceId)
+          )
+      : [];
+
+    // Persiste colunas + cards clonados de forma atômica (localStorage imediato -> servidor -> Supabase sequencial)
+    StorageService.duplicateColumnWithTasksAsync(activeProject.id, updatedColumns, clonedTasks);
+
     setProjects((prev) =>
       prev.map((p) => (p.id === activeProject.id ? { ...p, columns: updatedColumns } : p))
     );
-    StorageService.updateProjectAsync(activeProject.id, { columns: updatedColumns });
 
     if (includeCards) {
-      const colTasks = tasks
-        .filter((t) => t.projectId === activeProject.id && t.columnId === columnId && !t.isArchived)
-        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-
-      const clonedTasks = colTasks.map((t, idx) =>
-        buildClonedTask(t, activeProject.id, newColId, idx, true)
-      );
-
       if (clonedTasks.length > 0) {
         setTasks((prev) => [...clonedTasks, ...prev]);
-        StorageService.batchCreateTasksAsync(clonedTasks);
       }
 
       recordActivity(
@@ -2317,19 +2322,26 @@ export default function App() {
           .filter((t) => t.projectId === origProj.id && !t.isArchived)
           .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
           .map((t, idx) =>
-            buildClonedTask(t, newProjId, colIdMap.get(t.columnId) || activeFirstColId, idx, false)
+            buildClonedTask(
+              t,
+              newProjId,
+              colIdMap.get(t.columnId) || activeFirstColId,
+              idx,
+              false,
+              origProj.workspaceId
+            )
           )
       : [];
+
+    // Persiste quadro + cards clonados de forma atômica (localStorage imediato -> servidor -> Supabase sequencial)
+    StorageService.duplicateProjectWithTasksAsync(newProj, clonedTasks);
 
     setProjects((prev) => [...prev, newProj]);
     if (origProj.workspaceId === currentWorkspace.id) {
       setSelectedProjectId(newProjId);
     }
-    StorageService.createProjectAsync(newProj);
-
     if (clonedTasks.length > 0) {
       setTasks((prev) => [...clonedTasks, ...prev]);
-      StorageService.batchCreateTasksAsync(clonedTasks);
     }
 
     recordActivity(

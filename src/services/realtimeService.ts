@@ -9,7 +9,14 @@
 
 import { SupabaseService } from './supabaseService.ts';
 import { StorageService, isServerApiAvailable, setServerApiAvailable } from './storage.ts';
-import { mergeTaskLists, getDeletedTaskIds, markTaskDeleted } from '../utils/helpers.ts';
+import {
+  mergeTaskLists,
+  getDeletedTaskIds,
+  markTaskDeleted,
+  getDeletedProjectIds,
+  markProjectDeleted,
+  mergeProjectColumns,
+} from '../utils/helpers.ts';
 
 export type SyncEntity =
   | 'tasks'
@@ -440,6 +447,9 @@ class RealtimeServiceImpl {
     if (entity === 'tasks' && isDestructiveAction && meta?.targetId) {
       markTaskDeleted(meta.targetId);
     }
+    if (entity === 'projects' && isDestructiveAction && meta?.targetId) {
+      markProjectDeleted(meta.targetId);
+    }
 
     if (
       storageKey &&
@@ -465,13 +475,26 @@ class RealtimeServiceImpl {
       try {
         const existingRaw = localStorage.getItem(storageKey);
         const existingArr = existingRaw ? JSON.parse(existingRaw) : [];
+        const deletedProjIds = entity === 'projects' ? new Set(getDeletedProjectIds()) : null;
+        let localTasksForCols: any[] = [];
+        if (entity === 'projects') {
+          try {
+            const rawTasks = localStorage.getItem('operatask_clean_v1_tasks');
+            const parsedTasks = rawTasks ? JSON.parse(rawTasks) : [];
+            if (Array.isArray(parsedTasks)) localTasksForCols = parsedTasks;
+          } catch {}
+        }
+
         if (Array.isArray(existingArr) && existingArr.length > 0) {
           const map = new Map<string, any>();
           existingArr.forEach((item: any) => {
-            if (item && item.id) map.set(item.id, item);
+            if (item && item.id && !(deletedProjIds && deletedProjIds.has(item.id))) {
+              map.set(item.id, item);
+            }
           });
           data.forEach((incoming: any) => {
             if (!incoming || !incoming.id) return;
+            if (deletedProjIds && deletedProjIds.has(incoming.id)) return;
             const prev = map.get(incoming.id);
             if (prev && entity === 'workspaces') {
               // Preserva união de membros entre local e remoto
@@ -487,11 +510,21 @@ class RealtimeServiceImpl {
                 ...incoming,
                 members: Array.from(memberMap.values()),
               });
+            } else if (prev && entity === 'projects') {
+              const resolvedCols = mergeProjectColumns(
+                prev.columns,
+                incoming.columns,
+                incoming.id,
+                localTasksForCols
+              );
+              map.set(incoming.id, { ...prev, ...incoming, columns: resolvedCols });
             } else {
               map.set(incoming.id, prev ? { ...prev, ...incoming } : incoming);
             }
           });
           resolvedData = Array.from(map.values());
+        } else if (deletedProjIds && deletedProjIds.size > 0) {
+          resolvedData = data.filter((item: any) => item?.id && !deletedProjIds.has(item.id));
         }
       } catch {}
     }

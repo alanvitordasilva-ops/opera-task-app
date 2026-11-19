@@ -736,18 +736,35 @@ export class SupabaseService {
         { id: 'col-done', title: 'Concluído', color: '#059669', order: 3, isCompletedColumn: true },
       ];
 
-      const projects: Project[] = (pRows || []).map((row: any) => ({
-        id: String(row.id),
-        workspaceId: String(row.workspace_id),
-        name: row.name || 'Quadro Principal',
-        description: row.description || '',
-        color: row.color || '#2563eb',
-        icon: row.icon || 'folder',
-        columns: Array.isArray(row.columns) && row.columns.length > 0 ? row.columns : defaultCols,
-        memberIds: Array.isArray(row.member_ids) ? row.member_ids : [],
-        isArchived: Boolean(row.is_archived),
-        createdAt: row.created_at || new Date().toISOString(),
-      }));
+      const parseJsonArray = (val: any): any[] => {
+        if (Array.isArray(val)) return val;
+        if (typeof val === 'string') {
+          try {
+            const parsed = JSON.parse(val);
+            return Array.isArray(parsed) ? parsed : [];
+          } catch {
+            return [];
+          }
+        }
+        return [];
+      };
+
+      const projects: Project[] = (pRows || []).map((row: any) => {
+        const parsedCols = parseJsonArray(row.columns);
+        const parsedMembers = parseJsonArray(row.member_ids);
+        return {
+          id: String(row.id),
+          workspaceId: String(row.workspace_id),
+          name: row.name || 'Quadro Principal',
+          description: row.description || '',
+          color: row.color || '#2563eb',
+          icon: row.icon || 'folder',
+          columns: parsedCols.length > 0 ? parsedCols : defaultCols,
+          memberIds: parsedMembers,
+          isArchived: Boolean(row.is_archived),
+          createdAt: row.created_at || new Date().toISOString(),
+        };
+      });
 
       return { success: true, projects };
     } catch (err: any) {
@@ -763,23 +780,41 @@ export class SupabaseService {
     }
 
     try {
-      const payload: any = {
+      const payload: Record<string, any> = {
         id: project.id,
         workspace_id: project.workspaceId,
         name: project.name,
         description: project.description || '',
         color: project.color || '#2563eb',
         icon: project.icon || 'folder',
-        columns: project.columns || [],
-        member_ids: project.memberIds || [],
+        columns: Array.isArray(project.columns) ? project.columns : [],
+        member_ids: Array.isArray(project.memberIds) ? project.memberIds : [],
         is_archived: Boolean(project.isArchived),
         created_at: project.createdAt || new Date().toISOString(),
       };
 
-      const { error } = await client.from('projects').upsert(payload);
-      if (error && !error.message?.includes('does not exist')) {
-        console.warn('[SupabaseService] Erro ao gravar projeto:', error);
-        return { success: false, error: error.message };
+      let currentPayload = { ...payload };
+      let lastError: any = null;
+      for (let attempt = 0; attempt < 6; attempt++) {
+        const { error } = await client.from('projects').upsert(currentPayload);
+        if (!error) {
+          return { success: true, project };
+        }
+        lastError = error;
+        if (error.message?.includes('does not exist') && !this.extractUnknownColumn(error)) {
+          return { success: true, project };
+        }
+        const badCol = this.extractUnknownColumn(error);
+        if (badCol && badCol in currentPayload) {
+          delete currentPayload[badCol];
+          continue;
+        }
+        break;
+      }
+
+      if (lastError) {
+        console.warn('[SupabaseService] Erro ao gravar projeto:', lastError);
+        return { success: false, error: lastError.message };
       }
       return { success: true, project };
     } catch (e: any) {
@@ -787,16 +822,19 @@ export class SupabaseService {
     }
   }
 
-  static async updateProject(projectId: string, updates: Partial<Project>): Promise<{ success: boolean; error?: string }> {
+  static async updateProject(
+    projectId: string,
+    updates: Partial<Project>,
+    fallbackFullProject?: Project
+  ): Promise<{ success: boolean; error?: string }> {
     const client = this.getClient();
     if (!client) {
       return { success: false, error: 'Supabase não conectado' };
     }
 
     try {
-      const payload: any = {
-        updated_at: new Date().toISOString(),
-      };
+      // Nota: a tabela public.projects não possui coluna updated_at no schema padrão
+      const payload: Record<string, any> = {};
       if (updates.name !== undefined) payload.name = updates.name;
       if (updates.description !== undefined) payload.description = updates.description;
       if (updates.color !== undefined) payload.color = updates.color;
@@ -805,10 +843,46 @@ export class SupabaseService {
       if (updates.memberIds !== undefined) payload.member_ids = updates.memberIds;
       if (updates.isArchived !== undefined) payload.is_archived = updates.isArchived;
 
-      const { error } = await client.from('projects').update(payload).eq('id', projectId);
-      if (error && !error.message?.includes('does not exist')) {
-        console.warn('[SupabaseService] Erro ao atualizar projeto:', error);
-        return { success: false, error: error.message };
+      if (Object.keys(payload).length === 0) {
+        return { success: true };
+      }
+
+      let currentPayload = { ...payload };
+      let lastError: any = null;
+      for (let attempt = 0; attempt < 6; attempt++) {
+        if (Object.keys(currentPayload).length === 0) {
+          return { success: true };
+        }
+        const { data, error } = await client
+          .from('projects')
+          .update(currentPayload)
+          .eq('id', projectId)
+          .select('id');
+
+        if (!error) {
+          // Se o projeto ainda não existia no Supabase (0 linhas afetadas), cria com o objeto completo
+          if ((!data || data.length === 0) && fallbackFullProject) {
+            const created = await this.createProject(fallbackFullProject);
+            return { success: created.success, error: created.error };
+          }
+          return { success: true };
+        }
+        lastError = error;
+        const badCol = this.extractUnknownColumn(error);
+        if (badCol && badCol in currentPayload) {
+          delete currentPayload[badCol];
+          continue;
+        }
+        break;
+      }
+
+      if (lastError && !lastError.message?.includes('does not exist')) {
+        console.warn('[SupabaseService] Erro ao atualizar projeto:', lastError);
+        if (fallbackFullProject) {
+          const created = await this.createProject(fallbackFullProject);
+          if (created.success) return { success: true };
+        }
+        return { success: false, error: lastError.message };
       }
       return { success: true };
     } catch (e: any) {
@@ -1237,23 +1311,36 @@ export class SupabaseService {
         }
       }
 
-      // 2. Projetos
+      // 2. Projetos (com retry resiliente para colunas opcionais)
       if (data.projects.length > 0) {
-        const projPayload = data.projects.map((p) => ({
+        let projPayload: Record<string, any>[] = data.projects.map((p) => ({
           id: p.id,
           workspace_id: p.workspaceId,
           name: p.name,
           description: p.description || '',
           color: p.color,
           icon: p.icon,
-          columns: p.columns,
-          member_ids: p.memberIds,
+          columns: Array.isArray(p.columns) ? p.columns : [],
+          member_ids: Array.isArray(p.memberIds) ? p.memberIds : [],
           is_archived: Boolean(p.isArchived),
           created_at: p.createdAt,
         }));
-        const { error: pErr } = await client.from('projects').upsert(projPayload);
-        if (pErr && !pErr.message?.includes('does not exist')) {
-          console.warn('Erro ao sincronizar projetos no Supabase:', pErr);
+        for (let attempt = 0; attempt < 6; attempt++) {
+          const { error: pErr } = await client.from('projects').upsert(projPayload);
+          if (!pErr) break;
+          const badCol = this.extractUnknownColumn(pErr);
+          if (badCol && projPayload.some((r) => badCol in r)) {
+            projPayload = projPayload.map((r) => {
+              const clone = { ...r };
+              delete clone[badCol];
+              return clone;
+            });
+            continue;
+          }
+          if (!pErr.message?.includes('does not exist')) {
+            console.warn('Erro ao sincronizar projetos no Supabase:', pErr);
+          }
+          break;
         }
       }
 
@@ -1497,6 +1584,66 @@ export class SupabaseService {
     } catch (err: any) {
       console.error('[Supabase CRUD] Exceção ao criar tarefa:', err);
       return { success: false, error: err.message };
+    }
+  }
+
+  /**
+   * Criar lote de tarefas em uma única operação atômica no Supabase
+   * (usado ao duplicar quadros ou colunas com todos os cards).
+   * Inclui auto-recuperação de FK caso o projeto pai ainda não exista no banco.
+   */
+  static async createTasksBatch(
+    tasks: Task[],
+    fallbackProject?: Project
+  ): Promise<{ success: boolean; tasks: Task[]; error?: string }> {
+    if (!Array.isArray(tasks) || tasks.length === 0) {
+      return { success: true, tasks: [] };
+    }
+
+    const client = this.getClient();
+    if (!client) {
+      return { success: false, tasks: [], error: 'Supabase não está configurado.' };
+    }
+
+    try {
+      const rows = tasks.map((t) => this.mapTaskToRow(t));
+      let { error } = await this.safeUpsertCards('cards', rows, false);
+
+      // Se houve erro de Foreign Key (23503), garante que o projeto pai existe no Supabase e tenta novamente
+      if (
+        error &&
+        fallbackProject &&
+        (error.code === '23503' || String(error.message || '').toLowerCase().includes('foreign key'))
+      ) {
+        await this.createProject(fallbackProject);
+        const retryRes = await this.safeUpsertCards('cards', rows, false);
+        error = retryRes.error;
+      }
+
+      if (error && (error.code === '42P01' || error.message?.includes('does not exist'))) {
+        const fallback = await this.safeUpsertCards('tasks', rows, false);
+        error = fallback.error;
+      } else if (!error) {
+        // Espelha silenciosamente para 'tasks'
+        this.safeUpsertCards('tasks', rows, false).catch(() => {});
+      }
+
+      if (!error) {
+        return { success: true, tasks };
+      }
+
+      console.warn('[Supabase CRUD] Lote falhou, tentando persistência individual:', error.message);
+      const saved: Task[] = [];
+      for (const task of tasks) {
+        const res = await this.createTask(task).catch(() => ({ success: false, task: undefined }));
+        if (res.success && res.task) {
+          saved.push(res.task);
+        }
+      }
+      return { success: saved.length > 0, tasks: saved, error: saved.length === tasks.length ? undefined : error.message };
+    } catch (err: any) {
+      console.error('[Supabase CRUD] Exceção ao criar lote de tarefas:', err);
+      return { success: false, tasks: [], error: err.message };
     }
   }
 

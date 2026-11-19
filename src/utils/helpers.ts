@@ -895,3 +895,70 @@ export function clearTaskDeleted(taskId: string): void {
     localStorage.setItem(DELETED_TASKS_STORAGE_KEY, JSON.stringify(next));
   } catch {}
 }
+
+const DELETED_PROJECTS_STORAGE_KEY = 'operatask_deleted_project_ids_v1';
+
+export function getDeletedProjectIds(): string[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(DELETED_PROJECTS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((id) => typeof id === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+export function markProjectDeleted(projectId: string): void {
+  if (typeof window === 'undefined' || !projectId) return;
+  try {
+    const existing = getDeletedProjectIds().filter((id) => id !== projectId);
+    const next = [projectId, ...existing].slice(0, 200);
+    localStorage.setItem(DELETED_PROJECTS_STORAGE_KEY, JSON.stringify(next));
+  } catch {}
+}
+
+export function clearProjectDeleted(projectId: string): void {
+  if (typeof window === 'undefined' || !projectId) return;
+  try {
+    const next = getDeletedProjectIds().filter((id) => id !== projectId);
+    localStorage.setItem(DELETED_PROJECTS_STORAGE_KEY, JSON.stringify(next));
+  } catch {}
+}
+
+/**
+ * Mescla colunas de um projeto preservando colunas locais caso a fonte remota venha vazia
+ * ou ainda não contenha uma coluna recém-duplicada que já possua cards locais.
+ */
+export function mergeProjectColumns<T extends { id: string; order?: number }>(
+  localCols: T[] | undefined,
+  incomingCols: T[] | undefined,
+  projectId: string,
+  localTasks?: Array<{ projectId?: string; columnId?: string; id?: string }>
+): T[] {
+  const safeLocal = Array.isArray(localCols) ? localCols : [];
+  const safeIncoming = Array.isArray(incomingCols) ? incomingCols : [];
+  if (safeIncoming.length === 0) return safeLocal;
+  if (safeLocal.length === 0) return safeIncoming;
+
+  const incomingIds = new Set(safeIncoming.map((c) => c?.id).filter(Boolean));
+  const merged = [...safeIncoming];
+
+  if (Array.isArray(localTasks) && localTasks.length > 0) {
+    const deletedTaskIds = new Set(getDeletedTaskIds());
+    const activeLocalColIds = new Set(
+      localTasks
+        .filter((t) => t && t.projectId === projectId && t.columnId && (!t.id || !deletedTaskIds.has(t.id)))
+        .map((t) => String(t.columnId))
+    );
+    safeLocal.forEach((col) => {
+      if (col?.id && !incomingIds.has(col.id) && activeLocalColIds.has(col.id)) {
+        merged.push(col);
+      }
+    });
+  }
+
+  return merged;
+}
+
