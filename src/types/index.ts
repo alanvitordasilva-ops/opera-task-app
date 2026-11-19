@@ -472,7 +472,7 @@ export interface TaskAttachment {
   order?: number;
 }
 
-export type UnidadeMedida = 'Kg' | 'Litros';
+export type UnidadeMedida = 'Kg' | 'g' | 'Litros' | 'ml';
 
 export interface Ingrediente {
   id: string;

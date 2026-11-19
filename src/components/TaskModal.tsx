@@ -940,8 +940,8 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                       </h3>
                       <p className="text-[11px] text-slate-500 dark:text-slate-400">
                         {fichaTecnica
-                          ? `${fichaTecnica.ingredientes.length} ingrediente(s) cadastrado(s) com medidas em Kg e Litros`
-                          : 'Lista de ingredientes e quantidades (Kg ou Litros)'}
+                          ? `${fichaTecnica.ingredientes.length} ingrediente(s) cadastrado(s) com medidas em Kg, g, Litros e ml`
+                          : 'Lista de ingredientes e quantidades (Kg, g, Litros ou ml)'}
                       </p>
                     </div>
                   </div>

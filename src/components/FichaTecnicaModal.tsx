@@ -2,6 +2,14 @@ import React, { useState, useEffect, useRef } from 'react';
 import { FichaTecnica, Ingrediente, UnidadeMedida } from '../types/index.ts';
 import { StorageService } from '../services/storage.ts';
 import {
+  parseSafeMeasure,
+  formatMeasurePTBR,
+  formatEquivalentMeasure,
+  isSolidUnit,
+  isLiquidUnit,
+  toKgOrLiters,
+} from '../utils/fichaCalculations.ts';
+import {
   X,
   FileSpreadsheet,
   Plus,
@@ -276,19 +284,19 @@ export const FichaTecnicaModal: React.FC<FichaTecnicaModalProps> = ({
     onClose();
   };
 
-  // Totais rápidos
+  // Totais rápidos (agregando Kg + g/1000 e Litros + ml/1000)
   const totalKg = ingredientes.reduce((acc, ing) => {
-    if (ing.unidade === 'Kg') {
-      const parsed = parseFloat(ing.quantidade.replace(',', '.'));
-      return isNaN(parsed) ? acc : acc + parsed;
+    if (isSolidUnit(ing.unidade)) {
+      const parsed = parseSafeMeasure(ing.quantidade);
+      return acc + toKgOrLiters(parsed, ing.unidade);
     }
     return acc;
   }, 0);
 
   const totalLitros = ingredientes.reduce((acc, ing) => {
-    if (ing.unidade === 'Litros') {
-      const parsed = parseFloat(ing.quantidade.replace(',', '.'));
-      return isNaN(parsed) ? acc : acc + parsed;
+    if (isLiquidUnit(ing.unidade)) {
+      const parsed = parseSafeMeasure(ing.quantidade);
+      return acc + toKgOrLiters(parsed, ing.unidade);
     }
     return acc;
   }, 0);
@@ -476,21 +484,31 @@ export const FichaTecnicaModal: React.FC<FichaTecnicaModalProps> = ({
                     <span>Ingredientes da Ficha Técnica ({ingredientes.length})</span>
                   </h3>
                   <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                    Especifique a quantidade e selecione a unidade de medida (<strong>Kg</strong> ou <strong>Litros</strong>).
+                    Especifique a quantidade e selecione a unidade de medida (<strong>Kg</strong>, <strong>g</strong>, <strong>Litros</strong> ou <strong>ml</strong>).
                   </p>
                 </div>
 
                 {/* Resumo de Totais */}
                 {(totalKg > 0 || totalLitros > 0) && (
-                  <div className="flex items-center gap-2 text-[11px] font-bold">
+                  <div className="flex items-center gap-2 text-[11px] font-bold flex-wrap">
                     {totalKg > 0 && (
-                      <span className="px-2 py-0.5 rounded-lg bg-teal-50 dark:bg-teal-950/40 text-teal-800 dark:text-teal-300 border border-teal-200 dark:border-teal-800">
-                        Total: {totalKg.toFixed(2).replace(/\.00$/, '')} Kg
+                      <span className="px-2 py-0.5 rounded-lg bg-teal-50 dark:bg-teal-950/40 text-teal-800 dark:text-teal-300 border border-teal-200 dark:border-teal-800 font-mono">
+                        Total: {formatMeasurePTBR(totalKg, 'Kg')} Kg
+                        {totalKg < 1 && (
+                          <span className="font-sans font-semibold opacity-75 ml-1">
+                            ({formatMeasurePTBR(totalKg * 1000, 'g')} g)
+                          </span>
+                        )}
                       </span>
                     )}
                     {totalLitros > 0 && (
-                      <span className="px-2 py-0.5 rounded-lg bg-blue-50 dark:bg-blue-950/40 text-blue-800 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
-                        Total: {totalLitros.toFixed(2).replace(/\.00$/, '')} Litros
+                      <span className="px-2 py-0.5 rounded-lg bg-blue-50 dark:bg-blue-950/40 text-blue-800 dark:text-blue-300 border border-blue-200 dark:border-blue-800 font-mono">
+                        Total: {formatMeasurePTBR(totalLitros, 'Litros')} Litros
+                        {totalLitros < 1 && (
+                          <span className="font-sans font-semibold opacity-75 ml-1">
+                            ({formatMeasurePTBR(totalLitros * 1000, 'ml')} ml)
+                          </span>
+                        )}
                       </span>
                     )}
                   </div>
@@ -506,99 +524,120 @@ export const FichaTecnicaModal: React.FC<FichaTecnicaModalProps> = ({
 
               {/* Cabeçalho da Tabela em telas maiores */}
               <div className="hidden sm:grid sm:grid-cols-12 gap-3 px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 bg-slate-100/60 dark:bg-slate-800/40 rounded-xl">
-                <div className="col-span-6">Ingrediente *</div>
+                <div className="col-span-5">Ingrediente *</div>
                 <div className="col-span-3">Quantidade *</div>
-                <div className="col-span-2">Unidade</div>
+                <div className="col-span-3">Unidade</div>
                 <div className="col-span-1 text-right">Ação</div>
               </div>
 
               {/* Linhas de Ingredientes */}
               <div className="space-y-2.5">
-                {ingredientes.map((ing, index) => (
-                  <div
-                    key={ing.id}
-                    className="p-3 sm:p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/70 shadow-xs hover:border-slate-300 dark:hover:border-slate-600 transition-all flex flex-col sm:grid sm:grid-cols-12 gap-2.5 sm:gap-3 sm:items-center"
-                  >
-                    {/* Nome do Ingrediente */}
-                    <div className="sm:col-span-6">
-                      <label className="block sm:hidden text-[11px] font-semibold text-slate-500 mb-1">
-                        Ingrediente #{index + 1}
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        value={ing.nome}
-                        onChange={(e) =>
-                          handleIngredienteChange(ing.id, 'nome', e.target.value)
-                        }
-                        placeholder="Ex: Farinha de trigo, Açúcar, Leite..."
-                        className="w-full px-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-[#34B1AC]"
-                      />
-                    </div>
+                {ingredientes.map((ing, index) => {
+                  const parsedQtd = parseSafeMeasure(ing.quantidade);
+                  const equivText = formatEquivalentMeasure(parsedQtd, ing.unidade);
 
-                    {/* Quantidade */}
-                    <div className="sm:col-span-3">
-                      <label className="block sm:hidden text-[11px] font-semibold text-slate-500 mb-1">
-                        Quantidade
-                      </label>
-                      <input
-                        type="text"
-                        inputMode="decimal"
-                        required
-                        value={ing.quantidade}
-                        onChange={(e) =>
-                          handleIngredienteChange(ing.id, 'quantidade', e.target.value)
-                        }
-                        placeholder="Ex: 2.5 ou 10"
-                        className="w-full px-3 py-2 text-xs font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-[#34B1AC]"
-                      />
-                    </div>
+                  return (
+                    <div
+                      key={ing.id}
+                      className="p-3 sm:p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/70 shadow-xs hover:border-slate-300 dark:hover:border-slate-600 transition-all flex flex-col sm:grid sm:grid-cols-12 gap-2.5 sm:gap-3 sm:items-start"
+                    >
+                      {/* Nome do Ingrediente */}
+                      <div className="sm:col-span-5">
+                        <label className="block sm:hidden text-[11px] font-semibold text-slate-500 mb-1">
+                          Ingrediente #{index + 1}
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={ing.nome}
+                          onChange={(e) =>
+                            handleIngredienteChange(ing.id, 'nome', e.target.value)
+                          }
+                          placeholder="Ex: Farinha de trigo, Açúcar, Leite..."
+                          className="w-full px-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-[#34B1AC]"
+                        />
+                      </div>
 
-                    {/* Unidade: Botões de Alternância Kg / Litros */}
-                    <div className="sm:col-span-2">
-                      <label className="block sm:hidden text-[11px] font-semibold text-slate-500 mb-1">
-                        Unidade
-                      </label>
-                      <div className="flex items-center rounded-lg border border-slate-200 dark:border-slate-700 p-0.5 bg-slate-50 dark:bg-slate-900">
+                      {/* Quantidade com equivalência instantânea */}
+                      <div className="sm:col-span-3">
+                        <label className="block sm:hidden text-[11px] font-semibold text-slate-500 mb-1">
+                          Quantidade
+                        </label>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          required
+                          value={ing.quantidade}
+                          onChange={(e) =>
+                            handleIngredienteChange(ing.id, 'quantidade', e.target.value)
+                          }
+                          placeholder={
+                            ing.unidade === 'g' || ing.unidade === 'ml'
+                              ? 'Ex: 30 ou 250'
+                              : 'Ex: 0,030 ou 1,500'
+                          }
+                          className="w-full px-3 py-2 text-xs font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-[#34B1AC]"
+                        />
+                        {equivText && (
+                          <div className="mt-1 px-1 text-[10px] font-semibold text-teal-700 dark:text-teal-300 font-mono">
+                            = {equivText}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Unidade: Botões de Alternância Kg / g / Litros / ml */}
+                      <div className="sm:col-span-3">
+                        <label className="block sm:hidden text-[11px] font-semibold text-slate-500 mb-1">
+                          Unidade
+                        </label>
+                        <div className="grid grid-cols-4 gap-0.5 rounded-lg border border-slate-200 dark:border-slate-700 p-0.5 bg-slate-50 dark:bg-slate-900">
+                          {(['Kg', 'g', 'Litros', 'ml'] as UnidadeMedida[]).map((unitOpt) => {
+                            const isSelected = ing.unidade === unitOpt;
+                            const isSolid = isSolidUnit(unitOpt);
+                            return (
+                              <button
+                                key={unitOpt}
+                                type="button"
+                                onClick={() => handleIngredienteChange(ing.id, 'unidade', unitOpt)}
+                                className={`py-1.5 px-1 text-[10px] font-bold rounded-md transition-all cursor-pointer ${
+                                  isSelected
+                                    ? isSolid
+                                      ? 'bg-[#173653] text-white shadow-xs'
+                                      : 'bg-[#34B1AC] text-white shadow-xs'
+                                    : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                                }`}
+                                title={
+                                  unitOpt === 'Kg'
+                                    ? 'Quilogramas'
+                                    : unitOpt === 'g'
+                                    ? 'Gramas'
+                                    : unitOpt === 'Litros'
+                                    ? 'Litros'
+                                    : 'Mililitros'
+                                }
+                              >
+                                {unitOpt === 'Litros' ? 'L' : unitOpt}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Botão de Remover Ingrediente */}
+                      <div className="sm:col-span-1 flex justify-end sm:pt-0.5">
                         <button
                           type="button"
-                          onClick={() => handleIngredienteChange(ing.id, 'unidade', 'Kg')}
-                          className={`flex-1 py-1.5 px-2 text-[11px] font-bold rounded-md transition-all cursor-pointer ${
-                            ing.unidade === 'Kg'
-                              ? 'bg-[#173653] text-white shadow-xs'
-                              : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
-                          }`}
+                          onClick={() => handleRemoveIngrediente(ing.id)}
+                          disabled={ingredientes.length === 1 && !ing.nome && !ing.quantidade}
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                          title="Remover ingrediente"
                         >
-                          Kg
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleIngredienteChange(ing.id, 'unidade', 'Litros')}
-                          className={`flex-1 py-1.5 px-2 text-[11px] font-bold rounded-md transition-all cursor-pointer ${
-                            ing.unidade === 'Litros'
-                              ? 'bg-[#34B1AC] text-white shadow-xs'
-                              : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
-                          }`}
-                        >
-                          Litros
+                          <Trash2 className="w-4 h-4" />
                         </button>
                       </div>
                     </div>
-
-                    {/* Botão de Remover Ingrediente */}
-                    <div className="sm:col-span-1 flex justify-end">
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveIngrediente(ing.id)}
-                        disabled={ingredientes.length === 1 && !ing.nome && !ing.quantidade}
-                        className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
-                        title="Remover ingrediente"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
 
               {/* Botão + Adicionar Ingrediente */}

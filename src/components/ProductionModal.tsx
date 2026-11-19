@@ -1,12 +1,19 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   FichaTecnica,
-  Ingrediente,
-  UnidadeMedida,
   ProductionRecord,
   ProductionIngredientCalculation,
   User,
 } from '../types/index.ts';
+import {
+  parseSafeMeasure,
+  formatFactorPTBR,
+  formatMeasurePTBR,
+  formatEquivalentMeasure,
+  isSolidUnit,
+  isLiquidUnit,
+  toKgOrLiters,
+} from '../utils/fichaCalculations.ts';
 import {
   X,
   Factory,
@@ -18,11 +25,8 @@ import {
   Check,
   Calendar,
   History,
-  Info,
   ChevronDown,
   ChevronUp,
-  FileSpreadsheet,
-  Printer,
 } from 'lucide-react';
 
 interface ProductionModalProps {
@@ -36,6 +40,8 @@ interface ProductionModalProps {
   onConfirmProduction: (record: ProductionRecord) => void;
 }
 
+const QUICK_QUANTITIES = ['1', '5', '10', '20', '50'];
+
 export const ProductionModal: React.FC<ProductionModalProps> = ({
   isOpen,
   onClose,
@@ -48,41 +54,48 @@ export const ProductionModal: React.FC<ProductionModalProps> = ({
 }) => {
   // Quantidade que o usuário deseja produzir
   const [quantidadeDesejadaStr, setQuantidadeDesejadaStr] = useState<string>('1');
-  // Unidade de produção (Kg, Litros, Unidades ou Porções)
+  // Unidade de produção (Unidades, Kg, Litros, Lotes, Caixas)
   const [unidadeProducao, setUnidadeProducao] = useState<string>('Unidades');
-  // Quantidade base de referência da receita (padrão: 1 lote/receita)
+  // Quantidade base de referência da receita (padrão: 1 porção/receita para multiplicação direta)
   const [quantidadeBaseStr, setQuantidadeBaseStr] = useState<string>('1');
   const [isBaseCustomizada, setIsBaseCustomizada] = useState<boolean>(false);
   const [observacoes, setObservacoes] = useState<string>('');
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [isSuccess, setIsSuccess] = useState<boolean>(false);
   const [copiedList, setCopiedList] = useState<boolean>(false);
-  const [showHistory, setShowHistory] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<'produce' | 'history'>('produce');
 
-  // Parse numérico seguro com suporte a vírgula e ponto decimal
-  const parseSafeNumber = (val: string): number => {
-    if (!val) return 0;
-    const clean = val.trim().replace(',', '.');
-    const num = parseFloat(clean);
-    return isNaN(num) ? 0 : num;
-  };
+  // Reinicia estado sempre que o modal abre ou troca de Ficha Técnica / card
+  useEffect(() => {
+    if (isOpen) {
+      setQuantidadeDesejadaStr('1');
+      setUnidadeProducao('Unidades');
+      setQuantidadeBaseStr('1');
+      setIsBaseCustomizada(false);
+      setObservacoes('');
+      setErrorMsg('');
+      setIsSuccess(false);
+      setCopiedList(false);
+      setActiveTab('produce');
+    }
+  }, [isOpen, fichaTecnica?.id, taskId]);
 
-  // Formatação em padrão brasileiro com até 3 casas decimais
-  const formatNumberPTBR = (num: number): string => {
-    if (isNaN(num)) return '0';
-    // Arredondar para até 3 casas decimais
-    const rounded = Math.round(num * 1000) / 1000;
-    // Se for inteiro, exibe inteiro, caso contrário até 3 casas
-    return rounded.toLocaleString('pt-BR', {
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 3,
-    });
+  // Ao selecionar a opção de produção (ex: Unidades (porções / peças)),
+  // garante multiplicação direta imediata pelos valores dos ingredientes da ficha.
+  const handleUnidadeProducaoChange = (novaUnidade: string) => {
+    setUnidadeProducao(novaUnidade);
+    setQuantidadeBaseStr('1');
+    setIsBaseCustomizada(false);
+    setErrorMsg('');
+    if (parseSafeMeasure(quantidadeDesejadaStr) <= 0) {
+      setQuantidadeDesejadaStr('1');
+    }
   };
 
   // Quantidade desejada e base como números
-  const quantidadeDesejada = parseSafeNumber(quantidadeDesejadaStr);
-  const quantidadeBase = parseSafeNumber(quantidadeBaseStr) > 0 ? parseSafeNumber(quantidadeBaseStr) : 1;
+  const quantidadeDesejada = parseSafeMeasure(quantidadeDesejadaStr);
+  const parsedBase = parseSafeMeasure(quantidadeBaseStr);
+  const quantidadeBase = parsedBase > 0 ? parsedBase : 1;
 
   // Fator multiplicador = Quantidade desejada ÷ Quantidade base da Ficha Técnica
   const fatorMultiplicador = useMemo(() => {
@@ -90,40 +103,64 @@ export const ProductionModal: React.FC<ProductionModalProps> = ({
     return quantidadeDesejada / quantidadeBase;
   }, [quantidadeDesejada, quantidadeBase]);
 
-  // Cálculo proporcional de cada ingrediente
-  const ingredientesCalculados = useMemo<ProductionIngredientCalculation[]>(() => {
+  // Cálculo proporcional imediato de cada ingrediente com base no valor cadastrado na Ficha Técnica
+  const ingredientesCalculados = useMemo<
+    Array<
+      ProductionIngredientCalculation & {
+        quantidadeOriginalNum: number;
+        quantidadeOriginalFormatada: string;
+        equivalenteBase: string | null;
+        equivalenteCalculado: string | null;
+      }
+    >
+  >(() => {
     if (!fichaTecnica || !fichaTecnica.ingredientes) return [];
 
     return fichaTecnica.ingredientes.map((ing) => {
-      const qtdOriginalNum = parseSafeNumber(ing.quantidade);
-      const qtdCalculada = qtdOriginalNum * (fatorMultiplicador > 0 ? fatorMultiplicador : 0);
+      const qtdOriginalNum = parseSafeMeasure(ing.quantidade);
+      const rawCalculada = qtdOriginalNum * (fatorMultiplicador > 0 ? fatorMultiplicador : 0);
+      // Evita ruído de ponto flutuante (ex: 0.03 * 10 = 0.30000000000000004)
+      const qtdCalculada = Math.round(rawCalculada * 1e6) / 1e6;
+
       return {
         ingredienteId: ing.id,
         nome: ing.nome,
         quantidadeOriginal: ing.quantidade,
+        quantidadeOriginalNum: qtdOriginalNum,
+        quantidadeOriginalFormatada: formatMeasurePTBR(qtdOriginalNum, ing.unidade),
         quantidadeCalculada: qtdCalculada,
-        quantidadeFormatada: formatNumberPTBR(qtdCalculada),
+        quantidadeFormatada: formatMeasurePTBR(qtdCalculada, ing.unidade),
+        equivalenteBase: formatEquivalentMeasure(qtdOriginalNum, ing.unidade),
+        equivalenteCalculado: formatEquivalentMeasure(qtdCalculada, ing.unidade),
         unidade: ing.unidade,
       };
     });
   }, [fichaTecnica, fatorMultiplicador]);
 
-  // Totais acumulados
+  // Totais acumulados (converte g -> Kg e ml -> Litros para somar corretamente)
   const totais = useMemo(() => {
-    let totalKg = 0;
-    let totalLitros = 0;
+    let totalKgNum = 0;
+    let totalLitrosNum = 0;
 
     ingredientesCalculados.forEach((item) => {
-      if (item.unidade === 'Kg') {
-        totalKg += item.quantidadeCalculada;
-      } else if (item.unidade === 'Litros') {
-        totalLitros += item.quantidadeCalculada;
+      if (isSolidUnit(item.unidade)) {
+        totalKgNum += toKgOrLiters(item.quantidadeCalculada, item.unidade);
+      } else if (isLiquidUnit(item.unidade)) {
+        totalLitrosNum += toKgOrLiters(item.quantidadeCalculada, item.unidade);
       }
     });
 
+    totalKgNum = Math.round(totalKgNum * 1e6) / 1e6;
+    totalLitrosNum = Math.round(totalLitrosNum * 1e6) / 1e6;
+
     return {
-      totalKg: formatNumberPTBR(totalKg),
-      totalLitros: formatNumberPTBR(totalLitros),
+      totalKgNum,
+      totalLitrosNum,
+      totalKg: formatMeasurePTBR(totalKgNum, 'Kg'),
+      totalLitros: formatMeasurePTBR(totalLitrosNum, 'Litros'),
+      totalKgEquiv: totalKgNum > 0 && totalKgNum < 1 ? `${formatMeasurePTBR(totalKgNum * 1000, 'g')} g` : null,
+      totalLitrosEquiv:
+        totalLitrosNum > 0 && totalLitrosNum < 1 ? `${formatMeasurePTBR(totalLitrosNum * 1000, 'ml')} ml` : null,
       totalItens: ingredientesCalculados.length,
     };
   }, [ingredientesCalculados]);
@@ -145,6 +182,24 @@ export const ProductionModal: React.FC<ProductionModalProps> = ({
 
     setErrorMsg('');
 
+    const sanitizedIngredients: ProductionIngredientCalculation[] = ingredientesCalculados.map(
+      ({
+        ingredienteId,
+        nome,
+        quantidadeOriginal,
+        quantidadeCalculada,
+        quantidadeFormatada,
+        unidade,
+      }) => ({
+        ingredienteId,
+        nome,
+        quantidadeOriginal,
+        quantidadeCalculada,
+        quantidadeFormatada,
+        unidade,
+      })
+    );
+
     const newRecord: ProductionRecord = {
       id: `prod-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
       taskId,
@@ -154,7 +209,7 @@ export const ProductionModal: React.FC<ProductionModalProps> = ({
       unidadeProducao,
       quantidadeBase,
       fator: fatorMultiplicador,
-      ingredientes: ingredientesCalculados,
+      ingredientes: sanitizedIngredients,
       observacoes: observacoes.trim() || undefined,
       producedByUserId: currentUser?.id,
       producedByUserName: currentUser?.name || 'Usuário OperaTask',
@@ -173,17 +228,30 @@ export const ProductionModal: React.FC<ProductionModalProps> = ({
   // Copiar lista de ingredientes para área de transferência
   const handleCopyList = () => {
     if (!fichaTecnica) return;
+    const totalParts: string[] = [];
+    if (totais.totalKgNum > 0) {
+      totalParts.push(
+        `${totais.totalKg} Kg${totais.totalKgEquiv ? ` (${totais.totalKgEquiv})` : ''} de sólidos`
+      );
+    }
+    if (totais.totalLitrosNum > 0) {
+      totalParts.push(
+        `${totais.totalLitros} Litros${totais.totalLitrosEquiv ? ` (${totais.totalLitrosEquiv})` : ''} de líquidos`
+      );
+    }
+
     const lines = [
       `📋 ORDEM DE PRODUÇÃO - ${fichaTecnica.nomeItem.toUpperCase()}`,
       `📦 Quantidade a Produzir: ${quantidadeDesejadaStr} ${unidadeProducao}`,
-      `⚡ Fator da Receita: ${formatNumberPTBR(fatorMultiplicador)}x`,
+      `⚡ Fator da Receita: ${formatFactorPTBR(fatorMultiplicador)}x`,
       `📅 Data: ${new Date().toLocaleDateString('pt-BR')} às ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`,
       currentUser?.name ? `👤 Responsável: ${currentUser.name}` : '',
       `\n--- INGREDIENTES PARA SEPARAÇÃO ---`,
-      ...ingredientesCalculados.map(
-        (ing, idx) => `${idx + 1}. [ ] ${ing.nome}: ${ing.quantidadeFormatada} ${ing.unidade} (Base: ${ing.quantidadeOriginal} ${ing.unidade})`
-      ),
-      `\n📊 Totais: ${totais.totalKg} Kg de sólidos | ${totais.totalLitros} Litros de líquidos`,
+      ...ingredientesCalculados.map((ing, idx) => {
+        const equiv = ing.equivalenteCalculado ? ` (= ${ing.equivalenteCalculado})` : '';
+        return `${idx + 1}. [ ] ${ing.nome}: ${ing.quantidadeFormatada} ${ing.unidade}${equiv} (Base: ${ing.quantidadeOriginalFormatada} ${ing.unidade})`;
+      }),
+      totalParts.length > 0 ? `\n📊 Totais: ${totalParts.join(' | ')}` : '',
       observacoes ? `\n📝 Observações: ${observacoes}` : '',
     ]
       .filter(Boolean)
@@ -220,7 +288,10 @@ export const ProductionModal: React.FC<ProductionModalProps> = ({
                 </span>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                Item: <strong className="text-slate-800 dark:text-slate-200">{fichaTecnica?.nomeItem || taskTitle}</strong>
+                Item:{' '}
+                <strong className="text-slate-800 dark:text-slate-200">
+                  {fichaTecnica?.nomeItem || taskTitle}
+                </strong>
               </p>
             </div>
           </div>
@@ -228,7 +299,7 @@ export const ProductionModal: React.FC<ProductionModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
@@ -286,308 +357,392 @@ export const ProductionModal: React.FC<ProductionModalProps> = ({
 
         {/* Corpo com Scroll */}
         <div className="p-6 overflow-y-auto space-y-5 flex-1">
-          {/* Seção 1: Configuração da Quantidade a Produzir */}
-          <div className="p-4 rounded-xl border border-teal-200 dark:border-teal-900/70 bg-teal-50/40 dark:bg-teal-950/20 space-y-3">
-            <div className="flex items-center justify-between">
-              <label className="block text-xs font-bold uppercase tracking-wider text-teal-900 dark:text-teal-200">
-                1. Quantidade que deseja produzir <span className="text-red-500">*</span>
-              </label>
-              <button
-                type="button"
-                onClick={() => setIsBaseCustomizada(!isBaseCustomizada)}
-                className="text-[11px] text-teal-700 dark:text-teal-300 hover:underline flex items-center gap-1 font-medium"
-              >
-                <span>Base da receita: {quantidadeBaseStr} {unidadeProducao}</span>
-                {isBaseCustomizada ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-center">
-              {/* Campo Quantidade Desejada */}
-              <div className="sm:col-span-7">
-                <div className="relative">
-                  <input
-                    type="number"
-                    step="any"
-                    min="0.001"
-                    autoFocus
-                    required
-                    value={quantidadeDesejadaStr}
-                    onChange={(e) => {
-                      setQuantidadeDesejadaStr(e.target.value);
-                      setErrorMsg('');
-                    }}
-                    placeholder="Ex: 10 ou 2.5"
-                    className="w-full text-lg sm:text-xl font-bold px-4 py-2.5 rounded-xl border-2 border-teal-500 dark:border-teal-400 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:outline-hidden focus:ring-4 focus:ring-teal-500/20 shadow-xs"
-                  />
-                  <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-bold text-teal-600 dark:text-teal-400 uppercase">
-                    {unidadeProducao}
-                  </span>
+          {activeTab === 'produce' ? (
+            <>
+              {/* Seção 1: Configuração da Quantidade a Produzir */}
+              <div className="p-4 rounded-xl border border-teal-200 dark:border-teal-900/70 bg-teal-50/40 dark:bg-teal-950/20 space-y-3">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <label className="block text-xs font-bold uppercase tracking-wider text-teal-900 dark:text-teal-200">
+                    1. Quantidade que deseja produzir <span className="text-red-500">*</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setIsBaseCustomizada(!isBaseCustomizada)}
+                    className="text-[11px] text-teal-700 dark:text-teal-300 hover:underline flex items-center gap-1 font-medium cursor-pointer"
+                  >
+                    <span>
+                      Base da receita: {quantidadeBaseStr} {unidadeProducao}
+                    </span>
+                    {isBaseCustomizada ? (
+                      <ChevronUp className="w-3 h-3" />
+                    ) : (
+                      <ChevronDown className="w-3 h-3" />
+                    )}
+                  </button>
                 </div>
-              </div>
 
-              {/* Seletor de Unidade de Produção */}
-              <div className="sm:col-span-5">
-                <select
-                  value={unidadeProducao}
-                  onChange={(e) => setUnidadeProducao(e.target.value)}
-                  className="w-full px-3 py-2.5 text-xs font-bold rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 focus:ring-2 focus:ring-teal-500"
-                >
-                  <option value="Unidades">Unidades (porções / peças)</option>
-                  <option value="Kg">Kg (Quilos)</option>
-                  <option value="Litros">Litros</option>
-                  <option value="Lotes">Lotes / Receitas</option>
-                  <option value="Caixas">Caixas</option>
-                </select>
-              </div>
-            </div>
+                <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-center">
+                  {/* Campo Quantidade Desejada (suporte a vírgula e ponto decimal) */}
+                  <div className="sm:col-span-7">
+                    <div className="relative">
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        autoFocus
+                        required
+                        value={quantidadeDesejadaStr}
+                        onChange={(e) => {
+                          setQuantidadeDesejadaStr(e.target.value);
+                          setErrorMsg('');
+                        }}
+                        placeholder="Ex: 10 ou 2,5"
+                        className="w-full text-lg sm:text-xl font-bold pl-4 pr-24 py-2.5 rounded-xl border-2 border-teal-500 dark:border-teal-400 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:outline-hidden focus:ring-4 focus:ring-teal-500/20 shadow-xs font-mono"
+                      />
+                      <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-bold text-teal-600 dark:text-teal-400 uppercase pointer-events-none">
+                        {unidadeProducao}
+                      </span>
+                    </div>
+                  </div>
 
-            {/* Ajuste avançado da Quantidade Base da Ficha Técnica (se a receita original render > 1) */}
-            {isBaseCustomizada && (
-              <div className="pt-2 border-t border-teal-200/60 dark:border-teal-900/40 text-xs space-y-1.5 animate-in fade-in duration-150">
-                <div className="flex items-center justify-between text-slate-600 dark:text-slate-400">
-                  <span className="font-semibold">Rendimento base cadastrado na Ficha Técnica:</span>
-                  <div className="flex items-center gap-1.5 w-32">
-                    <input
-                      type="number"
-                      step="any"
-                      min="0.001"
-                      value={quantidadeBaseStr}
-                      onChange={(e) => setQuantidadeBaseStr(e.target.value)}
-                      className="w-full px-2 py-1 text-xs font-bold text-center rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
-                    />
-                    <span className="text-[11px] font-semibold">{unidadeProducao}</span>
+                  {/* Seletor de Unidade de Produção */}
+                  <div className="sm:col-span-5">
+                    <select
+                      value={unidadeProducao}
+                      onChange={(e) => handleUnidadeProducaoChange(e.target.value)}
+                      className="w-full px-3 py-2.5 text-xs font-bold rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 focus:ring-2 focus:ring-teal-500 cursor-pointer"
+                    >
+                      <option value="Unidades">Unidades (porções / peças)</option>
+                      <option value="Kg">Kg (Quilos)</option>
+                      <option value="Litros">Litros</option>
+                      <option value="Lotes">Lotes / Receitas</option>
+                      <option value="Caixas">Caixas</option>
+                    </select>
                   </div>
                 </div>
-                <p className="text-[10px] text-slate-500 dark:text-slate-400">
-                  Fórmula: <strong>Fator = {quantidadeDesejadaStr || 0} ÷ {quantidadeBaseStr || 1} = {formatNumberPTBR(fatorMultiplicador)}x</strong>.
-                  Cada ingrediente será multiplicado por este fator.
-                </p>
-              </div>
-            )}
 
-            {/* Resumo Dinâmico do Fator de Produção */}
-            <div className="flex items-center justify-between p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-teal-200/60 dark:border-teal-800/60 text-xs">
-              <div className="flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-teal-600 dark:text-teal-400" />
-                <span className="text-slate-600 dark:text-slate-400">Fator de Proporção:</span>
-                <span className="font-extrabold text-teal-700 dark:text-teal-300 text-sm">
-                  {formatNumberPTBR(fatorMultiplicador)}x
-                </span>
-              </div>
-              <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                Produzir <strong>{quantidadeDesejadaStr || '0'} {unidadeProducao}</strong> de <strong>{fichaTecnica?.nomeItem}</strong>
-              </div>
-            </div>
-          </div>
-
-          {/* Seção 2: Ingredientes Necessários (Calculados Proporcionalmente) */}
-          <div className="space-y-2.5">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Scale className="w-4 h-4 text-teal-600 dark:text-teal-400" />
-                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-800 dark:text-slate-200">
-                  2. Ingredientes Necessários ({ingredientesCalculados.length})
-                </h3>
-              </div>
-
-              <button
-                type="button"
-                onClick={handleCopyList}
-                className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:text-teal-600 dark:hover:text-teal-400 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200/70 dark:hover:bg-slate-750 rounded-lg transition-colors"
-                title="Copiar lista de ingredientes para área de transferência"
-              >
-                {copiedList ? (
-                  <>
-                    <Check className="w-3.5 h-3.5 text-emerald-500" />
-                    <span className="text-emerald-600 dark:text-emerald-400">Copiado!</span>
-                  </>
-                ) : (
-                  <>
-                    <Copy className="w-3.5 h-3.5" />
-                    <span>Copiar Lista</span>
-                  </>
-                )}
-              </button>
-            </div>
-
-            {/* Tabela de Ingredientes Calculados */}
-            <div className="border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden bg-white dark:bg-slate-900 shadow-2xs">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 dark:bg-slate-800/70 text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800 font-semibold uppercase text-[10px] tracking-wider">
-                  <tr>
-                    <th className="px-3.5 py-2.5">Ingrediente</th>
-                    <th className="px-3.5 py-2.5 text-center">Ficha Base</th>
-                    <th className="px-3.5 py-2.5 text-right font-bold text-teal-700 dark:text-teal-300">
-                      Qtd. a Separar
-                    </th>
-                    <th className="px-3.5 py-2.5 text-center">Unidade</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {ingredientesCalculados.map((item, idx) => (
-                    <tr
-                      key={item.ingredienteId}
-                      className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors"
-                    >
-                      <td className="px-3.5 py-2.5 font-medium text-slate-800 dark:text-slate-200">
-                        <div className="flex items-center gap-2">
-                          <span className="w-5 h-5 rounded-full bg-slate-100 dark:bg-slate-800 text-[10px] font-bold text-slate-600 dark:text-slate-400 flex items-center justify-center shrink-0">
-                            {idx + 1}
-                          </span>
-                          <span className="truncate">{item.nome}</span>
-                        </div>
-                      </td>
-                      <td className="px-3.5 py-2.5 text-center text-slate-500 dark:text-slate-400 font-mono text-[11px]">
-                        {item.quantidadeOriginal} {item.unidade}
-                      </td>
-                      <td className="px-3.5 py-2.5 text-right">
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-lg bg-teal-50 dark:bg-teal-950/60 text-teal-800 dark:text-teal-200 font-bold font-mono text-xs border border-teal-200 dark:border-teal-800 shadow-2xs">
-                          {item.quantidadeFormatada}
-                        </span>
-                      </td>
-                      <td className="px-3.5 py-2.5 text-center">
-                        <span
-                          className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                            item.unidade === 'Kg'
-                              ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300'
-                              : 'bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300'
-                          }`}
-                        >
-                          {item.unidade}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-
-              {/* Rodapé da Tabela: Totais */}
-              <div className="bg-slate-50 dark:bg-slate-850 px-4 py-2.5 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs flex-wrap gap-2">
-                <span className="font-semibold text-slate-600 dark:text-slate-400 text-[11px]">
-                  Totais Calculados:
-                </span>
-                <div className="flex items-center gap-3">
-                  {parseFloat(totais.totalKg) > 0 && (
-                    <span className="inline-flex items-center gap-1 font-bold text-slate-700 dark:text-slate-300">
-                      <span className="w-2 h-2 rounded-full bg-amber-500" />
-                      Total Sólidos: {totais.totalKg} Kg
-                    </span>
-                  )}
-                  {parseFloat(totais.totalLitros) > 0 && (
-                    <span className="inline-flex items-center gap-1 font-bold text-slate-700 dark:text-slate-300">
-                      <span className="w-2 h-2 rounded-full bg-blue-500" />
-                      Total Líquidos: {totais.totalLitros} Litros
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Seção 3: Observações / Identificação do Lote (Opcional) */}
-          <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1.5">
-              Observações da Produção (Opcional)
-            </label>
-            <input
-              type="text"
-              value={observacoes}
-              onChange={(e) => setObservacoes(e.target.value)}
-              placeholder="Ex: Lote 04/2026 - Turno da manhã, entrega às 16h..."
-              className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-teal-500"
-            />
-          </div>
-
-          {/* Seção 4: Histórico de Produções Anteriores deste Card */}
-          {productionRecords.length > 0 && (
-            <div className="pt-2 border-t border-slate-200 dark:border-slate-800">
-              <button
-                type="button"
-                onClick={() => setShowHistory(!showHistory)}
-                className="w-full flex items-center justify-between text-xs font-semibold text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 py-1"
-              >
-                <div className="flex items-center gap-1.5">
-                  <History className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400" />
-                  <span>Histórico de Produções Deste Card ({productionRecords.length})</span>
-                </div>
-                {showHistory ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-              </button>
-
-              {showHistory && (
-                <div className="space-y-3 mt-2 max-h-60 overflow-y-auto pr-1">
-                  {productionRecords.map((rec) => {
-                    const dateObj = new Date(rec.createdAt);
-                    const dayStr = String(dateObj.getDate()).padStart(2, '0');
-                    const monthStr = String(dateObj.getMonth() + 1).padStart(2, '0');
-                    const yearStr = dateObj.getFullYear();
-                    const hoursStr = String(dateObj.getHours()).padStart(2, '0');
-                    const minsStr = String(dateObj.getMinutes()).padStart(2, '0');
-                    const formattedDateTime = `${dayStr}/${monthStr}/${yearStr} às ${hoursStr}:${minsStr}`;
-
+                {/* Atalhos rápidos de multiplicação */}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 mr-1">
+                    Atalhos:
+                  </span>
+                  {QUICK_QUANTITIES.map((preset) => {
+                    const isActive = quantidadeDesejada === Number(preset);
                     return (
-                      <div
-                        key={rec.id}
-                        className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-2xs space-y-2.5 text-xs"
+                      <button
+                        key={preset}
+                        type="button"
+                        onClick={() => {
+                          setQuantidadeDesejadaStr(preset);
+                          setErrorMsg('');
+                        }}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                          isActive
+                            ? 'bg-teal-600 text-white shadow-xs'
+                            : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:border-teal-400 hover:text-teal-700 dark:hover:text-teal-300'
+                        }`}
                       >
-                        <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-1.5">
-                          <span className="font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
-                            <Calendar className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400" />
-                            <span>{formattedDateTime}</span>
-                          </span>
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300">
-                            Concluído
-                          </span>
-                        </div>
-
-                        <div className="flex items-center justify-between">
-                          <span className="text-slate-600 dark:text-slate-400 font-semibold">Produzido:</span>
-                          <span className="font-bold text-teal-700 dark:text-teal-300 text-sm">
-                            {rec.quantidadeDesejada} {rec.unidadeProducao}
-                          </span>
-                        </div>
-
-                        <div className="bg-slate-50 dark:bg-slate-800/50 p-2.5 rounded-lg border border-slate-100 dark:border-slate-800 space-y-1">
-                          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                            Ingredientes utilizados:
-                          </div>
-                          {rec.ingredientes && rec.ingredientes.length > 0 ? (
-                            <div className="space-y-1 pt-0.5">
-                              {rec.ingredientes.map((ing) => (
-                                <div
-                                  key={ing.ingredienteId}
-                                  className="flex items-center justify-between text-xs"
-                                >
-                                  <span className="text-slate-700 dark:text-slate-300">
-                                    • {ing.nome}:
-                                  </span>
-                                  <span className="font-bold font-mono text-teal-700 dark:text-teal-300">
-                                    {ing.quantidadeFormatada} {ing.unidade}
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                          ) : (
-                            <div className="text-[11px] text-slate-400 italic">
-                              Ingredientes da Ficha Técnica
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 pt-1 border-t border-slate-100 dark:border-slate-800">
-                          <span>
-                            Responsável: <strong className="text-slate-700 dark:text-slate-300">{rec.producedByUserName || 'Usuário OperaTask'}</strong>
-                          </span>
-                          {rec.observacoes && (
-                            <span className="italic truncate max-w-[180px]" title={rec.observacoes}>
-                              "{rec.observacoes}"
-                            </span>
-                          )}
-                        </div>
-                      </div>
+                        {preset} {unidadeProducao}
+                      </button>
                     );
                   })}
                 </div>
+
+                {/* Ajuste avançado da Quantidade Base da Ficha Técnica (se a receita original render > 1) */}
+                {isBaseCustomizada && (
+                  <div className="pt-2 border-t border-teal-200/60 dark:border-teal-900/40 text-xs space-y-1.5 animate-in fade-in duration-150">
+                    <div className="flex items-center justify-between text-slate-600 dark:text-slate-400">
+                      <span className="font-semibold">
+                        Rendimento base cadastrado na Ficha Técnica:
+                      </span>
+                      <div className="flex items-center gap-1.5 w-36">
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={quantidadeBaseStr}
+                          onChange={(e) => setQuantidadeBaseStr(e.target.value)}
+                          className="w-full px-2 py-1 text-xs font-bold text-center font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
+                        />
+                        <span className="text-[11px] font-semibold shrink-0">
+                          {unidadeProducao}
+                        </span>
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                      Fórmula:{' '}
+                      <strong>
+                        Fator = {quantidadeDesejadaStr || 0} ÷ {quantidadeBaseStr || 1} ={' '}
+                        {formatFactorPTBR(fatorMultiplicador)}x
+                      </strong>
+                      . Cada ingrediente será multiplicado automaticamente por este fator.
+                    </p>
+                  </div>
+                )}
+
+                {/* Resumo Dinâmico do Fator de Produção */}
+                <div className="flex items-center justify-between gap-2 flex-wrap p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-teal-200/60 dark:border-teal-800/60 text-xs">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-teal-600 dark:text-teal-400 shrink-0" />
+                    <span className="text-slate-600 dark:text-slate-400">
+                      Fator de Multiplicação:
+                    </span>
+                    <span className="font-extrabold text-teal-700 dark:text-teal-300 text-sm font-mono">
+                      {formatFactorPTBR(fatorMultiplicador)}x
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Produzir{' '}
+                    <strong>
+                      {quantidadeDesejadaStr || '0'} {unidadeProducao}
+                    </strong>{' '}
+                    de <strong>{fichaTecnica?.nomeItem}</strong>
+                  </div>
+                </div>
+              </div>
+
+              {/* Seção 2: Ingredientes Necessários (Calculados Proporcionalmente) */}
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Scale className="w-4 h-4 text-teal-600 dark:text-teal-400" />
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-800 dark:text-slate-200">
+                      2. Ingredientes Necessários ({ingredientesCalculados.length})
+                    </h3>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleCopyList}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:text-teal-600 dark:hover:text-teal-400 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200/70 dark:hover:bg-slate-750 rounded-lg transition-colors cursor-pointer"
+                    title="Copiar lista de ingredientes para área de transferência"
+                  >
+                    {copiedList ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-500" />
+                        <span className="text-emerald-600 dark:text-emerald-400">Copiado!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>Copiar Lista</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {/* Tabela de Ingredientes Calculados */}
+                <div className="border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden bg-white dark:bg-slate-900 shadow-2xs">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-50 dark:bg-slate-800/70 text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800 font-semibold uppercase text-[10px] tracking-wider">
+                      <tr>
+                        <th className="px-3.5 py-2.5">Ingrediente</th>
+                        <th className="px-3.5 py-2.5 text-center">Ficha Base</th>
+                        <th className="px-3.5 py-2.5 text-right font-bold text-teal-700 dark:text-teal-300">
+                          Qtd. a Separar
+                        </th>
+                        <th className="px-3.5 py-2.5 text-center">Unidade</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                      {ingredientesCalculados.map((item, idx) => {
+                        const solid = isSolidUnit(item.unidade);
+                        return (
+                          <tr
+                            key={item.ingredienteId}
+                            className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors"
+                          >
+                            <td className="px-3.5 py-2.5 font-medium text-slate-800 dark:text-slate-200">
+                              <div className="flex items-center gap-2">
+                                <span className="w-5 h-5 rounded-full bg-slate-100 dark:bg-slate-800 text-[10px] font-bold text-slate-600 dark:text-slate-400 flex items-center justify-center shrink-0">
+                                  {idx + 1}
+                                </span>
+                                <span className="truncate">{item.nome}</span>
+                              </div>
+                            </td>
+                            <td className="px-3.5 py-2.5 text-center text-slate-500 dark:text-slate-400 font-mono text-[11px]">
+                              <div>
+                                {item.quantidadeOriginalFormatada} {item.unidade}
+                              </div>
+                              {item.equivalenteBase && (
+                                <div className="text-[10px] text-slate-400 dark:text-slate-500">
+                                  ({item.equivalenteBase})
+                                </div>
+                              )}
+                            </td>
+                            <td className="px-3.5 py-2.5 text-right">
+                              <div className="flex flex-col items-end">
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-lg bg-teal-50 dark:bg-teal-950/60 text-teal-800 dark:text-teal-200 font-bold font-mono text-xs border border-teal-200 dark:border-teal-800 shadow-2xs">
+                                  {item.quantidadeFormatada}
+                                </span>
+                                {item.equivalenteCalculado && (
+                                  <span className="text-[10px] font-mono text-teal-700/80 dark:text-teal-300/80 mt-0.5">
+                                    = {item.equivalenteCalculado}
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="px-3.5 py-2.5 text-center">
+                              <span
+                                className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                                  solid
+                                    ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300'
+                                    : 'bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300'
+                                }`}
+                              >
+                                {item.unidade}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+
+                  {/* Rodapé da Tabela: Totais */}
+                  <div className="bg-slate-50 dark:bg-slate-850 px-4 py-2.5 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs flex-wrap gap-2">
+                    <span className="font-semibold text-slate-600 dark:text-slate-400 text-[11px]">
+                      Totais Calculados:
+                    </span>
+                    <div className="flex items-center gap-3 flex-wrap">
+                      {totais.totalKgNum > 0 && (
+                        <span className="inline-flex items-center gap-1 font-bold text-slate-700 dark:text-slate-300 font-mono">
+                          <span className="w-2 h-2 rounded-full bg-amber-500" />
+                          <span className="font-sans">Total Sólidos:</span> {totais.totalKg} Kg
+                          {totais.totalKgEquiv && (
+                            <span className="text-[11px] font-normal text-slate-500 dark:text-slate-400">
+                              ({totais.totalKgEquiv})
+                            </span>
+                          )}
+                        </span>
+                      )}
+                      {totais.totalLitrosNum > 0 && (
+                        <span className="inline-flex items-center gap-1 font-bold text-slate-700 dark:text-slate-300 font-mono">
+                          <span className="w-2 h-2 rounded-full bg-blue-500" />
+                          <span className="font-sans">Total Líquidos:</span> {totais.totalLitros}{' '}
+                          Litros
+                          {totais.totalLitrosEquiv && (
+                            <span className="text-[11px] font-normal text-slate-500 dark:text-slate-400">
+                              ({totais.totalLitrosEquiv})
+                            </span>
+                          )}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Seção 3: Observações / Identificação do Lote (Opcional) */}
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1.5">
+                  Observações da Produção (Opcional)
+                </label>
+                <input
+                  type="text"
+                  value={observacoes}
+                  onChange={(e) => setObservacoes(e.target.value)}
+                  placeholder="Ex: Lote 04/2026 - Turno da manhã, entrega às 16h..."
+                  className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-teal-500"
+                />
+              </div>
+            </>
+          ) : (
+            /* Aba de Histórico de Produções deste Card */
+            <div className="space-y-3">
+              {productionRecords.length === 0 ? (
+                <div className="p-8 rounded-2xl border border-dashed border-slate-200 dark:border-slate-800 text-center space-y-2">
+                  <History className="w-8 h-8 text-slate-300 dark:text-slate-600 mx-auto" />
+                  <p className="text-xs font-semibold text-slate-600 dark:text-slate-400">
+                    Nenhuma produção registrada para este card ainda.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('produce')}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-teal-700 dark:text-teal-300 bg-teal-50 dark:bg-teal-950/40 rounded-lg hover:bg-teal-100 dark:hover:bg-teal-900/50 transition-colors cursor-pointer"
+                  >
+                    <Factory className="w-3.5 h-3.5" />
+                    <span>Iniciar Nova Produção</span>
+                  </button>
+                </div>
+              ) : (
+                productionRecords.map((rec) => {
+                  const dateObj = new Date(rec.createdAt);
+                  const dayStr = String(dateObj.getDate()).padStart(2, '0');
+                  const monthStr = String(dateObj.getMonth() + 1).padStart(2, '0');
+                  const yearStr = dateObj.getFullYear();
+                  const hoursStr = String(dateObj.getHours()).padStart(2, '0');
+                  const minsStr = String(dateObj.getMinutes()).padStart(2, '0');
+                  const formattedDateTime = `${dayStr}/${monthStr}/${yearStr} às ${hoursStr}:${minsStr}`;
+
+                  return (
+                    <div
+                      key={rec.id}
+                      className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-2xs space-y-2.5 text-xs"
+                    >
+                      <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-1.5">
+                        <span className="font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                          <Calendar className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400" />
+                          <span>{formattedDateTime}</span>
+                        </span>
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300">
+                          Concluído
+                        </span>
+                      </div>
+
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-600 dark:text-slate-400 font-semibold">
+                          Produzido:
+                        </span>
+                        <span className="font-bold text-teal-700 dark:text-teal-300 text-sm">
+                          {formatFactorPTBR(rec.quantidadeDesejada)} {rec.unidadeProducao}
+                        </span>
+                      </div>
+
+                      <div className="bg-slate-50 dark:bg-slate-800/50 p-2.5 rounded-lg border border-slate-100 dark:border-slate-800 space-y-1">
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                          Ingredientes utilizados:
+                        </div>
+                        {rec.ingredientes && rec.ingredientes.length > 0 ? (
+                          <div className="space-y-1 pt-0.5">
+                            {rec.ingredientes.map((ing) => (
+                              <div
+                                key={ing.ingredienteId}
+                                className="flex items-center justify-between text-xs"
+                              >
+                                <span className="text-slate-700 dark:text-slate-300">
+                                  • {ing.nome}:
+                                </span>
+                                <span className="font-bold font-mono text-teal-700 dark:text-teal-300">
+                                  {ing.quantidadeFormatada} {ing.unidade}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="text-[11px] text-slate-400 italic">
+                            Ingredientes da Ficha Técnica
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 pt-1 border-t border-slate-100 dark:border-slate-800">
+                        <span>
+                          Responsável:{' '}
+                          <strong className="text-slate-700 dark:text-slate-300">
+                            {rec.producedByUserName || 'Usuário OperaTask'}
+                          </strong>
+                        </span>
+                        {rec.observacoes && (
+                          <span
+                            className="italic truncate max-w-[180px]"
+                            title={rec.observacoes}
+                          >
+                            &quot;{rec.observacoes}&quot;
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
               )}
             </div>
           )}
@@ -603,21 +758,25 @@ export const ProductionModal: React.FC<ProductionModalProps> = ({
             Fechar
           </button>
 
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={handleConfirm}
-              disabled={quantidadeDesejada <= 0 || !fichaTecnica}
-              className={`inline-flex items-center gap-2 px-5 py-2.5 text-xs font-bold text-white rounded-xl shadow-md transition-all cursor-pointer ${
-                quantidadeDesejada > 0 && fichaTecnica
-                  ? 'bg-teal-600 hover:bg-teal-700 active:scale-98 hover:shadow-teal-600/25'
-                  : 'bg-slate-300 dark:bg-slate-700 cursor-not-allowed opacity-60'
-              }`}
-            >
-              <Factory className="w-4 h-4" />
-              <span>Confirmar Produção ({quantidadeDesejadaStr || '0'} {unidadeProducao})</span>
-            </button>
-          </div>
+          {activeTab === 'produce' && (
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleConfirm}
+                disabled={quantidadeDesejada <= 0 || !fichaTecnica}
+                className={`inline-flex items-center gap-2 px-5 py-2.5 text-xs font-bold text-white rounded-xl shadow-md transition-all cursor-pointer ${
+                  quantidadeDesejada > 0 && fichaTecnica
+                    ? 'bg-teal-600 hover:bg-teal-700 active:scale-98 hover:shadow-teal-600/25'
+                    : 'bg-slate-300 dark:bg-slate-700 cursor-not-allowed opacity-60'
+                }`}
+              >
+                <Factory className="w-4 h-4" />
+                <span>
+                  Confirmar Produção ({quantidadeDesejadaStr || '0'} {unidadeProducao})
+                </span>
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>
