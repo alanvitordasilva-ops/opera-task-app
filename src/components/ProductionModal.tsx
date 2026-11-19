@@ -41,6 +41,7 @@ interface ProductionModalProps {
 }
 
 const QUICK_QUANTITIES = ['1', '5', '10', '20', '50'];
+const UNIDADE_PRODUCAO = 'Lotes / Receitas';
 
 export const ProductionModal: React.FC<ProductionModalProps> = ({
   isOpen,
@@ -54,9 +55,9 @@ export const ProductionModal: React.FC<ProductionModalProps> = ({
 }) => {
   // Quantidade que o usuário deseja produzir
   const [quantidadeDesejadaStr, setQuantidadeDesejadaStr] = useState<string>('1');
-  // Unidade de produção (Unidades, Kg, Litros, Lotes, Caixas)
-  const [unidadeProducao, setUnidadeProducao] = useState<string>('Unidades');
-  // Quantidade base de referência da receita (padrão: 1 porção/receita para multiplicação direta)
+  // Unidade de produção fixada exclusivamente em Lotes / Receitas
+  const unidadeProducao = UNIDADE_PRODUCAO;
+  // Quantidade base de referência da receita (padrão: 1 lote/receita para multiplicação direta)
   const [quantidadeBaseStr, setQuantidadeBaseStr] = useState<string>('1');
   const [isBaseCustomizada, setIsBaseCustomizada] = useState<boolean>(false);
   const [observacoes, setObservacoes] = useState<string>('');
@@ -69,7 +70,6 @@ export const ProductionModal: React.FC<ProductionModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       setQuantidadeDesejadaStr('1');
-      setUnidadeProducao('Unidades');
       setQuantidadeBaseStr('1');
       setIsBaseCustomizada(false);
       setObservacoes('');
@@ -79,18 +79,6 @@ export const ProductionModal: React.FC<ProductionModalProps> = ({
       setActiveTab('produce');
     }
   }, [isOpen, fichaTecnica?.id, taskId]);
-
-  // Ao selecionar a opção de produção (ex: Unidades (porções / peças)),
-  // garante multiplicação direta imediata pelos valores dos ingredientes da ficha.
-  const handleUnidadeProducaoChange = (novaUnidade: string) => {
-    setUnidadeProducao(novaUnidade);
-    setQuantidadeBaseStr('1');
-    setIsBaseCustomizada(false);
-    setErrorMsg('');
-    if (parseSafeMeasure(quantidadeDesejadaStr) <= 0) {
-      setQuantidadeDesejadaStr('1');
-    }
-  };
 
   // Quantidade desejada e base como números
   const quantidadeDesejada = parseSafeMeasure(quantidadeDesejadaStr);
@@ -396,27 +384,22 @@ export const ProductionModal: React.FC<ProductionModalProps> = ({
                           setErrorMsg('');
                         }}
                         placeholder="Ex: 10 ou 2,5"
-                        className="w-full text-lg sm:text-xl font-bold pl-4 pr-24 py-2.5 rounded-xl border-2 border-teal-500 dark:border-teal-400 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:outline-hidden focus:ring-4 focus:ring-teal-500/20 shadow-xs font-mono"
+                        className="w-full text-lg sm:text-xl font-bold pl-4 pr-36 py-2.5 rounded-xl border-2 border-teal-500 dark:border-teal-400 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:outline-hidden focus:ring-4 focus:ring-teal-500/20 shadow-xs font-mono"
                       />
-                      <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-bold text-teal-600 dark:text-teal-400 uppercase pointer-events-none">
+                      <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[11px] font-bold text-teal-600 dark:text-teal-400 uppercase pointer-events-none">
                         {unidadeProducao}
                       </span>
                     </div>
                   </div>
 
-                  {/* Seletor de Unidade de Produção */}
+                  {/* Nomenclatura fixa de Unidade de Produção: apenas Lotes / Receitas */}
                   <div className="sm:col-span-5">
-                    <select
-                      value={unidadeProducao}
-                      onChange={(e) => handleUnidadeProducaoChange(e.target.value)}
-                      className="w-full px-3 py-2.5 text-xs font-bold rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 focus:ring-2 focus:ring-teal-500 cursor-pointer"
+                    <div
+                      aria-label="Tipo de produção fixo: Lotes / Receitas"
+                      className="w-full px-3.5 py-2.5 text-xs font-bold rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 flex items-center justify-center sm:justify-start select-none"
                     >
-                      <option value="Unidades">Unidades (porções / peças)</option>
-                      <option value="Kg">Kg (Quilos)</option>
-                      <option value="Litros">Litros</option>
-                      <option value="Lotes">Lotes / Receitas</option>
-                      <option value="Caixas">Caixas</option>
-                    </select>
+                      {unidadeProducao}
+                    </div>
                   </div>
                 </div>
 
@@ -441,7 +424,7 @@ export const ProductionModal: React.FC<ProductionModalProps> = ({
                             : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:border-teal-400 hover:text-teal-700 dark:hover:text-teal-300'
                         }`}
                       >
-                        {preset} {unidadeProducao}
+                        {preset}x
                       </button>
                     );
                   })}
@@ -450,11 +433,11 @@ export const ProductionModal: React.FC<ProductionModalProps> = ({
                 {/* Ajuste avançado da Quantidade Base da Ficha Técnica (se a receita original render > 1) */}
                 {isBaseCustomizada && (
                   <div className="pt-2 border-t border-teal-200/60 dark:border-teal-900/40 text-xs space-y-1.5 animate-in fade-in duration-150">
-                    <div className="flex items-center justify-between text-slate-600 dark:text-slate-400">
+                    <div className="flex items-center justify-between gap-2 text-slate-600 dark:text-slate-400">
                       <span className="font-semibold">
                         Rendimento base cadastrado na Ficha Técnica:
                       </span>
-                      <div className="flex items-center gap-1.5 w-36">
+                      <div className="flex items-center gap-1.5 w-44">
                         <input
                           type="text"
                           inputMode="decimal"
