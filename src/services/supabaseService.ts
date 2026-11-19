@@ -1708,30 +1708,53 @@ export class SupabaseService {
   }
 
   /**
-   * Apagar uma tarefa no Supabase (D do CRUD)
+   * Apagar uma tarefa no Supabase (D do CRUD) nas tabelas 'cards' e 'tasks'
    */
   static async deleteTask(taskId: string): Promise<{ success: boolean; error?: string }> {
     const client = this.getClient();
     if (!client) return { success: false, error: 'Supabase não está configurado.' };
 
     try {
-      let { error } = await client.from('cards').delete().eq('id', taskId);
+      const [cardsRes, tasksRes] = await Promise.allSettled([
+        client.from('cards').delete().eq('id', taskId),
+        client.from('tasks').delete().eq('id', taskId),
+      ]);
 
-      if (error && (error.code === '42P01' || error.message?.includes('does not exist'))) {
-        const fallback = await client.from('tasks').delete().eq('id', taskId);
-        error = fallback.error;
-      } else {
-        Promise.resolve(client.from('tasks').delete().eq('id', taskId)).catch(() => {});
-      }
+      const cardsErr = cardsRes.status === 'fulfilled' ? cardsRes.value.error : cardsRes.reason;
+      const tasksErr = tasksRes.status === 'fulfilled' ? tasksRes.value.error : tasksRes.reason;
 
-      if (error) {
-        console.warn('[Supabase CRUD] Erro ao excluir tarefa:', error.message);
-        return { success: false, error: error.message };
+      const isMissingTable = (err: any) =>
+        err && (err.code === '42P01' || String(err.message || '').includes('does not exist'));
+
+      if (cardsErr && !isMissingTable(cardsErr) && tasksErr && !isMissingTable(tasksErr)) {
+        console.warn('[Supabase CRUD] Erro ao excluir tarefa:', cardsErr.message || tasksErr.message);
+        return { success: false, error: cardsErr.message || tasksErr.message };
       }
 
       return { success: true };
     } catch (err: any) {
       console.error('[Supabase CRUD] Exceção ao excluir tarefa:', err);
+      return { success: false, error: err.message };
+    }
+  }
+
+  /**
+   * Apagar um lote de tarefas no Supabase (ex: limpeza de coluna ou quadro excluído)
+   */
+  static async deleteTasksBatch(taskIds: string[]): Promise<{ success: boolean; error?: string }> {
+    const client = this.getClient();
+    if (!client) return { success: false, error: 'Supabase não está configurado.' };
+    const uniqueIds = Array.from(new Set(taskIds.filter(Boolean)));
+    if (uniqueIds.length === 0) return { success: true };
+
+    try {
+      await Promise.allSettled([
+        client.from('cards').delete().in('id', uniqueIds),
+        client.from('tasks').delete().in('id', uniqueIds),
+      ]);
+      return { success: true };
+    } catch (err: any) {
+      console.error('[Supabase CRUD] Exceção ao excluir tarefas em lote:', err);
       return { success: false, error: err.message };
     }
   }

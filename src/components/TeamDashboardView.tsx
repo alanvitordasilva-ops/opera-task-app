@@ -11,7 +11,12 @@ import {
   Layers,
   ArrowRight,
 } from 'lucide-react';
-import { isTaskOverdue, getInitials, ROLE_CONFIG } from '../utils/helpers.ts';
+import {
+  isTaskOverdue,
+  getInitials,
+  ROLE_CONFIG,
+  filterActiveTasksForProjects,
+} from '../utils/helpers.ts';
 import { UserAvatar } from './UserAvatar.tsx';
 
 interface TeamDashboardViewProps {
@@ -31,16 +36,17 @@ export const TeamDashboardView: React.FC<TeamDashboardViewProps> = ({
   onSelectProject,
   onSelectMemberFilter,
 }) => {
-  const totalTasks = tasks.length;
-  const completedTasks = tasks.filter((t) => t.isCompleted).length;
-  const overdueTasks = tasks.filter((t) => isTaskOverdue(t)).length;
+  const activeTasks = filterActiveTasksForProjects(tasks, projects);
+  const totalTasks = activeTasks.length;
+  const completedTasks = activeTasks.filter((t) => t.isCompleted).length;
+  const overdueTasks = activeTasks.filter((t) => isTaskOverdue(t)).length;
   const inProgressTasks = totalTasks - completedTasks;
 
   const completionRate = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
 
   // Carga de trabalho por pessoa (quantas tarefas atribuídas, quantas concluídas)
   const workloadByMember = workspaceMembers.map((member) => {
-    const memberTasks = tasks.filter(
+    const memberTasks = activeTasks.filter(
       (t) => t.assigneeIds && t.assigneeIds.includes(member.id)
     );
     const memberCompleted = memberTasks.filter((t) => t.isCompleted).length;
@@ -49,7 +55,7 @@ export const TeamDashboardView: React.FC<TeamDashboardViewProps> = ({
 
     // Atividades / comentários / checklists realizados para ranking de atividade
     let activityScore = memberCompleted * 3 + memberPending * 1;
-    tasks.forEach((t) => {
+    activeTasks.forEach((t) => {
       const userComments = t.comments?.filter((c) => c.authorId === member.id).length || 0;
       activityScore += userComments * 2;
     });
@@ -371,7 +377,7 @@ export const TeamDashboardView: React.FC<TeamDashboardViewProps> = ({
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pt-1">
           {projects.map((proj) => {
-            const projTasks = tasks.filter((t) => t.projectId === proj.id);
+            const projTasks = activeTasks.filter((t) => t.projectId === proj.id);
             const projCompleted = projTasks.filter((t) => t.isCompleted).length;
             const projRate = projTasks.length > 0 ? Math.round((projCompleted / projTasks.length) * 100) : 0;
             const projColor = proj.color || '#2563eb';

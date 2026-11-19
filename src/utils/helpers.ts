@@ -1,4 +1,4 @@
-import { Priority, WorkspaceRole, Task, ChecklistItem, User } from '../types/index.ts';
+import { Priority, WorkspaceRole, Task, Project, ChecklistItem, User } from '../types/index.ts';
 
 export const PRIORITY_CONFIG: Record<
   Priority,
@@ -883,7 +883,7 @@ export function markTaskDeleted(taskId: string): void {
   if (typeof window === 'undefined' || !taskId) return;
   try {
     const existing = getDeletedTaskIds().filter((id) => id !== taskId);
-    const next = [taskId, ...existing].slice(0, 200);
+    const next = [taskId, ...existing].slice(0, 2000);
     localStorage.setItem(DELETED_TASKS_STORAGE_KEY, JSON.stringify(next));
   } catch {}
 }
@@ -914,7 +914,7 @@ export function markProjectDeleted(projectId: string): void {
   if (typeof window === 'undefined' || !projectId) return;
   try {
     const existing = getDeletedProjectIds().filter((id) => id !== projectId);
-    const next = [projectId, ...existing].slice(0, 200);
+    const next = [projectId, ...existing].slice(0, 2000);
     localStorage.setItem(DELETED_PROJECTS_STORAGE_KEY, JSON.stringify(next));
   } catch {}
 }
@@ -925,6 +925,34 @@ export function clearProjectDeleted(projectId: string): void {
     const next = getDeletedProjectIds().filter((id) => id !== projectId);
     localStorage.setItem(DELETED_PROJECTS_STORAGE_KEY, JSON.stringify(next));
   } catch {}
+}
+
+/**
+ * Filtra estritamente tarefas ativas:
+ * - exclui tarefas arquivadas ou marcadas como excluídas (tombstones)
+ * - exclui tarefas cujo projeto foi excluído ou arquivado
+ * - exclui tarefas órfãs cuja coluna foi excluída ou arquivada
+ */
+export function filterActiveTasksForProjects(
+  tasks: Task[],
+  activeProjects: Project[],
+  deletedTaskIds?: Iterable<string> | null
+): Task[] {
+  const deletedSet = new Set<string>(deletedTaskIds ? Array.from(deletedTaskIds) : getDeletedTaskIds());
+  const projectColMap = new Map<string, Set<string>>();
+
+  activeProjects.forEach((p) => {
+    if (!p || !p.id || p.isArchived) return;
+    const activeCols = (p.columns || []).filter((c) => c && c.id && !c.isArchived);
+    projectColMap.set(p.id, new Set(activeCols.map((c) => c.id)));
+  });
+
+  return tasks.filter((t) => {
+    if (!t || !t.id || t.isArchived || deletedSet.has(t.id)) return false;
+    const colSet = projectColMap.get(t.projectId);
+    if (!colSet) return false;
+    return colSet.size === 0 || colSet.has(t.columnId);
+  });
 }
 
 /**

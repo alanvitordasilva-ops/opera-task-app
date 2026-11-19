@@ -1636,6 +1636,22 @@ export const StorageService = {
       skipCloudPush: true,
     });
 
+    // Envio imediato com keepalive garantindo que tombstones sobrevivam a refresh instantâneo
+    if (typeof window !== 'undefined' && isServerApiAvailable()) {
+      const deltaPayload = JSON.stringify({
+        deletedProjectIds: [projectId],
+        deletedTaskIds,
+        clientId: RealtimeService.getClientId(),
+        action: 'delete_project',
+      });
+      fetch('/api/sync/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: deltaPayload,
+        keepalive: deltaPayload.length < 60000,
+      }).catch(() => {});
+    }
+
     // 3. Exclui no Supabase
     if (SupabaseService.isConfigured()) {
       try {
@@ -2540,6 +2556,8 @@ export const StorageService = {
 
     try {
       localStorage.removeItem('operatask_deleted_task_ids');
+      localStorage.removeItem('operatask_deleted_task_ids_v1');
+      localStorage.removeItem('operatask_deleted_project_ids_v1');
     } catch {}
 
     const resetAt = new Date().toISOString();
@@ -2738,7 +2756,10 @@ export const StorageService = {
         return DEFAULT_TASKS;
       }
       const parsed: Task[] = JSON.parse(data);
-      return Array.isArray(parsed) ? parsed : DEFAULT_TASKS;
+      if (!Array.isArray(parsed)) return DEFAULT_TASKS;
+      const deletedSet = new Set(getDeletedTaskIds());
+      if (deletedSet.size === 0) return parsed;
+      return parsed.filter((t) => t && t.id && !deletedSet.has(t.id));
     } catch {
       return DEFAULT_TASKS;
     }
@@ -2942,7 +2963,7 @@ export const StorageService = {
   },
 
   /**
-   * Excluir tarefa diretamente no Supabase e refletir no armazenamento local
+   * Excluir tarefa diretamente no Supabase e refletir no armazenamento local e servidor
    */
   async deleteTaskAsync(taskId: string): Promise<{ success: boolean }> {
     markTaskDeleted(taskId);
@@ -2957,12 +2978,70 @@ export const StorageService = {
       skipCloudPush: true,
     });
 
-    // 2. Exclui diretamente no Supabase se configurado
+    // 2. Delta compacto com keepalive no servidor central para resistir a refresh imediato
+    if (typeof window !== 'undefined' && isServerApiAvailable()) {
+      const deltaPayload = JSON.stringify({
+        deletedTaskIds: [taskId],
+        clientId: RealtimeService.getClientId(),
+        action: 'delete_task',
+      });
+      fetch('/api/sync/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: deltaPayload,
+        keepalive: true,
+      }).catch(() => {});
+    }
+
+    // 3. Exclui diretamente no Supabase se configurado
     if (SupabaseService.isConfigured()) {
       try {
         await SupabaseService.deleteTask(taskId);
       } catch (e) {
         console.warn('[StorageService] Erro ao excluir tarefa no Supabase:', e);
+      }
+    }
+    return { success: true };
+  },
+
+  /**
+   * Excluir lote de tarefas (ex: cards de coluna excluída nas configurações do quadro)
+   */
+  async batchDeleteTasksAsync(taskIds: string[]): Promise<{ success: boolean }> {
+    const uniqueIds = Array.from(new Set(taskIds.filter(Boolean)));
+    if (uniqueIds.length === 0) return { success: true };
+
+    uniqueIds.forEach((id) => markTaskDeleted(id));
+    const deleteSet = new Set(uniqueIds);
+    const current = this.getTasks();
+    const filtered = current.filter((t) => !deleteSet.has(t.id));
+
+    this.saveTasks(filtered, true, {
+      action: 'delete_task_batch',
+      replaceAll: true,
+      deletedTaskIds: uniqueIds,
+      skipCloudPush: true,
+    });
+
+    if (typeof window !== 'undefined' && isServerApiAvailable()) {
+      const deltaPayload = JSON.stringify({
+        deletedTaskIds: uniqueIds,
+        clientId: RealtimeService.getClientId(),
+        action: 'delete_task_batch',
+      });
+      fetch('/api/sync/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: deltaPayload,
+        keepalive: deltaPayload.length < 60000,
+      }).catch(() => {});
+    }
+
+    if (SupabaseService.isConfigured()) {
+      try {
+        await SupabaseService.deleteTasksBatch(uniqueIds);
+      } catch (e) {
+        console.warn('[StorageService] Erro ao excluir lote de tarefas no Supabase:', e);
       }
     }
     return { success: true };

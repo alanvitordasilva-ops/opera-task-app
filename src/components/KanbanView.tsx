@@ -150,6 +150,8 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
   }, [openMenuTaskId, openMenuColumnId]);
 
   const columns = (project.columns || []).filter((c) => !c.isArchived);
+  const activeColumnIds = new Set(columns.map((c) => c.id));
+  const visibleTasks = tasks.filter((t) => !t.isArchived && activeColumnIds.has(t.columnId));
   const effectiveMobileColumn =
     selectedMobileColumn === 'all' || columns.some((c) => c.id === selectedMobileColumn)
       ? selectedMobileColumn
@@ -381,11 +383,11 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
               : 'bg-slate-200/80 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
           }`}
         >
-          <span>Todas ({tasks.length})</span>
+          <span>Todas ({visibleTasks.length})</span>
         </button>
 
         {columns.map((col) => {
-          const count = tasks.filter((t) => t.columnId === col.id).length;
+          const count = visibleTasks.filter((t) => t.columnId === col.id).length;
           const isSelected = effectiveMobileColumn === col.id;
           return (
             <button

@@ -35,6 +35,7 @@ import {
   mergeTaskLists,
   getDeletedTaskIds,
   buildUniqueTaskId,
+  filterActiveTasksForProjects,
 } from './utils/helpers.ts';
 import { SplashScreen } from './components/SplashScreen.tsx';
 import { RegisterUserModal } from './components/RegisterUserModal.tsx';
@@ -804,10 +805,11 @@ export default function App() {
     return projects.filter((p) => p.workspaceId === currentWorkspace.id && !!p.isArchived);
   }, [projects, currentWorkspace]);
 
-  // Tarefas ativas do workspace atual (exclui arquivados)
+  // Tarefas ativas do workspace atual (exclui arquivadas, excluídas e órfãs de projetos/colunas excluídos ou arquivados)
   const workspaceTasks = useMemo(() => {
-    return tasks.filter((t) => t.workspaceId === currentWorkspace.id && !t.isArchived);
-  }, [tasks, currentWorkspace]);
+    const wsRawTasks = tasks.filter((t) => t.workspaceId === currentWorkspace.id);
+    return filterActiveTasksForProjects(wsRawTasks, workspaceProjects);
+  }, [tasks, currentWorkspace, workspaceProjects]);
 
   // Tarefas arquivadas do workspace atual
   const archivedWorkspaceTasks = useMemo(() => {
@@ -1964,6 +1966,23 @@ export default function App() {
   // Gestão de Projetos
   const handleSaveProject = (projectData: Partial<Project> & { id?: string }) => {
     if (projectData.id) {
+      const existingProj = projects.find((p) => p.id === projectData.id);
+      if (existingProj && Array.isArray(projectData.columns)) {
+        const nextColIds = new Set(projectData.columns.map((c) => c.id));
+        const removedColIds = new Set(
+          (existingProj.columns || []).filter((c) => !nextColIds.has(c.id)).map((c) => c.id)
+        );
+        if (removedColIds.size > 0) {
+          const orphanedTaskIds = tasks
+            .filter((t) => t.projectId === existingProj.id && removedColIds.has(t.columnId))
+            .map((t) => t.id);
+          if (orphanedTaskIds.length > 0) {
+            const orphanSet = new Set(orphanedTaskIds);
+            setTasks((prev) => prev.filter((t) => !orphanSet.has(t.id)));
+            StorageService.batchDeleteTasksAsync(orphanedTaskIds);
+          }
+        }
+      }
       setProjects((prev) =>
         prev.map((p) => (p.id === projectData.id ? { ...p, ...projectData } : p))
       );
@@ -2066,15 +2085,33 @@ export default function App() {
     const remainingCols = activeProject.columns.filter((c) => c.id !== columnId);
     const fallbackCol = remainingCols.find((c) => !c.isArchived) || remainingCols[0];
 
-    // Move tarefas da coluna excluída para a coluna remanescente
+    // Move tarefas da coluna excluída para a coluna remanescente e persiste no servidor/Supabase
     if (fallbackCol) {
-      setTasks((prev) =>
-        prev.map((t) =>
-          t.projectId === activeProject.id && t.columnId === columnId
-            ? { ...t, columnId: fallbackCol.id, updatedAt: new Date().toISOString() }
-            : t
-        )
+      const movedAt = new Date().toISOString();
+      const tasksToMove = tasks.filter(
+        (t) => t.projectId === activeProject.id && t.columnId === columnId
       );
+      if (tasksToMove.length > 0) {
+        setTasks((prev) =>
+          prev.map((t) =>
+            t.projectId === activeProject.id && t.columnId === columnId
+              ? { ...t, columnId: fallbackCol.id, updatedAt: movedAt }
+              : t
+          )
+        );
+        StorageService.batchUpdateTasksAsync(
+          tasksToMove.map((t) => ({ id: t.id, columnId: fallbackCol.id }))
+        );
+      }
+    } else {
+      const orphanedIds = tasks
+        .filter((t) => t.projectId === activeProject.id && t.columnId === columnId)
+        .map((t) => t.id);
+      if (orphanedIds.length > 0) {
+        const orphanSet = new Set(orphanedIds);
+        setTasks((prev) => prev.filter((t) => !orphanSet.has(t.id)));
+        StorageService.batchDeleteTasksAsync(orphanedIds);
+      }
     }
 
     // Atualiza colunas do projeto

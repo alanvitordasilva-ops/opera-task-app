@@ -313,24 +313,64 @@ function operataskRealtimePlugin() {
                     : mergedWs;
                 }
               }
+              const incomingDeletedProjIds: string[] = Array.isArray(body.deletedProjectIds)
+                ? body.deletedProjectIds.map((id: any) => String(id)).filter(Boolean)
+                : [];
+              if (incomingDeletedProjIds.length > 0) {
+                const prevDelProjs: string[] = Array.isArray(sharedCache.deletedProjectIds)
+                  ? sharedCache.deletedProjectIds
+                  : [];
+                sharedCache.deletedProjectIds = Array.from(
+                  new Set([...incomingDeletedProjIds, ...prevDelProjs])
+                ).slice(0, 2000);
+              }
+              const deletedProjSet = new Set<string>(
+                Array.isArray(sharedCache.deletedProjectIds) ? sharedCache.deletedProjectIds : []
+              );
+
               if (Array.isArray(body.projects)) {
                 if (body.replaceAll) {
-                  sharedCache.projects = body.projects;
+                  sharedCache.projects = body.projects.filter(
+                    (p: any) => p?.id && !deletedProjSet.has(p.id)
+                  );
                 } else {
                   const projMap = new Map();
-                  (sharedCache.projects || []).forEach((p: any) => p?.id && projMap.set(p.id, p));
+                  (sharedCache.projects || []).forEach((p: any) => {
+                    if (p?.id && !deletedProjSet.has(p.id)) projMap.set(p.id, p);
+                  });
                   body.projects.forEach((p: any) => {
-                    if (p?.id) projMap.set(p.id, { ...projMap.get(p.id), ...p });
+                    if (p?.id && !deletedProjSet.has(p.id)) {
+                      projMap.set(p.id, { ...projMap.get(p.id), ...p });
+                    }
                   });
                   sharedCache.projects = Array.from(projMap.values());
                 }
+              } else if (incomingDeletedProjIds.length > 0) {
+                sharedCache.projects = (sharedCache.projects || []).filter(
+                  (p: any) => p?.id && !deletedProjSet.has(p.id)
+                );
+              }
+
+              const incomingDeletedTaskIds: string[] = Array.isArray(body.deletedTaskIds)
+                ? body.deletedTaskIds.map((id: any) => String(id)).filter(Boolean)
+                : [];
+              if (incomingDeletedTaskIds.length > 0) {
+                const prevDelTasks: string[] = Array.isArray(sharedCache.deletedTaskIds)
+                  ? sharedCache.deletedTaskIds
+                  : [];
+                sharedCache.deletedTaskIds = Array.from(
+                  new Set([...incomingDeletedTaskIds, ...prevDelTasks])
+                ).slice(0, 2000);
               }
               const deletedSet = new Set<string>(
-                Array.isArray(body.deletedTaskIds) ? body.deletedTaskIds.map((id: any) => String(id)) : []
+                Array.isArray(sharedCache.deletedTaskIds) ? sharedCache.deletedTaskIds : []
               );
+
               if (Array.isArray(body.tasks)) {
                 if (body.replaceAll) {
-                  sharedCache.tasks = body.tasks.filter((t: any) => t?.id && !deletedSet.has(t.id));
+                  sharedCache.tasks = body.tasks.filter(
+                    (t: any) => t?.id && !deletedSet.has(t.id) && !deletedProjSet.has(t.projectId)
+                  );
                 } else {
                   const getTs = (t: any) => {
                     const ts = Date.parse(t?.updatedAt || t?.createdAt || '');
@@ -338,10 +378,12 @@ function operataskRealtimePlugin() {
                   };
                   const taskMap = new Map();
                   (sharedCache.tasks || []).forEach((t: any) => {
-                    if (t?.id && !deletedSet.has(t.id)) taskMap.set(t.id, t);
+                    if (t?.id && !deletedSet.has(t.id) && !deletedProjSet.has(t.projectId)) {
+                      taskMap.set(t.id, t);
+                    }
                   });
                   body.tasks.forEach((t: any) => {
-                    if (!t?.id || deletedSet.has(t.id)) return;
+                    if (!t?.id || deletedSet.has(t.id) || deletedProjSet.has(t.projectId)) return;
                     const prev = taskMap.get(t.id);
                     if (!prev || getTs(t) >= getTs(prev)) {
                       taskMap.set(t.id, prev ? { ...prev, ...t } : t);
@@ -349,8 +391,10 @@ function operataskRealtimePlugin() {
                   });
                   sharedCache.tasks = Array.from(taskMap.values());
                 }
-              } else if (deletedSet.size > 0) {
-                sharedCache.tasks = (sharedCache.tasks || []).filter((t: any) => t?.id && !deletedSet.has(t.id));
+              } else if (incomingDeletedTaskIds.length > 0 || incomingDeletedProjIds.length > 0) {
+                sharedCache.tasks = (sharedCache.tasks || []).filter(
+                  (t: any) => t?.id && !deletedSet.has(t.id) && !deletedProjSet.has(t.projectId)
+                );
               }
               if (Array.isArray(body.tags)) sharedCache.tags = body.tags;
               if (Array.isArray(body.activities)) sharedCache.activities = body.activities;
