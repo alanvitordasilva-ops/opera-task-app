@@ -233,11 +233,15 @@ export default function App() {
       ? allowedWorkspaces.find((w) => w.id === inviteData.workspaceId) ||
         freshWorkspaces.find((w) => w.id === inviteData.workspaceId)
       : null;
-    const preferredNonPrincipalWs = !isMasterUser
-      ? allowedWorkspaces.find((w) => w.id !== 'ws-principal')
+    const savedWsId = StorageService.getCurrentWorkspace()?.id;
+    const savedActiveWs = savedWsId
+      ? allowedWorkspaces.find((w) => w.id === savedWsId) || null
       : null;
+    const preferredNonPrincipalWs =
+      allowedWorkspaces.find((w) => w.id !== 'ws-principal') || null;
     const activeWs =
       targetInvitedWs ||
+      savedActiveWs ||
       preferredNonPrincipalWs ||
       (allowedWorkspaces.length > 0 ? allowedWorkspaces[0] : null);
 
@@ -288,18 +292,37 @@ export default function App() {
     StorageService.setAuthenticated(true);
     setIsAuthenticated(true);
 
-    // Carregar projetos e tarefas do armazenamento sincronizado e da nuvem para o Workspace ativo
+    // Carregar projetos, tarefas e clientes do armazenamento sincronizado e da nuvem (todos os workspaces para Master)
     const finalActiveWs = resolvedActiveWs;
     setTasks(StorageService.getTasks());
     if (SupabaseService.isConfigured() && finalActiveWs) {
-      StorageService.fetchProjectsCloud(finalActiveWs.id).then((pRes) => {
+      const targetWsScope = isMasterUser ? undefined : finalActiveWs.id;
+      Promise.all([
+        StorageService.fetchProjectsCloud(targetWsScope),
+        StorageService.fetchTasksCloud(targetWsScope),
+        StorageService.fetchClientsCloud(),
+      ]).then(([pRes, tRes, cRes]) => {
+        let restoredFromCloud = false;
         if (pRes.success && Array.isArray(pRes.projects) && pRes.projects.length > 0) {
-          setProjects(StorageService.getProjects());
+          const updatedProjs = StorageService.getProjects();
+          setProjects(updatedProjs);
+          setSelectedProjectId((prevProjId) => {
+            const wsProjs = updatedProjs.filter((p) => p.workspaceId === finalActiveWs.id && !p.isArchived);
+            if (wsProjs.some((p) => p.id === prevProjId)) return prevProjId;
+            return wsProjs[0]?.id || prevProjId;
+          });
+          restoredFromCloud = true;
         }
-      });
-      StorageService.fetchTasksCloud(finalActiveWs.id).then((res) => {
-        if (res.success && Array.isArray(res.tasks)) {
+        if (tRes.success && Array.isArray(tRes.tasks)) {
           setTasks(StorageService.getTasks());
+          if (tRes.tasks.length > 0) restoredFromCloud = true;
+        }
+        if (cRes.success && Array.isArray(cRes.clients)) {
+          setClients(StorageService.getClients());
+          if (cRes.clients.length > 0) restoredFromCloud = true;
+        }
+        if (restoredFromCloud) {
+          StorageService.pushLocalStateToServer().catch(() => {});
         }
       });
     }
@@ -442,35 +465,50 @@ export default function App() {
     StorageService.saveTheme(theme);
   }, [theme]);
 
-  // Sincronização autoritativa inicial com o banco de dados remoto (Supabase / Servidor)
+  // Sincronização autoritativa inicial com IndexedDB, servidor local e banco de dados remoto (Supabase)
   useEffect(() => {
     const fetchLatestServerState = async () => {
-      // 1. Se já houver sessão autenticada e o Supabase estiver configurado, busca dados do usuário ativo na nuvem
-      if (isAuthenticatedRef.current && SupabaseService.isConfigured()) {
+      // 1. Recupera backup automático do IndexedDB caso o localStorage tenha sido reduzido
+      await StorageService.rehydrateFromIndexedDBIfNeeded().catch(() => false);
+
+      // 2. Mescla de forma não-destrutiva com o servidor local (nunca sobrescreve dados pós-reset)
+      await StorageService.syncWithServer().catch(() => false);
+
+      // 3. Se houver Supabase configurado, carrega TODOS os workspaces, quadros, cards e clientes da nuvem
+      if (SupabaseService.isConfigured()) {
         const liveUser = currentUserRef.current;
-        const liveWs = currentWorkspaceRef.current;
+        const isMastNow = isUserMaster(liveUser);
+        let restoredFromCloud = false;
+
         try {
           const cloudWs = await StorageService.fetchWorkspacesCloud(liveUser);
           if (cloudWs.success && cloudWs.workspaces.length > 0) {
             setWorkspaces(cloudWs.workspaces);
+            restoredFromCloud = true;
           }
         } catch (e) {
           console.warn('[OperaTask] Aviso ao carregar workspaces do Supabase:', e);
         }
 
         try {
-          const cloudProj = await StorageService.fetchProjectsCloud(liveWs.id);
+          const cloudProj = await StorageService.fetchProjectsCloud(
+            isMastNow ? undefined : currentWorkspaceRef.current?.id
+          );
           if (cloudProj.success && cloudProj.projects.length > 0) {
             setProjects(cloudProj.projects);
+            restoredFromCloud = true;
           }
         } catch (e) {
           console.warn('[OperaTask] Aviso ao carregar projetos do Supabase:', e);
         }
 
         try {
-          const cloudRes = await StorageService.fetchTasksCloud(liveWs.id);
+          const cloudRes = await StorageService.fetchTasksCloud(
+            isMastNow ? undefined : currentWorkspaceRef.current?.id
+          );
           if (cloudRes.success && Array.isArray(cloudRes.tasks)) {
             setTasks((prev) => mergeTaskLists(prev, cloudRes.tasks, getDeletedTaskIds()));
+            if (cloudRes.tasks.length > 0) restoredFromCloud = true;
           }
         } catch (e) {
           console.warn('[OperaTask] Aviso ao carregar tarefas do Supabase:', e);
@@ -480,13 +518,18 @@ export default function App() {
           const cloudClients = await StorageService.fetchClientsCloud();
           if (cloudClients.success && Array.isArray(cloudClients.clients) && cloudClients.clients.length > 0) {
             setClients(cloudClients.clients);
+            restoredFromCloud = true;
           }
         } catch (e) {
           console.warn('[OperaTask] Aviso ao carregar clientes do Supabase:', e);
         }
+
+        // Se o Supabase restaurou dados, repovoa o servidor central imediatamente
+        if (restoredFromCloud) {
+          StorageService.pushLocalStateToServer().catch(() => {});
+        }
       }
 
-      await StorageService.syncWithServer();
       const freshUsers = StorageService.getUsers();
       const freshWorkspaces = StorageService.getWorkspaces();
       const freshProjects = StorageService.getProjects();
@@ -520,7 +563,7 @@ export default function App() {
 
       const preferredWs =
         allowedWs.find((w) => w.id === activeWsNow.id) ||
-        (!isMast ? allowedWs.find((w) => w.id !== 'ws-principal') : undefined) ||
+        allowedWs.find((w) => w.id !== 'ws-principal') ||
         allowedWs[0];
 
       if (preferredWs) {
@@ -2255,6 +2298,52 @@ export default function App() {
     }
   };
 
+  const handleReorderColumns = (orderedActiveColumnIds: string[]) => {
+    if (!activeProject || !Array.isArray(orderedActiveColumnIds) || orderedActiveColumnIds.length === 0) {
+      return;
+    }
+
+    const currentCols = activeProject.columns || [];
+    const activeById = new Map<string, BoardColumn>();
+    const archivedCols: BoardColumn[] = [];
+
+    currentCols.forEach((col) => {
+      if (col.isArchived) {
+        archivedCols.push(col);
+      } else {
+        activeById.set(col.id, col);
+      }
+    });
+
+    const reorderedActive: BoardColumn[] = [];
+    const seen = new Set<string>();
+    orderedActiveColumnIds.forEach((id) => {
+      const col = activeById.get(id);
+      if (col && !seen.has(id)) {
+        seen.add(id);
+        reorderedActive.push(col);
+      }
+    });
+    // Garante que nenhuma coluna ativa fique de fora
+    currentCols.forEach((col) => {
+      if (!col.isArchived && !seen.has(col.id)) {
+        seen.add(col.id);
+        reorderedActive.push(col);
+      }
+    });
+
+    const updatedColumns: BoardColumn[] = [...reorderedActive, ...archivedCols].map((c, idx) => ({
+      ...c,
+      order: idx,
+    }));
+
+    setProjects((prev) =>
+      prev.map((p) => (p.id === activeProject.id ? { ...p, columns: updatedColumns } : p))
+    );
+    StorageService.updateProjectAsync(activeProject.id, { columns: updatedColumns });
+    recordActivity(`reordenou os quadros em "${activeProject.name}"`);
+  };
+
   const handleArchiveColumn = (columnId: string, restore = false) => {
     if (!activeProject) return;
 
@@ -2812,6 +2901,7 @@ export default function App() {
                     onDeleteColumn={handleDeleteColumn}
                     onArchiveColumn={(colId) => handleArchiveColumn(colId, false)}
                     onDuplicateColumn={handleDuplicateColumn}
+                    onReorderColumns={handleReorderColumns}
                     onQuickAddTask={(colId) => {
                       setDefaultColumnId(colId);
                       setTaskToEdit(null);

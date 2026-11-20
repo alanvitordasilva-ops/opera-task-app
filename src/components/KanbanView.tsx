@@ -16,6 +16,7 @@ import {
   Archive,
   Trash2,
   Edit3,
+  ArrowLeft,
   ArrowRight,
   ArrowUp,
   ArrowDown,
@@ -66,6 +67,7 @@ interface KanbanViewProps {
   onDeleteColumn?: (columnId: string) => void;
   onArchiveColumn?: (columnId: string) => void;
   onDuplicateColumn?: (columnId: string, includeCards: boolean) => void;
+  onReorderColumns?: (orderedColumnIds: string[]) => void;
   onQuickAddTask: (columnId: string) => void;
 }
 
@@ -85,10 +87,24 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
   onDeleteColumn,
   onArchiveColumn,
   onDuplicateColumn,
+  onReorderColumns,
   onQuickAddTask,
 }) => {
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
   const [activeDropColumnId, setActiveDropColumnId] = useState<string | null>(null);
+  const [draggedColumnId, setDraggedColumnId] = useState<string | null>(null);
+  const [columnDropIndicator, setColumnDropIndicator] = useState<{
+    targetColumnId: string;
+    position: 'before' | 'after';
+  } | null>(null);
+  const [touchDragGhost, setTouchDragGhost] = useState<{
+    columnId: string;
+    title: string;
+    color: string;
+    count: number;
+    x: number;
+    y: number;
+  } | null>(null);
   const [openMenuTaskId, setOpenMenuTaskId] = useState<string | null>(null);
   const [openMenuColumnId, setOpenMenuColumnId] = useState<string | null>(null);
   const [selectedMobileColumn, setSelectedMobileColumn] = useState<string | 'all'>(() => {
@@ -149,32 +165,305 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
     };
   }, [openMenuTaskId, openMenuColumnId]);
 
-  const columns = (project.columns || []).filter((c) => !c.isArchived);
+  const columns = [...(project.columns || [])]
+    .filter((c) => !c.isArchived)
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   const activeColumnIds = new Set(columns.map((c) => c.id));
   const visibleTasks = tasks.filter((t) => !t.isArchived && activeColumnIds.has(t.columnId));
+  const canReorderCols = Boolean(onReorderColumns && columns.length > 1);
   const effectiveMobileColumn =
     selectedMobileColumn === 'all' || columns.some((c) => c.id === selectedMobileColumn)
       ? selectedMobileColumn
       : 'all';
 
+  // Refs para suporte fluido a "apertar e segurar" no topo da coluna em celulares/touch
+  const columnRefs = React.useRef<Map<string, HTMLDivElement>>(new Map());
+  const touchHoldTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const touchDragStateRef = React.useRef<{
+    pendingColumnId: string | null;
+    activeColumnId: string | null;
+    startX: number;
+    startY: number;
+    title: string;
+    color: string;
+    count: number;
+    dropTargetId: string | null;
+    dropPosition: 'before' | 'after';
+  }>({
+    pendingColumnId: null,
+    activeColumnId: null,
+    startX: 0,
+    startY: 0,
+    title: '',
+    color: '#2563eb',
+    count: 0,
+    dropTargetId: null,
+    dropPosition: 'before',
+  });
+
+  const executeColumnReorder = (
+    sourceColumnId: string,
+    targetColumnId: string,
+    position: 'before' | 'after'
+  ) => {
+    if (!onReorderColumns || !sourceColumnId || !targetColumnId || sourceColumnId === targetColumnId) {
+      return;
+    }
+    const orderedIds = columns.map((c) => c.id);
+    const fromIdx = orderedIds.indexOf(sourceColumnId);
+    if (fromIdx === -1) return;
+
+    const remaining = orderedIds.filter((id) => id !== sourceColumnId);
+    const targetIdx = remaining.indexOf(targetColumnId);
+    if (targetIdx === -1) return;
+
+    const insertIdx = position === 'after' ? targetIdx + 1 : targetIdx;
+    remaining.splice(insertIdx, 0, sourceColumnId);
+
+    const changed = remaining.some((id, idx) => id !== orderedIds[idx]);
+    if (changed) {
+      onReorderColumns(remaining);
+    }
+  };
+
+  const handleMoveColumnStep = (columnId: string, direction: 'left' | 'right') => {
+    if (!onReorderColumns) return;
+    const orderedIds = columns.map((c) => c.id);
+    const idx = orderedIds.indexOf(columnId);
+    if (idx === -1) return;
+    const targetIdx = direction === 'left' ? idx - 1 : idx + 1;
+    if (targetIdx < 0 || targetIdx >= orderedIds.length) return;
+    const next = [...orderedIds];
+    const tmp = next[idx];
+    next[idx] = next[targetIdx];
+    next[targetIdx] = tmp;
+    onReorderColumns(next);
+  };
+
+  const executeColumnReorderRef = React.useRef(executeColumnReorder);
+  executeColumnReorderRef.current = executeColumnReorder;
+
+  const clearTouchColumnDrag = () => {
+    if (touchHoldTimerRef.current) {
+      clearTimeout(touchHoldTimerRef.current);
+      touchHoldTimerRef.current = null;
+    }
+    touchDragStateRef.current.pendingColumnId = null;
+    touchDragStateRef.current.activeColumnId = null;
+    touchDragStateRef.current.dropTargetId = null;
+    setDraggedColumnId(null);
+    setColumnDropIndicator(null);
+    setTouchDragGhost(null);
+  };
+
+  useEffect(() => {
+    const handleWindowTouchMove = (e: TouchEvent) => {
+      const state = touchDragStateRef.current;
+      if (!state.pendingColumnId && !state.activeColumnId) return;
+      const touch = e.touches[0];
+      if (!touch) return;
+
+      // Se o dedo se moveu antes de completar o "apertar e segurar", cancela para permitir rolagem normal
+      if (!state.activeColumnId && state.pendingColumnId) {
+        const dx = Math.abs(touch.clientX - state.startX);
+        const dy = Math.abs(touch.clientY - state.startY);
+        if (dx > 10 || dy > 10) {
+          if (touchHoldTimerRef.current) {
+            clearTimeout(touchHoldTimerRef.current);
+            touchHoldTimerRef.current = null;
+          }
+          state.pendingColumnId = null;
+        }
+        return;
+      }
+
+      if (!state.activeColumnId) return;
+      e.preventDefault();
+
+      const clientX = touch.clientX;
+      const clientY = touch.clientY;
+
+      setTouchDragGhost({
+        columnId: state.activeColumnId,
+        title: state.title,
+        color: state.color,
+        count: state.count,
+        x: clientX,
+        y: clientY,
+      });
+
+      // Auto-scroll horizontal suave ao aproximar o dedo das bordas do quadro
+      const container = boardScrollRef.current;
+      if (container) {
+        const edgeThreshold = 64;
+        if (clientX < edgeThreshold) {
+          container.scrollLeft -= 14;
+        } else if (clientX > window.innerWidth - edgeThreshold) {
+          container.scrollLeft += 14;
+        }
+      }
+
+      // Detecta qual coluna está sob o dedo e se deve inserir antes ou depois
+      let hoveredId: string | null = null;
+      let hoveredPos: 'before' | 'after' = 'before';
+      let minDist = Infinity;
+
+      columnRefs.current.forEach((el, colId) => {
+        if (!el || colId === state.activeColumnId) return;
+        const rect = el.getBoundingClientRect();
+        if (clientX >= rect.left && clientX <= rect.right) {
+          hoveredId = colId;
+          hoveredPos = clientX > rect.left + rect.width / 2 ? 'after' : 'before';
+          minDist = 0;
+        } else if (minDist > 0) {
+          const centerX = rect.left + rect.width / 2;
+          const dist = Math.abs(clientX - centerX);
+          if (dist < minDist) {
+            minDist = dist;
+            hoveredId = colId;
+            hoveredPos = clientX > centerX ? 'after' : 'before';
+          }
+        }
+      });
+
+      if (hoveredId) {
+        state.dropTargetId = hoveredId;
+        state.dropPosition = hoveredPos;
+        setColumnDropIndicator({ targetColumnId: hoveredId, position: hoveredPos });
+      }
+    };
+
+    const handleWindowTouchEnd = () => {
+      const state = touchDragStateRef.current;
+      if (state.activeColumnId && state.dropTargetId) {
+        executeColumnReorderRef.current(
+          state.activeColumnId,
+          state.dropTargetId,
+          state.dropPosition
+        );
+      }
+      if (state.pendingColumnId || state.activeColumnId) {
+        clearTouchColumnDrag();
+      }
+    };
+
+    window.addEventListener('touchmove', handleWindowTouchMove, { passive: false });
+    window.addEventListener('touchend', handleWindowTouchEnd);
+    window.addEventListener('touchcancel', handleWindowTouchEnd);
+    return () => {
+      window.removeEventListener('touchmove', handleWindowTouchMove);
+      window.removeEventListener('touchend', handleWindowTouchEnd);
+      window.removeEventListener('touchcancel', handleWindowTouchEnd);
+      if (touchHoldTimerRef.current) {
+        clearTimeout(touchHoldTimerRef.current);
+      }
+    };
+  }, []);
+
+  const handleColumnHeaderTouchStart = (
+    e: React.TouchEvent,
+    col: BoardColumn,
+    cardCount: number
+  ) => {
+    if (!canReorderCols || e.touches.length !== 1) return;
+    const touch = e.touches[0];
+    if (!touch) return;
+
+    if (touchHoldTimerRef.current) {
+      clearTimeout(touchHoldTimerRef.current);
+    }
+
+    const state = touchDragStateRef.current;
+    state.pendingColumnId = col.id;
+    state.activeColumnId = null;
+    state.startX = touch.clientX;
+    state.startY = touch.clientY;
+    state.title = col.title;
+    state.color = col.color;
+    state.count = cardCount;
+    state.dropTargetId = null;
+    state.dropPosition = 'before';
+
+    touchHoldTimerRef.current = setTimeout(() => {
+      if (touchDragStateRef.current.pendingColumnId !== col.id) return;
+      touchDragStateRef.current.activeColumnId = col.id;
+      touchDragStateRef.current.pendingColumnId = null;
+      setOpenMenuColumnId(null);
+      setOpenMenuTaskId(null);
+      setSelectedMobileColumn('all');
+      setDraggedColumnId(col.id);
+      setTouchDragGhost({
+        columnId: col.id,
+        title: col.title,
+        color: col.color,
+        count: cardCount,
+        x: touchDragStateRef.current.startX,
+        y: touchDragStateRef.current.startY,
+      });
+      if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+        try {
+          navigator.vibrate(25);
+        } catch {}
+      }
+    }, 260);
+  };
+
+  const handleColumnHeaderDragStart = (e: React.DragEvent, colId: string) => {
+    if (!canReorderCols) {
+      e.preventDefault();
+      return;
+    }
+    e.stopPropagation();
+    setOpenMenuColumnId(null);
+    setOpenMenuTaskId(null);
+    setDraggedTaskId(null);
+    setActiveDropColumnId(null);
+    setDropIndicator(null);
+    setDraggedColumnId(colId);
+    e.dataTransfer.setData('application/x-operatask-column', colId);
+    e.dataTransfer.setData('text/plain', `col::${colId}`);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleColumnHeaderDragEnd = () => {
+    setDraggedColumnId(null);
+    setColumnDropIndicator(null);
+  };
+
+  const isDraggingColumnEvent = (e?: React.DragEvent): boolean => {
+    if (draggedColumnId) return true;
+    if (!e?.dataTransfer) return false;
+    try {
+      return Array.from(e.dataTransfer.types || []).includes('application/x-operatask-column');
+    } catch {
+      return false;
+    }
+  };
+
   const handleDragStart = (e: React.DragEvent, taskId: string) => {
+    e.stopPropagation();
     const targetTask = tasks.find((t) => t.id === taskId);
     if (targetTask && isTaskInDoneColumn(targetTask, columns) && !canModifyCompletedTask(currentUserRole, isMaster)) {
       e.preventDefault();
       return;
     }
+    setDraggedColumnId(null);
+    setColumnDropIndicator(null);
     e.dataTransfer.setData('text/plain', taskId);
     e.dataTransfer.effectAllowed = 'move';
     setDraggedTaskId(taskId);
   };
 
   const handleCardDragOver = (e: React.DragEvent, targetTask: Task, columnId: string) => {
+    if (isDraggingColumnEvent(e)) {
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     e.dataTransfer.dropEffect = 'move';
 
     const currentDraggedId = draggedTaskId || e.dataTransfer.getData('text/plain');
-    if (!currentDraggedId || currentDraggedId === targetTask.id) {
+    if (!currentDraggedId || currentDraggedId.startsWith('col::') || currentDraggedId === targetTask.id) {
       return;
     }
 
@@ -194,6 +483,20 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
 
+    if (isDraggingColumnEvent(e)) {
+      if (draggedColumnId === columnId) {
+        setColumnDropIndicator(null);
+        return;
+      }
+      const rect = e.currentTarget.getBoundingClientRect();
+      const isAfter = e.clientX > rect.left + rect.width / 2;
+      setColumnDropIndicator({
+        targetColumnId: columnId,
+        position: isAfter ? 'after' : 'before',
+      });
+      return;
+    }
+
     setActiveDropColumnId(columnId);
 
     // Se estiver sobre o fundo da coluna (sem card específico)
@@ -208,6 +511,9 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
 
   const handleColumnDragLeave = (e: React.DragEvent, columnId: string) => {
     if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    if (columnDropIndicator?.targetColumnId === columnId) {
+      setColumnDropIndicator(null);
+    }
     if (activeDropColumnId === columnId) {
       setActiveDropColumnId(null);
       setDropIndicator(null);
@@ -298,10 +604,13 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
   };
 
   const handleCardDrop = (e: React.DragEvent, targetTaskId: string, targetColumnId: string) => {
+    if (isDraggingColumnEvent(e)) {
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     const taskId = e.dataTransfer.getData('text/plain') || draggedTaskId;
-    if (!taskId) return;
+    if (!taskId || taskId.startsWith('col::')) return;
 
     const pos = dropIndicator?.targetTaskId === targetTaskId ? dropIndicator.position : 'after';
     executeDrop(taskId, targetColumnId, targetTaskId, pos);
@@ -309,8 +618,30 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
 
   const handleColumnDrop = (e: React.DragEvent, targetColumnId: string) => {
     e.preventDefault();
+
+    if (isDraggingColumnEvent(e)) {
+      const rawPlain = e.dataTransfer.getData('text/plain');
+      const sourceColumnId =
+        e.dataTransfer.getData('application/x-operatask-column') ||
+        (rawPlain.startsWith('col::') ? rawPlain.slice(5) : '') ||
+        draggedColumnId;
+      if (sourceColumnId && sourceColumnId !== targetColumnId) {
+        const rect = e.currentTarget.getBoundingClientRect();
+        const fallbackPos: 'before' | 'after' =
+          e.clientX > rect.left + rect.width / 2 ? 'after' : 'before';
+        const pos =
+          columnDropIndicator?.targetColumnId === targetColumnId
+            ? columnDropIndicator.position
+            : fallbackPos;
+        executeColumnReorder(sourceColumnId, targetColumnId, pos);
+      }
+      setDraggedColumnId(null);
+      setColumnDropIndicator(null);
+      return;
+    }
+
     const taskId = e.dataTransfer.getData('text/plain') || draggedTaskId;
-    if (!taskId) return;
+    if (!taskId || taskId.startsWith('col::')) return;
 
     if (dropIndicator && dropIndicator.columnId === targetColumnId && dropIndicator.targetTaskId) {
       executeDrop(taskId, targetColumnId, dropIndicator.targetTaskId, dropIndicator.position);
@@ -323,6 +654,8 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
     setDraggedTaskId(null);
     setActiveDropColumnId(null);
     setDropIndicator(null);
+    setDraggedColumnId(null);
+    setColumnDropIndicator(null);
   };
 
   // Reordenação de cards para cima / para baixo com salvamento automático
@@ -411,15 +744,18 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
         })}
       </div>
 
-      {/* Linha das Colunas Kanban - Com suporte a touch swipe snap no celular */}
+      {/* Linha das Colunas Kanban - Com suporte a touch swipe snap no celular e reordenação arrastando o topo */}
       <div
         ref={boardScrollRef}
         onScroll={handleBoardScroll}
-        className="flex gap-4 sm:gap-5 pb-8 overflow-x-auto min-h-[calc(100vh-220px)] items-start select-none snap-x snap-mandatory scroll-smooth"
+        className={`flex gap-4 sm:gap-5 pb-8 overflow-x-auto min-h-[calc(100vh-220px)] items-start select-none scroll-smooth ${
+          draggedColumnId ? 'snap-none' : 'snap-x snap-mandatory'
+        }`}
       >
       {columns
         .filter((col) => effectiveMobileColumn === 'all' || col.id === effectiveMobileColumn)
         .map((col) => {
+        const colIndex = columns.findIndex((c) => c.id === col.id);
         // Tarefas ordenadas estritamente pela propriedade 'order'
         const columnTasks = tasks
           .filter((t) => t.columnId === col.id)
@@ -430,24 +766,67 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
             return a.createdAt.localeCompare(b.createdAt);
           });
         const isDropTarget = activeDropColumnId === col.id;
+        const isBeingDraggedColumn = draggedColumnId === col.id;
+        const isColumnDropBefore =
+          columnDropIndicator?.targetColumnId === col.id &&
+          columnDropIndicator.position === 'before' &&
+          draggedColumnId !== col.id;
+        const isColumnDropAfter =
+          columnDropIndicator?.targetColumnId === col.id &&
+          columnDropIndicator.position === 'after' &&
+          draggedColumnId !== col.id;
         const canManageCol = canDeleteColumn(currentUserRole, isMaster);
         const isColMenuOpen = openMenuColumnId === col.id;
 
         return (
           <div
             key={col.id}
+            data-column-id={col.id}
+            ref={(el) => {
+              if (el) {
+                columnRefs.current.set(col.id, el);
+              } else {
+                columnRefs.current.delete(col.id);
+              }
+            }}
             onDragOver={(e) => handleColumnDragOver(e, col.id)}
             onDragLeave={(e) => handleColumnDragLeave(e, col.id)}
             onDrop={(e) => handleColumnDrop(e, col.id)}
-            className={`w-[86vw] sm:w-76 shrink-0 snap-center sm:snap-align-none flex flex-col max-h-[calc(100vh-210px)] sm:max-h-[calc(100vh-220px)] bg-slate-100/70 dark:bg-slate-900/40 rounded-2xl p-2.5 border transition-all ${
-              isDropTarget
+            className={`relative w-[86vw] sm:w-76 shrink-0 snap-center sm:snap-align-none flex flex-col max-h-[calc(100vh-210px)] sm:max-h-[calc(100vh-220px)] bg-slate-100/70 dark:bg-slate-900/40 rounded-2xl p-2.5 border transition-all ${
+              isBeingDraggedColumn
+                ? 'opacity-50 scale-[0.98] border-blue-500 ring-2 ring-blue-400/50 shadow-lg'
+                : isDropTarget
                 ? 'border-blue-500 bg-blue-50/50 dark:bg-blue-950/20 ring-2 ring-blue-400/20 shadow-md'
+                : isColumnDropBefore || isColumnDropAfter
+                ? 'border-blue-400 dark:border-blue-500 bg-blue-50/30 dark:bg-blue-950/20'
                 : 'border-slate-200/80 dark:border-slate-800/80'
             }`}
           >
-            {/* Cabeçalho da Coluna: Fixo no topo da coluna */}
-            <div className="flex items-center justify-between px-2 py-1.5 mb-1.5 shrink-0">
-              <div className="flex items-center gap-2 min-w-0">
+            {/* Indicador visual lateral ao arrastar quadro antes ou depois */}
+            {isColumnDropBefore && (
+              <div className="pointer-events-none absolute -left-2.5 top-2 bottom-2 w-1.5 rounded-full bg-blue-500 shadow-[0_0_10px_rgba(37,99,235,0.65)] z-30" />
+            )}
+            {isColumnDropAfter && (
+              <div className="pointer-events-none absolute -right-2.5 top-2 bottom-2 w-1.5 rounded-full bg-blue-500 shadow-[0_0_10px_rgba(37,99,235,0.65)] z-30" />
+            )}
+
+            {/* Cabeçalho da Coluna: Arrastável no topo para reordenar quadros (mouse e toque segurando) */}
+            <div
+              draggable={canReorderCols}
+              onDragStart={(e) => handleColumnHeaderDragStart(e, col.id)}
+              onDragEnd={handleColumnHeaderDragEnd}
+              onTouchStart={(e) => handleColumnHeaderTouchStart(e, col, columnTasks.length)}
+              title={canReorderCols ? 'Pressione e arraste o topo para mover este quadro' : undefined}
+              className={`flex items-center justify-between px-2 py-1.5 mb-1.5 shrink-0 rounded-xl transition-colors ${
+                canReorderCols
+                  ? 'cursor-grab active:cursor-grabbing hover:bg-white/70 dark:hover:bg-slate-800/60 select-none'
+                  : ''
+              } ${isBeingDraggedColumn ? 'bg-blue-50 dark:bg-blue-950/40' : ''}`}
+            >
+              <div className="flex items-center gap-1.5 min-w-0">
+                {canReorderCols && (
+                  <GripVertical className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 shrink-0" />
+                )}
                 <span
                   className="w-2.5 h-2.5 rounded-full shrink-0"
                   style={{ backgroundColor: col.color }}
@@ -460,7 +839,12 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                 </span>
               </div>
 
-              <div className="flex items-center gap-0.5 shrink-0">
+              <div
+                className="flex items-center gap-0.5 shrink-0"
+                draggable={false}
+                onMouseDown={(e) => e.stopPropagation()}
+                onTouchStart={(e) => e.stopPropagation()}
+              >
                 <button
                   type="button"
                   onClick={() => onQuickAddTask(col.id)}
@@ -470,7 +854,7 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                   <Plus className="w-3.5 h-3.5" />
                 </button>
 
-                {(onDuplicateColumn || (canManageCol && (onArchiveColumn || onDeleteColumn))) && (
+                {(canReorderCols || onDuplicateColumn || (canManageCol && (onArchiveColumn || onDeleteColumn))) && (
                   <div className="relative">
                     <button
                       type="button"
@@ -484,7 +868,7 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                           ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 shadow-2xs'
                           : 'text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-white dark:hover:bg-slate-800'
                       }`}
-                      title={`Opções da coluna ${col.title}`}
+                      title={`Opções do quadro ${col.title}`}
                     >
                       <MoreVertical className="w-3.5 h-3.5" />
                     </button>
@@ -494,6 +878,46 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                         className="absolute right-0 top-7 w-56 bg-white dark:bg-slate-800 rounded-xl shadow-xl border border-slate-200 dark:border-slate-700 py-1.5 z-40 animate-in fade-in zoom-in-95 duration-100"
                         onClick={(e) => e.stopPropagation()}
                       >
+                        {canReorderCols && (
+                          <>
+                            <button
+                              type="button"
+                              disabled={colIndex <= 0}
+                              onClick={() => {
+                                setOpenMenuColumnId(null);
+                                handleMoveColumnStep(col.id, 'left');
+                              }}
+                              className={`w-full px-3 py-1.5 text-xs text-left flex items-center gap-2 transition-colors ${
+                                colIndex <= 0
+                                  ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
+                                  : 'text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 cursor-pointer'
+                              }`}
+                            >
+                              <ArrowLeft className="w-3.5 h-3.5 shrink-0" />
+                              <span>Mover para esquerda</span>
+                            </button>
+                            <button
+                              type="button"
+                              disabled={colIndex === -1 || colIndex >= columns.length - 1}
+                              onClick={() => {
+                                setOpenMenuColumnId(null);
+                                handleMoveColumnStep(col.id, 'right');
+                              }}
+                              className={`w-full px-3 py-1.5 text-xs text-left flex items-center gap-2 transition-colors ${
+                                colIndex === -1 || colIndex >= columns.length - 1
+                                  ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
+                                  : 'text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 cursor-pointer'
+                              }`}
+                            >
+                              <ArrowRight className="w-3.5 h-3.5 shrink-0" />
+                              <span>Mover para direita</span>
+                            </button>
+                            {(onDuplicateColumn || (canManageCol && (onArchiveColumn || onDeleteColumn))) && (
+                              <div className="my-1 border-t border-slate-100 dark:border-slate-700/60" />
+                            )}
+                          </>
+                        )}
+
                         {onDuplicateColumn && (
                           <>
                             <button
@@ -1213,6 +1637,30 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
           }
           archiveButtonText={deleteConfirmState.type === 'task' ? 'Arquivar card' : 'Arquivar coluna'}
         />
+      )}
+
+      {/* Prévia flutuante ao segurar e arrastar o topo de um quadro no celular/touch */}
+      {touchDragGhost && (
+        <div
+          className="fixed z-50 pointer-events-none flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white/95 dark:bg-slate-900/95 border-2 border-blue-500 shadow-2xl backdrop-blur-xs"
+          style={{
+            left: Math.max(12, Math.min(window.innerWidth - 220, touchDragGhost.x - 100)),
+            top: Math.max(12, touchDragGhost.y - 30),
+            maxWidth: '220px',
+          }}
+        >
+          <GripVertical className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+          <span
+            className="w-2.5 h-2.5 rounded-full shrink-0"
+            style={{ backgroundColor: touchDragGhost.color }}
+          />
+          <span className="text-xs font-bold text-slate-900 dark:text-slate-100 truncate">
+            {touchDragGhost.title}
+          </span>
+          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 shrink-0">
+            {touchDragGhost.count}
+          </span>
+        </div>
       )}
     </div>
   );

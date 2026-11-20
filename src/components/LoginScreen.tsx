@@ -328,56 +328,64 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               return !Number.isNaN(parsed) && parsed <= effectiveResetMs;
             };
 
+            // Sincronização não-destrutiva no login:
+            // Nunca sobrescreve dados criados após effectiveResetMs caso o servidor tenha reiniciado com um snapshot antigo.
             if (Array.isArray(data.allUsers) && data.allUsers.length > 0) {
-              if (serverWasResetMoreRecently) {
-                StorageService.saveUsers(data.allUsers, true, { replaceAll: true, skipCloudPush: true });
-              } else {
-                const currentUsers = StorageService.getUsers();
-                const uMap = new Map<string, User>();
-                currentUsers.forEach((u) => uMap.set(u.id, u));
-                data.allUsers.filter((ru: User) => !isZombie(ru)).forEach((ru: User) => {
+              const currentUsers = StorageService.getUsers().filter((u) => !isZombie(u));
+              const uMap = new Map<string, User>();
+              currentUsers.forEach((u) => uMap.set(u.id, u));
+              data.allUsers
+                .filter((ru: User) => !isZombie(ru))
+                .forEach((ru: User) => {
                   uMap.set(ru.id, { ...uMap.get(ru.id), ...ru });
                 });
-                uMap.set(mergedUser.id, { ...uMap.get(mergedUser.id), ...mergedUser });
-                StorageService.saveUsers(Array.from(uMap.values()), true, { skipCloudPush: true });
-              }
+              uMap.set(mergedUser.id, { ...uMap.get(mergedUser.id), ...mergedUser });
+              StorageService.saveUsers(Array.from(uMap.values()), true, { skipCloudPush: true });
             }
             if (Array.isArray(data.workspaces) && data.workspaces.length > 0) {
-              if (serverWasResetMoreRecently) {
-                StorageService.saveWorkspaces(data.workspaces, true, { replaceAll: true, skipCloudPush: true });
-              } else {
-                const currentWs = StorageService.getWorkspaces();
-                const validWs = data.workspaces.filter((rw: any) => !isZombie(rw));
-                StorageService.saveWorkspaces(mergeWorkspaceLists(currentWs, validWs), true, { skipCloudPush: true });
-              }
+              const currentWs = StorageService.getWorkspaces().filter((w) => !isZombie(w));
+              const validWs = data.workspaces.filter((rw: any) => !isZombie(rw));
+              StorageService.saveWorkspaces(mergeWorkspaceLists(currentWs, validWs), true, {
+                skipCloudPush: true,
+              });
             }
-            if (Array.isArray(data.projects)) {
-              if (serverWasResetMoreRecently) {
-                StorageService.saveProjects(data.projects, true, { replaceAll: true, skipCloudPush: true });
-              } else if (data.projects.length > 0) {
-                const curP = StorageService.getProjects();
-                const pMap = new Map<string, any>();
-                curP.forEach((p) => pMap.set(p.id, p));
-                data.projects.filter((p: any) => !isZombie(p)).forEach((p: any) => p?.id && pMap.set(p.id, { ...pMap.get(p.id), ...p }));
-                StorageService.saveProjects(Array.from(pMap.values()), true, { skipCloudPush: true });
-              }
+            if (Array.isArray(data.projects) && data.projects.length > 0) {
+              const curP = StorageService.getProjects().filter((p) => !isZombie(p));
+              const pMap = new Map<string, any>();
+              curP.forEach((p) => pMap.set(p.id, p));
+              data.projects
+                .filter((p: any) => !isZombie(p))
+                .forEach((p: any) => p?.id && pMap.set(p.id, { ...pMap.get(p.id), ...p }));
+              StorageService.saveProjects(Array.from(pMap.values()), true, { skipCloudPush: true });
             }
-            if (Array.isArray(data.tasks)) {
-              if (serverWasResetMoreRecently) {
-                StorageService.saveTasks(data.tasks, true, { replaceAll: true, skipCloudPush: true });
-              } else if (data.tasks.length > 0) {
-                const curT = StorageService.getTasks();
-                const tMap = new Map<string, any>();
-                curT.forEach((t) => tMap.set(t.id, t));
-                data.tasks.filter((t: any) => !isZombie(t)).forEach((t: any) => t?.id && tMap.set(t.id, { ...tMap.get(t.id), ...t }));
-                StorageService.saveTasks(Array.from(tMap.values()), true, { skipCloudPush: true });
-              }
+            if (Array.isArray(data.tasks) && data.tasks.length > 0) {
+              const curT = StorageService.getTasks().filter((t) => !isZombie(t));
+              const tMap = new Map<string, any>();
+              curT.forEach((t) => tMap.set(t.id, t));
+              data.tasks
+                .filter((t: any) => !isZombie(t))
+                .forEach((t: any) => t?.id && tMap.set(t.id, { ...tMap.get(t.id), ...t }));
+              StorageService.saveTasks(Array.from(tMap.values()), true, { skipCloudPush: true });
             }
             if (Array.isArray(data.clients) && data.clients.length > 0) {
-              if (serverWasResetMoreRecently) {
-                StorageService.saveClients(data.clients, true, { replaceAll: true, skipCloudPush: true });
-              }
+              const curC = StorageService.getClients().filter((c) => !isZombie(c));
+              const cMap = new Map<string, any>();
+              curC.forEach((c) => cMap.set(c.id, c));
+              data.clients
+                .filter((c: any) => !isZombie(c))
+                .forEach((c: any) => c?.id && cMap.set(c.id, { ...cMap.get(c.id), ...c }));
+              StorageService.saveClients(Array.from(cMap.values()), true, { skipCloudPush: true });
             }
+
+            // Se o navegador local possuir mais dados que o servidor (ex.: após reinício do servidor), repovoa o servidor automaticamente
+            const serverHasLess =
+              StorageService.getWorkspaces().length > (Array.isArray(data.workspaces) ? data.workspaces.length : 0) ||
+              StorageService.getProjects().length > (Array.isArray(data.projects) ? data.projects.length : 0) ||
+              StorageService.getTasks().length > (Array.isArray(data.tasks) ? data.tasks.length : 0);
+            if (serverHasLess) {
+              StorageService.pushLocalStateToServer().catch(() => {});
+            }
+
             StorageService.setCurrentUserId(mergedUser.id);
             StorageService.setAuthenticated(true);
             setIsLoading(false);

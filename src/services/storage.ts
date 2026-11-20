@@ -447,6 +447,22 @@ async function writeIndexedDB(key: string, value: any): Promise<void> {
   }
 }
 
+async function readIndexedDB<T = any>(key: string): Promise<T | null> {
+  try {
+    const db = await getIndexedDB();
+    if (!db) return null;
+    return new Promise((resolve) => {
+      const tx = db.transaction(IDB_STORE, 'readonly');
+      const store = tx.objectStore(IDB_STORE);
+      const req = store.get(key);
+      req.onsuccess = () => resolve((req.result as T) ?? null);
+      req.onerror = () => resolve(null);
+    });
+  } catch {
+    return null;
+  }
+}
+
 // ============================================================
 // GERENCIADOR DE ESTADO DE SALVAMENTO AUTOMÁTICO (Auto-Save State)
 // ============================================================
@@ -717,7 +733,99 @@ export const StorageService = {
     return res;
   },
 
-  // Sincronização centralizada e bidirecional com o banco remoto compartilhado
+  /**
+   * Recupera automaticamente dados salvos no IndexedDB caso o localStorage tenha sido limpo/reduzido
+   */
+  async rehydrateFromIndexedDBIfNeeded(): Promise<boolean> {
+    if (typeof window === 'undefined') return false;
+    let recovered = false;
+    try {
+      const [idbUsers, idbWorkspaces, idbProjects, idbTasks, idbClients] = await Promise.all([
+        readIndexedDB<User[]>(STORAGE_KEYS.USERS),
+        readIndexedDB<Workspace[]>(STORAGE_KEYS.WORKSPACES),
+        readIndexedDB<Project[]>(STORAGE_KEYS.PROJECTS),
+        readIndexedDB<Task[]>(STORAGE_KEYS.TASKS),
+        readIndexedDB<ClientCompany[]>(STORAGE_KEYS.CLIENTS),
+      ]);
+
+      const localWs = this.getWorkspaces();
+      if (Array.isArray(idbWorkspaces) && idbWorkspaces.length > localWs.length) {
+        const wsMap = new Map<string, Workspace>();
+        idbWorkspaces.forEach((w) => w?.id && wsMap.set(w.id, w));
+        localWs.forEach((w) => w?.id && wsMap.set(w.id, { ...wsMap.get(w.id), ...w }));
+        localStorage.setItem(
+          STORAGE_KEYS.WORKSPACES,
+          JSON.stringify(sortWorkspacesByOrder(Array.from(wsMap.values())))
+        );
+        recovered = true;
+      }
+
+      const localProjs = this.getProjects();
+      if (Array.isArray(idbProjects) && idbProjects.length > localProjs.length) {
+        const deletedProjIds = new Set(getDeletedProjectIds());
+        const projMap = new Map<string, Project>();
+        idbProjects.forEach((p) => p?.id && !deletedProjIds.has(p.id) && projMap.set(p.id, p));
+        localProjs.forEach((p) => p?.id && !deletedProjIds.has(p.id) && projMap.set(p.id, { ...projMap.get(p.id), ...p }));
+        localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify(Array.from(projMap.values())));
+        recovered = true;
+      }
+
+      const localTasks = this.getTasks();
+      if (Array.isArray(idbTasks) && idbTasks.length > localTasks.length) {
+        const merged = mergeTaskLists(localTasks, idbTasks, getDeletedTaskIds());
+        localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(merged));
+        recovered = true;
+      }
+
+      const localUsers = this.getUsers();
+      if (Array.isArray(idbUsers) && idbUsers.length > localUsers.length) {
+        const userMap = new Map<string, User>();
+        idbUsers.forEach((u) => u?.id && userMap.set(u.id, u));
+        localUsers.forEach((u) => u?.id && userMap.set(u.id, { ...userMap.get(u.id), ...u }));
+        localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(Array.from(userMap.values())));
+        recovered = true;
+      }
+
+      const localClients = this.getClients();
+      if (Array.isArray(idbClients) && idbClients.length > localClients.length) {
+        const clientMap = new Map<string, ClientCompany>();
+        idbClients.forEach((c) => c?.id && clientMap.set(c.id, c));
+        localClients.forEach((c) => c?.id && clientMap.set(c.id, { ...clientMap.get(c.id), ...c }));
+        localStorage.setItem(STORAGE_KEYS.CLIENTS, JSON.stringify(Array.from(clientMap.values())));
+        recovered = true;
+      }
+    } catch (e) {
+      console.warn('[StorageService] Aviso ao verificar backup no IndexedDB:', e);
+    }
+    return recovered;
+  },
+
+  /**
+   * Envia o estado atual local/nuvem para repovoar o servidor central caso tenha reiniciado vazio
+   */
+  async pushLocalStateToServer(): Promise<void> {
+    if (typeof window === 'undefined' || !isServerApiAvailable()) return;
+    try {
+      await fetch('/api/sync/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clientId: RealtimeService.getClientId(),
+          action: 'rehydrate_server',
+          users: this.getUsers(),
+          workspaces: this.getWorkspaces(),
+          projects: this.getProjects(),
+          tasks: this.getTasks(),
+          clients: this.getClients(),
+          tags: this.getTags(),
+          activities: this.getActivities(),
+          fichas_tecnicas: this.getFichasTecnicas(),
+        }),
+      });
+    } catch {}
+  },
+
+  // Sincronização centralizada e bidirecional com o banco remoto compartilhado (sempre não-destrutiva para registros pós-reset)
   async syncWithServer(): Promise<boolean> {
     if (typeof window === 'undefined') return false;
     try {
@@ -730,73 +838,25 @@ export const StorageService = {
           const serverResetTs = serverResetRaw ? Date.parse(String(serverResetRaw)) : 0;
           const localResetTs = getLocalLastResetAtMs();
 
-          // Se houve um reset no servidor mais recente que o local, substitui integralmente o estado local
-          if (!Number.isNaN(serverResetTs) && serverResetTs > localResetTs) {
-            localStorage.setItem(STORAGE_KEYS.LAST_RESET_AT, String(serverResetRaw));
-            if (Array.isArray(data.users)) {
-              localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(data.users));
-              writeIndexedDB(STORAGE_KEYS.USERS, data.users).catch(() => {});
-            }
-            if (Array.isArray(data.workspaces)) {
-              const sorted = sortWorkspacesByOrder(data.workspaces);
-              localStorage.setItem(STORAGE_KEYS.WORKSPACES, JSON.stringify(sorted));
-              writeIndexedDB(STORAGE_KEYS.WORKSPACES, sorted).catch(() => {});
-            }
-            if (Array.isArray(data.projects)) {
-              localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify(data.projects));
-              writeIndexedDB(STORAGE_KEYS.PROJECTS, data.projects).catch(() => {});
-            }
-            if (Array.isArray(data.tasks)) {
-              localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(data.tasks));
-              writeIndexedDB(STORAGE_KEYS.TASKS, data.tasks).catch(() => {});
-            }
-            if (Array.isArray(data.clients)) {
-              localStorage.setItem(STORAGE_KEYS.CLIENTS, JSON.stringify(data.clients));
-              writeIndexedDB(STORAGE_KEYS.CLIENTS, data.clients).catch(() => {});
-            }
-            if (Array.isArray(data.activities)) {
-              localStorage.setItem(STORAGE_KEYS.ACTIVITIES, JSON.stringify(data.activities));
-            }
-            if (Array.isArray(data.notifications)) {
-              localStorage.setItem(STORAGE_KEYS.NOTIFICATIONS, JSON.stringify(data.notifications));
-            }
-            if (Array.isArray(data.fichas_tecnicas)) {
-              localStorage.setItem(STORAGE_KEYS.FICHAS_TECNICAS, JSON.stringify(data.fichas_tecnicas));
-            }
-            if (Array.isArray(data.tags)) {
-              localStorage.setItem(STORAGE_KEYS.TAGS, JSON.stringify(data.tags));
-            }
-            return true;
+          // Atualiza apenas o marcador de reset sem apagar dados criados DEPOIS do reset (ex: após reinício do servidor)
+          if (!Number.isNaN(serverResetTs) && serverResetTs > localResetTs && serverResetRaw) {
+            try {
+              localStorage.setItem(STORAGE_KEYS.LAST_RESET_AT, String(serverResetRaw));
+            } catch {}
           }
 
-          // Se o reset local é mais recente do que o servidor conhece, não mescla dados antigos do servidor; re-empurra limpeza
-          if (localResetTs > (Number.isNaN(serverResetTs) ? 0 : serverResetTs)) {
-            const localResetStr = localStorage.getItem(STORAGE_KEYS.LAST_RESET_AT) || new Date(localResetTs).toISOString();
-            await fetch('/api/sync/state', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                resetTestData: true,
-                replaceAll: true,
-                resetAt: localResetStr,
-                clientId: RealtimeService.getClientId(),
-                users: this.getUsers(),
-                workspaces: this.getWorkspaces(),
-                projects: this.getProjects(),
-                tasks: this.getTasks(),
-                activities: this.getActivities(),
-                notifications: this.getNotifications(),
-                fichas_tecnicas: this.getFichasTecnicas(),
-                clients: this.getClients(),
-              }),
-            }).catch(() => {});
-            return true;
-          }
+          const effectiveResetMs = Math.max(
+            Number.isNaN(localResetTs) ? 0 : localResetTs,
+            Number.isNaN(serverResetTs) ? 0 : serverResetTs
+          );
 
-          const effectiveResetMs = Math.max(localResetTs, Number.isNaN(serverResetTs) ? 0 : serverResetTs);
+          const serverUsersCount = Array.isArray(data.users) ? data.users.length : 0;
+          const serverWsCount = Array.isArray(data.workspaces) ? data.workspaces.length : 0;
+          const serverProjCount = Array.isArray(data.projects) ? data.projects.length : 0;
+          const serverTasksCount = Array.isArray(data.tasks) ? data.tasks.length : 0;
 
           if (Array.isArray(data.users) && data.users.length > 0) {
-            const current = this.getUsers();
+            const current = this.getUsers().filter((cu) => !isPreResetZombieRecord(cu, effectiveResetMs));
             const userMap = new Map<string, User>();
             current.forEach((cu) => userMap.set(cu.id, cu));
             data.users
@@ -805,10 +865,12 @@ export const StorageService = {
                 const prev = userMap.get(ru.id);
                 userMap.set(ru.id, prev ? { ...prev, ...ru } : ru);
               });
-            localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(Array.from(userMap.values())));
+            const mergedUsers = Array.from(userMap.values());
+            localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(mergedUsers));
+            writeIndexedDB(STORAGE_KEYS.USERS, mergedUsers).catch(() => {});
           }
           if (Array.isArray(data.workspaces) && data.workspaces.length > 0) {
-            const currentWs = this.getWorkspaces();
+            const currentWs = this.getWorkspaces().filter((cw) => !isPreResetZombieRecord(cw, effectiveResetMs));
             const wsMap = new Map<string, Workspace>();
             currentWs.forEach((cw) => wsMap.set(cw.id, cw));
             data.workspaces
@@ -826,9 +888,10 @@ export const StorageService = {
               });
             const sortedWs = sortWorkspacesByOrder(Array.from(wsMap.values()));
             localStorage.setItem(STORAGE_KEYS.WORKSPACES, JSON.stringify(sortedWs));
+            writeIndexedDB(STORAGE_KEYS.WORKSPACES, sortedWs).catch(() => {});
           }
           if (Array.isArray(data.projects) && data.projects.length > 0) {
-            const currentProj = this.getProjects();
+            const currentProj = this.getProjects().filter((cp) => !isPreResetZombieRecord(cp, effectiveResetMs));
             const deletedProjIds = new Set(getDeletedProjectIds());
             const filteredServerProj = data.projects.filter(
               (mp: Project) => mp?.id && !deletedProjIds.has(mp.id) && !isPreResetZombieRecord(mp, effectiveResetMs)
@@ -854,24 +917,27 @@ export const StorageService = {
                 projMap.set(sp.id, sp);
               }
             });
-            localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify(Array.from(projMap.values())));
+            const mergedProjects = Array.from(projMap.values());
+            localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify(mergedProjects));
+            writeIndexedDB(STORAGE_KEYS.PROJECTS, mergedProjects).catch(() => {});
           }
           if (Array.isArray(data.tasks) && data.tasks.length > 0) {
-            const currentTasks = this.getTasks();
+            const currentTasks = this.getTasks().filter((ct) => !isPreResetZombieRecord(ct, effectiveResetMs));
             const filteredServerTasks = data.tasks.filter(
               (rt: Task) => !isPreResetZombieRecord(rt, effectiveResetMs)
             );
             const mergedTasks = mergeTaskLists(currentTasks, filteredServerTasks, getDeletedTaskIds());
             localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(mergedTasks));
+            writeIndexedDB(STORAGE_KEYS.TASKS, mergedTasks).catch(() => {});
           }
-          if (Array.isArray(data.tags)) {
+          if (Array.isArray(data.tags) && data.tags.length > 0) {
             localStorage.setItem(STORAGE_KEYS.TAGS, JSON.stringify(data.tags));
           }
-          if (Array.isArray(data.activities)) {
+          if (Array.isArray(data.activities) && data.activities.length > 0) {
             localStorage.setItem(STORAGE_KEYS.ACTIVITIES, JSON.stringify(data.activities));
           }
           if (Array.isArray(data.clients) && data.clients.length > 0) {
-            const currentClients = this.getClients();
+            const currentClients = this.getClients().filter((cc) => !isPreResetZombieRecord(cc, effectiveResetMs));
             const filteredServerClients = data.clients.filter(
               (mc: ClientCompany) => !isPreResetZombieRecord(mc, effectiveResetMs)
             );
@@ -882,9 +948,27 @@ export const StorageService = {
               }
             });
             localStorage.setItem(STORAGE_KEYS.CLIENTS, JSON.stringify(mergedClients));
+            writeIndexedDB(STORAGE_KEYS.CLIENTS, mergedClients).catch(() => {});
           }
+
+          // Se o servidor reiniciou vazio/desatualizado mas este cliente possui dados reais salvos, repovoa o servidor automaticamente
+          const finalWsCount = this.getWorkspaces().length;
+          const finalProjCount = this.getProjects().length;
+          const finalTasksCount = this.getTasks().length;
+          const finalUsersCount = this.getUsers().length;
+          if (
+            finalWsCount > serverWsCount ||
+            finalProjCount > serverProjCount ||
+            finalTasksCount > serverTasksCount ||
+            finalUsersCount > serverUsersCount
+          ) {
+            this.pushLocalStateToServer().catch(() => {});
+          }
+
           return true;
         }
+      } else if (res.status === 404) {
+        setServerApiAvailable(false);
       }
     } catch (e) {
       console.warn('[OperaTask] Servidor de sincronização temporariamente indisponível:', e);
@@ -1594,6 +1678,20 @@ export const StorageService = {
     const nextList = current.map((p) => (p.id === projectId ? { ...p, ...updates } : p));
     const updatedProject = nextList.find((p) => p.id === projectId);
     this.saveProjects(nextList, true, { action: 'update_project', targetId: projectId, skipCloudPush: true });
+
+    if (updatedProject && typeof window !== 'undefined' && isServerApiAvailable()) {
+      const deltaPayload = JSON.stringify({
+        projects: [updatedProject],
+        clientId: RealtimeService.getClientId(),
+        action: 'update_project',
+      });
+      fetch('/api/sync/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: deltaPayload,
+        keepalive: deltaPayload.length < 60000,
+      }).catch(() => {});
+    }
 
     if (SupabaseService.isConfigured()) {
       try {

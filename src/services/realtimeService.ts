@@ -395,7 +395,9 @@ class RealtimeServiceImpl {
     if (msg.type === 'INITIAL_STATE' && msg.payload) {
       const incomingAction = String(msg.actionMeta?.action || '');
       const incomingResetAt = msg.actionMeta?.lastResetAt || (msg.payload as any)?.lastResetAt || null;
-      let isReset = incomingAction.includes('reset') || incomingAction.includes('replace');
+      // Somente um broadcast explícito e ao vivo de limpeza destrutiva substitui o estado local.
+      // Conexões iniciais (initial_sync) com um servidor reiniciado JAMAIS devem apagar dados locais ou do Supabase.
+      const isLiveReset = incomingAction === 'reset_test_data';
 
       if (incomingResetAt && typeof window !== 'undefined') {
         try {
@@ -404,14 +406,13 @@ class RealtimeServiceImpl {
           const serverResetTs = Date.parse(incomingResetAt);
           if (!Number.isNaN(serverResetTs) && serverResetTs > (Number.isNaN(localResetTs) ? 0 : localResetTs)) {
             localStorage.setItem('operatask_clean_v1_last_reset_at', incomingResetAt);
-            isReset = true;
           }
         } catch {}
       }
 
       Object.entries(msg.payload).forEach(([entity, data]) => {
-        if (entity === 'lastResetAt') return;
-        const meta = isReset
+        if (entity === 'lastResetAt' || entity === 'deletedTaskIds' || entity === 'deletedProjectIds') return;
+        const meta = isLiveReset
           ? { action: 'reset_test_data' }
           : entity === 'tasks' && msg.actionMeta?.action
           ? msg.actionMeta
@@ -556,22 +557,18 @@ class RealtimeServiceImpl {
         const data = json.data || json;
         if (data && typeof data === 'object') {
           const serverResetAt = data.lastResetAt || json.lastResetAt || null;
-          let syncAction = 'http_sync';
+          const syncAction = 'http_sync';
           try {
             const localResetRaw = localStorage.getItem('operatask_clean_v1_last_reset_at');
             const localResetTs = localResetRaw ? Date.parse(localResetRaw) : 0;
             const serverResetTs = serverResetAt ? Date.parse(serverResetAt) : 0;
             if (!Number.isNaN(serverResetTs) && serverResetTs > (Number.isNaN(localResetTs) ? 0 : localResetTs)) {
               localStorage.setItem('operatask_clean_v1_last_reset_at', serverResetAt);
-              syncAction = 'reset_test_data';
-            } else if (!Number.isNaN(localResetTs) && localResetTs > (Number.isNaN(serverResetTs) ? 0 : serverResetTs)) {
-              // Local já foi resetado mais recentemente: força reconciliação via StorageService em vez de restaurar dados velhos
-              return false;
             }
           } catch {}
 
           Object.entries(data).forEach(([entity, val]) => {
-            if (entity === 'lastResetAt') return;
+            if (entity === 'lastResetAt' || entity === 'deletedTaskIds' || entity === 'deletedProjectIds') return;
             this.notifyEntityListeners(entity as SyncEntity, val, { action: syncAction });
           });
           return true;
