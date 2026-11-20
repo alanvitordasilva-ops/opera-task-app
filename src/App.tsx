@@ -2476,6 +2476,39 @@ export default function App() {
     recordActivity(`reordenou os quadros em "${activeProject.name}"`);
   };
 
+  const handleUpdateColumn = (
+    columnId: string,
+    updates: { title: string; color: string }
+  ) => {
+    if (!activeProject) return;
+    const trimmedTitle = updates.title.trim();
+    if (!trimmedTitle) return;
+
+    const prevCol = (activeProject.columns || []).find((c) => c.id === columnId);
+    if (!prevCol) return;
+
+    const updatedColumns: BoardColumn[] = (activeProject.columns || []).map((c) =>
+      c.id === columnId
+        ? { ...c, title: trimmedTitle, color: updates.color || c.color }
+        : c
+    );
+
+    setProjects((prev) =>
+      prev.map((p) => (p.id === activeProject.id ? { ...p, columns: updatedColumns } : p))
+    );
+    StorageService.updateProjectAsync(activeProject.id, { columns: updatedColumns });
+
+    recordActivity(
+      prevCol.title !== trimmedTitle
+        ? `renomeou o quadro "${prevCol.title}" para "${trimmedTitle}" em "${activeProject.name}"`
+        : `atualizou a cor do quadro "${trimmedTitle}" em "${activeProject.name}"`
+    );
+    showToast({
+      type: 'success',
+      message: `Quadro "${trimmedTitle}" atualizado com sucesso!`,
+    });
+  };
+
   const handleArchiveColumn = (columnId: string, restore = false) => {
     if (!activeProject) return;
 
@@ -3034,6 +3067,7 @@ export default function App() {
                     onArchiveColumn={(colId) => handleArchiveColumn(colId, false)}
                     onDuplicateColumn={handleDuplicateColumn}
                     onReorderColumns={handleReorderColumns}
+                    onUpdateColumn={handleUpdateColumn}
                     onQuickAddTask={(colId) => {
                       setDefaultColumnId(colId);
                       setTaskToEdit(null);

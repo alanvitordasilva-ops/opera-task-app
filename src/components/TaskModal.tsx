@@ -40,6 +40,9 @@ import {
   Factory,
   Lock,
   Check,
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import {
   PRIORITY_CONFIG,
@@ -168,6 +171,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
   const [isProductionModalOpen, setIsProductionModalOpen] = useState(false);
   const [noFichaAlert, setNoFichaAlert] = useState<string | null>(null);
   const [productionSuccessAlert, setProductionSuccessAlert] = useState<string | null>(null);
+  const [showAllProductionRecords, setShowAllProductionRecords] = useState(false);
 
   // Permissões de Ficha Técnica e Produção
   const isMaster = isUserMaster(currentUser);
@@ -249,6 +253,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
       setFrameColor(taskToEdit.frameColor);
       setFichaTecnica(taskToEdit.fichaTecnica || null);
       setProductionRecords(taskToEdit.productionRecords || []);
+      setShowAllProductionRecords(false);
     } else {
       const latestProjects = projectsRef.current;
       const defProj = defaultProjRef.current;
@@ -274,6 +279,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
       setFrameColor(undefined);
       setFichaTecnica(null);
       setProductionRecords([]);
+      setShowAllProductionRecords(false);
     }
     setIsCreatingTag(false);
     setShowMentionMenu(false);
@@ -470,28 +476,21 @@ export const TaskModal: React.FC<TaskModalProps> = ({
     const updatedRecords = [record, ...productionRecords];
     setProductionRecords(updatedRecords);
 
-    // Encontra a coluna de Concluído do projeto atual
-    const targetCompletedCol =
-      currentProject?.columns.find(
-        (c) =>
-          c.isCompletedColumn ||
-          c.title.toLowerCase().includes('conclu') ||
-          c.title.toLowerCase().includes('pronto') ||
-          c.title.toLowerCase().includes('done')
-      ) || (currentProject?.columns && currentProject.columns.length > 0 ? currentProject.columns[currentProject.columns.length - 1] : null);
-
-    const finalColumnId = targetCompletedCol?.id || columnId;
-    setColumnId(finalColumnId);
+    // Mantém o card exatamente no quadro/coluna atual sem mover para Concluído
+    const currentColumnId =
+      columnId || taskToEdit?.columnId || currentProject?.columns[0]?.id || '';
+    const currentCol = currentProject?.columns.find((c) => c.id === currentColumnId);
+    const currentIsCompleted = currentCol?.isCompletedColumn || false;
 
     // Feedback visual de sucesso
     setNoFichaAlert(null);
-    setProductionSuccessAlert('Produção registrada e card concluído!');
+    setProductionSuccessAlert('Produção confirmada e salva na Ficha Técnica!');
     setTimeout(() => {
       setProductionSuccessAlert(null);
     }, 5000);
 
     // Registro visual no histórico de comentários
-    const newCommentContent = `🏭 Ordem de Produção Confirmada: ${record.quantidadeDesejada} ${record.unidadeProducao} de "${record.nomeItem}" (Fator ${record.fator.toFixed(2)}x) por ${record.producedByUserName || currentUser.name}. Card movido automaticamente para "${targetCompletedCol?.title || 'Concluído'}".`;
+    const newCommentContent = `🏭 Ordem de Produção Confirmada: ${record.quantidadeDesejada} ${record.unidadeProducao} de "${record.nomeItem}" (Fator ${record.fator.toFixed(2)}x) por ${record.producedByUserName || currentUser.name}. Salva na Ficha Técnica.`;
     const newCom: Comment = {
       id: `com-prod-${Date.now()}`,
       authorId: currentUser.id,
@@ -511,15 +510,15 @@ export const TaskModal: React.FC<TaskModalProps> = ({
         description: description.trim(),
         priority,
         projectId: projectId || projects[0]?.id || '',
-        columnId: finalColumnId,
+        columnId: currentColumnId,
         dueDate: finalDueDate,
         assigneeIds,
         tags: selectedTags,
         checklist,
         attachments,
         comments: updatedComments,
-        isCompleted: true,
-        completedAt: new Date().toISOString(),
+        isCompleted: currentIsCompleted,
+        completedAt: taskToEdit.completedAt,
         frameColor: frameColor || undefined,
         fichaTecnica: fichaTecnica || undefined,
         productionRecords: updatedRecords,
@@ -834,6 +833,24 @@ export const TaskModal: React.FC<TaskModalProps> = ({
           </div>
         )}
 
+        {/* Alerta de confirmação de produção salva na Ficha Técnica */}
+        {productionSuccessAlert && (
+          <div className="px-6 py-2.5 bg-emerald-50 dark:bg-emerald-950/70 border-b border-emerald-200 dark:border-emerald-800 flex items-center justify-between text-xs text-emerald-800 dark:text-emerald-200 font-semibold animate-in fade-in slide-in-from-top-1 duration-200">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+              <span>{productionSuccessAlert}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setProductionSuccessAlert(null)}
+              className="p-1 rounded-md hover:bg-emerald-100 dark:hover:bg-emerald-900/50 text-emerald-600 dark:text-emerald-300 cursor-pointer"
+              aria-label="Fechar aviso"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
         {/* Corpo Principal: Grid de 2 colunas estilo Trello / Notion */}
         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6">
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
@@ -1132,25 +1149,129 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                       </div>
                     )}
 
-                    {/* Histórico recente de produções do card */}
+                    {/* Produções Salvas visíveis diretamente na Ficha Técnica do Card */}
                     {productionRecords.length > 0 && (
-                      <div className="flex items-center justify-between p-2 rounded-lg bg-white/80 dark:bg-slate-900/80 border border-teal-200/50 dark:border-teal-800/50 text-[11px]">
-                        <div className="flex items-center gap-1.5 text-teal-900 dark:text-teal-200 font-semibold truncate">
-                          <Factory className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400 shrink-0" />
-                          <span className="truncate">
-                            Última produção: {productionRecords[0].quantidadeDesejada} {productionRecords[0].unidadeProducao}
-                          </span>
-                          <span className="text-[10px] text-slate-500 dark:text-slate-400 font-normal shrink-0">
-                            ({new Date(productionRecords[0].createdAt).toLocaleDateString('pt-BR')})
-                          </span>
+                      <div className="pt-2 border-t border-teal-200/60 dark:border-teal-800/60 space-y-2.5">
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-teal-800 dark:text-teal-200">
+                            <Factory className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400 shrink-0" />
+                            <span>Produção Registrada</span>
+                            <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-teal-600 text-white">
+                              {productionRecords.length}
+                            </span>
+                          </div>
+                          {canProduce && (
+                            <button
+                              type="button"
+                              onClick={handleOpenProduction}
+                              className="text-[11px] font-bold text-teal-700 dark:text-teal-300 hover:underline shrink-0 cursor-pointer"
+                            >
+                              Histórico completo ({productionRecords.length}) →
+                            </button>
+                          )}
                         </div>
-                        <button
-                          type="button"
-                          onClick={handleOpenProduction}
-                          className="text-[11px] font-bold text-teal-700 dark:text-teal-300 hover:underline shrink-0 ml-2 cursor-pointer"
-                        >
-                          Histórico ({productionRecords.length}) →
-                        </button>
+
+                        <div className="space-y-2">
+                          {(showAllProductionRecords
+                            ? productionRecords
+                            : productionRecords.slice(0, 1)
+                          ).map((rec, recIdx) => {
+                            const recDate = new Date(rec.createdAt);
+                            const formattedDate = `${String(recDate.getDate()).padStart(2, '0')}/${String(recDate.getMonth() + 1).padStart(2, '0')}/${recDate.getFullYear()} às ${String(recDate.getHours()).padStart(2, '0')}:${String(recDate.getMinutes()).padStart(2, '0')}`;
+                            const formattedQty = String(rec.quantidadeDesejada).replace('.', ',');
+                            const formattedFactor = rec.fator.toFixed(2).replace(/\.00$/, '').replace('.', ',');
+
+                            return (
+                              <div
+                                key={rec.id}
+                                className="p-3 rounded-xl bg-white dark:bg-slate-900 border border-teal-200/80 dark:border-teal-800/70 shadow-2xs space-y-2"
+                              >
+                                <div className="flex items-center justify-between gap-2 flex-wrap">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-emerald-100 dark:bg-emerald-950/70 text-emerald-800 dark:text-emerald-300 text-xs font-extrabold">
+                                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                                      <span>
+                                        {formattedQty} {rec.unidadeProducao}
+                                      </span>
+                                    </span>
+                                    <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-teal-50 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300 border border-teal-200/70 dark:border-teal-800/70">
+                                      {formattedFactor}x
+                                    </span>
+                                    {recIdx === 0 && (
+                                      <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+                                        Última produção
+                                      </span>
+                                    )}
+                                  </div>
+                                  <span className="text-[10px] text-slate-500 dark:text-slate-400 font-medium flex items-center gap-1">
+                                    <Calendar className="w-3 h-3 text-teal-600 dark:text-teal-400 shrink-0" />
+                                    {formattedDate}
+                                  </span>
+                                </div>
+
+                                {rec.ingredientes && rec.ingredientes.length > 0 && (
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-1 border-t border-slate-100 dark:border-slate-800">
+                                    {rec.ingredientes.map((ing) => (
+                                      <div
+                                        key={ing.ingredienteId}
+                                        className="flex items-center justify-between gap-2 px-2 py-1 rounded-lg bg-slate-50 dark:bg-slate-800/60 text-[11px]"
+                                      >
+                                        <span className="text-slate-700 dark:text-slate-300 font-medium truncate">
+                                          {ing.nome}
+                                        </span>
+                                        <span className="font-bold font-mono text-teal-700 dark:text-teal-300 shrink-0">
+                                          {ing.quantidadeFormatada} {ing.unidade}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+
+                                <div className="flex items-center justify-between gap-2 flex-wrap text-[11px] text-slate-500 dark:text-slate-400 pt-1 border-t border-slate-100 dark:border-slate-800">
+                                  <span>
+                                    Responsável:{' '}
+                                    <strong className="text-slate-700 dark:text-slate-200">
+                                      {rec.producedByUserName || 'Usuário OperaTask'}
+                                    </strong>
+                                  </span>
+                                  {rec.observacoes && (
+                                    <span
+                                      className="italic text-slate-600 dark:text-slate-300"
+                                      title={rec.observacoes}
+                                    >
+                                      Obs: {rec.observacoes}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        {productionRecords.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => setShowAllProductionRecords((prev) => !prev)}
+                            className="w-full py-1.5 px-3 rounded-lg bg-white/80 dark:bg-slate-900/70 hover:bg-white dark:hover:bg-slate-900 border border-teal-200/70 dark:border-teal-800/60 text-[11px] font-bold text-teal-700 dark:text-teal-300 flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                          >
+                            {showAllProductionRecords ? (
+                              <>
+                                <ChevronUp className="w-3.5 h-3.5" />
+                                <span>Ocultar produções anteriores</span>
+                              </>
+                            ) : (
+                              <>
+                                <ChevronDown className="w-3.5 h-3.5" />
+                                <span>
+                                  Ver mais {productionRecords.length - 1}{' '}
+                                  {productionRecords.length - 1 === 1
+                                    ? 'produção anterior'
+                                    : 'produções anteriores'}
+                                </span>
+                              </>
+                            )}
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>

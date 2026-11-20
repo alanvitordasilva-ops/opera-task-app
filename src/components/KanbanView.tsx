@@ -23,6 +23,7 @@ import {
   FileSpreadsheet,
   Factory,
   Lock,
+  X,
 } from 'lucide-react';
 import {
   PRIORITY_CONFIG,
@@ -38,6 +39,7 @@ import {
 } from '../utils/helpers.ts';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
 import { UserAvatar } from './UserAvatar.tsx';
+import { ColorPicker } from './ColorPicker.tsx';
 
 export interface TaskReorderUpdate {
   id: string;
@@ -68,6 +70,7 @@ interface KanbanViewProps {
   onArchiveColumn?: (columnId: string) => void;
   onDuplicateColumn?: (columnId: string, includeCards: boolean) => void;
   onReorderColumns?: (orderedColumnIds: string[]) => void;
+  onUpdateColumn?: (columnId: string, updates: { title: string; color: string }) => void;
   onQuickAddTask: (columnId: string) => void;
 }
 
@@ -88,6 +91,7 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
   onArchiveColumn,
   onDuplicateColumn,
   onReorderColumns,
+  onUpdateColumn,
   onQuickAddTask,
 }) => {
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
@@ -107,6 +111,9 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
   } | null>(null);
   const [openMenuTaskId, setOpenMenuTaskId] = useState<string | null>(null);
   const [openMenuColumnId, setOpenMenuColumnId] = useState<string | null>(null);
+  const [editingColumn, setEditingColumn] = useState<BoardColumn | null>(null);
+  const [editColumnTitle, setEditColumnTitle] = useState('');
+  const [editColumnColor, setEditColumnColor] = useState('#2563eb');
   const [selectedMobileColumn, setSelectedMobileColumn] = useState<string | 'all'>(() => {
     try {
       return sessionStorage.getItem(`operatask_mobile_col_${project.id}`) || 'all';
@@ -810,6 +817,12 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
               <div className="pointer-events-none absolute -right-2.5 top-2 bottom-2 w-1.5 rounded-full bg-blue-500 shadow-[0_0_10px_rgba(37,99,235,0.65)] z-30" />
             )}
 
+            {/* Faixa superior de cor do quadro */}
+            <div
+              className="h-1 w-full rounded-full mb-1.5 shrink-0 opacity-90"
+              style={{ backgroundColor: col.color }}
+            />
+
             {/* Cabeçalho da Coluna: Arrastável no topo para reordenar quadros (mouse e toque segurando) */}
             <div
               draggable={canReorderCols}
@@ -854,7 +867,10 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                   <Plus className="w-3.5 h-3.5" />
                 </button>
 
-                {(canReorderCols || onDuplicateColumn || (canManageCol && (onArchiveColumn || onDeleteColumn))) && (
+                {((onUpdateColumn && (isMaster || (currentUserRole !== 'viewer' && currentUserRole !== 'visualizador'))) ||
+                  canReorderCols ||
+                  onDuplicateColumn ||
+                  (canManageCol && (onArchiveColumn || onDeleteColumn))) && (
                   <div className="relative">
                     <button
                       type="button"
@@ -878,6 +894,28 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                         className="absolute right-0 top-7 w-56 bg-white dark:bg-slate-800 rounded-xl shadow-xl border border-slate-200 dark:border-slate-700 py-1.5 z-40 animate-in fade-in zoom-in-95 duration-100"
                         onClick={(e) => e.stopPropagation()}
                       >
+                        {onUpdateColumn &&
+                          (isMaster || (currentUserRole !== 'viewer' && currentUserRole !== 'visualizador')) && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setOpenMenuColumnId(null);
+                                  setEditingColumn(col);
+                                  setEditColumnTitle(col.title);
+                                  setEditColumnColor(col.color || '#2563eb');
+                                }}
+                                className="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 flex items-center gap-2 transition-colors font-medium cursor-pointer"
+                              >
+                                <Edit3 className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                                <span>Editar</span>
+                              </button>
+                              {(canReorderCols || onDuplicateColumn || (canManageCol && (onArchiveColumn || onDeleteColumn))) && (
+                                <div className="my-1 border-t border-slate-100 dark:border-slate-700/60" />
+                              )}
+                            </>
+                          )}
+
                         {canReorderCols && (
                           <>
                             <button
@@ -1431,10 +1469,14 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                               {task.fichaTecnica.ingredientes.length > 2 && ' ...'}
                             </div>
                           )}
-                          <div className="flex items-center justify-between pt-1 border-t border-teal-200/50 dark:border-teal-900/40 text-[9px]">
-                            <span className="text-teal-700 dark:text-teal-300 font-medium truncate">
+                          <div className="flex items-center justify-between pt-1 border-t border-teal-200/50 dark:border-teal-900/40 text-[9px] gap-1.5">
+                            <span className="text-teal-800 dark:text-teal-200 font-semibold truncate">
                               {task.productionRecords && task.productionRecords.length > 0
-                                ? `${task.productionRecords.length} lote(s) produzido(s)`
+                                ? `Produzido: ${String(task.productionRecords[0].quantidadeDesejada).replace('.', ',')} ${task.productionRecords[0].unidadeProducao}${
+                                    task.productionRecords.length > 1
+                                      ? ` (+${task.productionRecords.length - 1})`
+                                      : ''
+                                  }`
                                 : 'Ficha pronta'}
                             </span>
                             <span className="inline-flex items-center gap-1 font-bold text-teal-800 dark:text-teal-200 hover:text-teal-600 shrink-0">
@@ -1639,13 +1681,114 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
         />
       )}
 
+      {/* Modal: Editar Nomenclatura e Cor do Quadro (Coluna) */}
+      {editingColumn && onUpdateColumn && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150"
+          onClick={() => setEditingColumn(null)}
+        >
+          <div
+            className="w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <span
+                  className="w-3.5 h-3.5 rounded-full shrink-0 shadow-xs"
+                  style={{ backgroundColor: editColumnColor }}
+                />
+                <div className="min-w-0">
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 truncate">
+                    Editar Quadro
+                  </h3>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Altere a nomenclatura e a cor de identificação
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingColumn(null)}
+                className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                const trimmed = editColumnTitle.trim();
+                if (!trimmed) return;
+                onUpdateColumn(editingColumn.id, {
+                  title: trimmed,
+                  color: editColumnColor,
+                });
+                setEditingColumn(null);
+              }}
+              className="p-5 space-y-4"
+            >
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1.5">
+                  Nomenclatura do Quadro *
+                </label>
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  value={editColumnTitle}
+                  onChange={(e) => setEditColumnTitle(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') {
+                      e.preventDefault();
+                      setEditingColumn(null);
+                    }
+                  }}
+                  placeholder="Ex: Em Produção, Revisão, Concluído..."
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 text-slate-900 dark:text-slate-100 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <ColorPicker
+                  label="Cor do Quadro"
+                  description="Faixa superior e marcador do quadro"
+                  value={editColumnColor}
+                  onChange={(newColor) => setEditColumnColor(newColor)}
+                  size="md"
+                  showPaletteStrip={true}
+                  quickPaletteCount={6}
+                />
+              </div>
+
+              <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingColumn(null)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={!editColumnTitle.trim()}
+                  className="px-5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-xl shadow-xs transition-all cursor-pointer"
+                >
+                  Salvar Alterações
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Prévia flutuante ao segurar e arrastar o topo de um quadro no celular/touch */}
       {touchDragGhost && (
         <div
           className="fixed z-50 pointer-events-none flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white/95 dark:bg-slate-900/95 border-2 border-blue-500 shadow-2xl backdrop-blur-xs"
           style={{
             left: Math.max(12, Math.min(window.innerWidth - 220, touchDragGhost.x - 100)),
-            top: Math.max(12, touchDragGhost.y - 30),
+            top: Math.max(12, Math.min(window.innerHeight - 60, touchDragGhost.y - 30)),
             maxWidth: '220px',
           }}
         >

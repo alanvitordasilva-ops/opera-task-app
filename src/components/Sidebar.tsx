@@ -840,10 +840,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                 setOpenMenuProjectId(null);
                                 onEditProject(proj);
                               }}
-                              className="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 flex items-center gap-2 transition-colors cursor-pointer"
+                              className="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 flex items-center gap-2 transition-colors font-medium cursor-pointer"
                             >
-                              <Edit2 className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                              <span>Configurar quadro</span>
+                              <Edit2 className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                              <span>Editar</span>
                             </button>
 
                             {onDuplicateProject && (

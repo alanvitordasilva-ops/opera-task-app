@@ -331,7 +331,7 @@ export const ProductionModal: React.FC<ProductionModalProps> = ({
         {isSuccess && (
           <div className="mx-6 mt-4 p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 flex items-center gap-2.5 text-emerald-800 dark:text-emerald-300 text-xs font-semibold animate-in fade-in duration-150">
             <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-            <span>Produção registrada e card concluído!</span>
+            <span>Produção confirmada e salva na Ficha Técnica!</span>
           </div>
         )}
 
@@ -667,7 +667,7 @@ export const ProductionModal: React.FC<ProductionModalProps> = ({
                           <span>{formattedDateTime}</span>
                         </span>
                         <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300">
-                          Concluído
+                          Registrado
                         </span>
                       </div>
 

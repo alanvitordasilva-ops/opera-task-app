@@ -184,6 +184,11 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
   const [enrollWsSelection, setEnrollWsSelection] = useState<Record<string, WorkspaceRole>>({});
   const [isSavingWsEnroll, setIsSavingWsEnroll] = useState(false);
 
+  // Modal: Editar nome e cor de um Quadro Global
+  const [editingProject, setEditingProject] = useState<Project | null>(null);
+  const [editProjectName, setEditProjectName] = useState('');
+  const [editProjectColor, setEditProjectColor] = useState('#2563eb');
+
   if (!isOpen) return null;
 
   const normalizeAssignRole = (role?: string): WorkspaceRole => {
@@ -1275,6 +1280,22 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
                                   } w-56 bg-white dark:bg-slate-800 rounded-xl shadow-xl border border-slate-200 dark:border-slate-700 py-1.5 z-50 animate-in fade-in zoom-in-95 duration-100`}
                                   onClick={(e) => e.stopPropagation()}
                                 >
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setOpenMenuProjectId(null);
+                                      setEditingProject(p);
+                                      setEditProjectName(p.name);
+                                      setEditProjectColor(p.color || '#2563eb');
+                                    }}
+                                    className="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 flex items-center gap-2 transition-colors font-medium cursor-pointer"
+                                  >
+                                    <Edit2 className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                                    <span>Editar</span>
+                                  </button>
+
+                                  <div className="my-1 border-t border-slate-100 dark:border-slate-700/60" />
+
                                   {onDuplicateProject && (
                                     <>
                                       <button
@@ -2314,6 +2335,117 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
           </div>
         );
       })()}
+
+      {/* Modal: Editar Nomenclatura e Cor de Quadro Global */}
+      {editingProject && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-xs"
+          onClick={() => setEditingProject(null)}
+        >
+          <div
+            className="w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <span
+                  className="w-3.5 h-3.5 rounded-md shrink-0"
+                  style={{ backgroundColor: editProjectColor }}
+                />
+                <div className="min-w-0">
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 truncate">
+                    Editar Quadro
+                  </h3>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Altere a nomenclatura e a cor de identificação
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingProject(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                const trimmed = editProjectName.trim();
+                if (!trimmed) return;
+                const updatedProjects = projects.map((item) =>
+                  item.id === editingProject.id
+                    ? { ...item, name: trimmed, color: editProjectColor }
+                    : item
+                );
+                onUpdateProjects(updatedProjects);
+                StorageService.updateProjectAsync(editingProject.id, {
+                  name: trimmed,
+                  color: editProjectColor,
+                });
+                onShowToast({
+                  type: 'success',
+                  message: `Quadro "${trimmed}" atualizado com sucesso!`,
+                });
+                setEditingProject(null);
+              }}
+              className="p-5 space-y-4"
+            >
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1.5">
+                  Nomenclatura do Quadro *
+                </label>
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  value={editProjectName}
+                  onChange={(e) => setEditProjectName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') {
+                      e.preventDefault();
+                      setEditingProject(null);
+                    }
+                  }}
+                  placeholder="Nome do quadro..."
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-sm focus:ring-2 focus:ring-[#34B1AC] focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <ColorPicker
+                  label="Cor do Quadro"
+                  description="Identificação visual no menu e nos painéis"
+                  value={editProjectColor}
+                  onChange={(newColor) => setEditProjectColor(newColor)}
+                  size="md"
+                  showPaletteStrip={true}
+                  quickPaletteCount={6}
+                />
+              </div>
+
+              <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingProject(null)}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={!editProjectName.trim()}
+                  className="px-5 py-2 rounded-xl text-xs font-bold text-white bg-[#34B1AC] hover:bg-[#289e99] disabled:opacity-50 shadow-xs cursor-pointer"
+                >
+                  Salvar Alterações
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Modal de Limpeza Geral de Dados de Teste */}
       {isResetModalOpen && (
