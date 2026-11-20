@@ -42,6 +42,9 @@ import {
   ArrowUp,
   ArrowDown,
   ArrowUpDown,
+  UserPlus,
+  UserCheck,
+  Loader2,
 } from 'lucide-react';
 import { StorageService } from '../services/storage.ts';
 import { getProductionAppUrl, createInviteAccessUrl } from '../utils/appUrl.ts';
@@ -168,7 +171,110 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
   const [editingWsId, setEditingWsId] = useState<string | null>(null);
   const [editingWsName, setEditingWsName] = useState('');
 
+  // Modal: Gerenciar Workspaces de um Usuário específico (inscrever em novos/existentes)
+  const [manageWsUser, setManageWsUser] = useState<User | null>(null);
+  const [manageWsSearch, setManageWsSearch] = useState('');
+  const [manageWsSelection, setManageWsSelection] = useState<Record<string, WorkspaceRole>>({});
+  const [isSavingUserWs, setIsSavingUserWs] = useState(false);
+
+  // Modal: Inscrever Usuários cadastrados em um Workspace específico (aba Workspaces)
+  const [enrollTargetWs, setEnrollTargetWs] = useState<Workspace | null>(null);
+  const [enrollWsUserSearch, setEnrollWsUserSearch] = useState('');
+  const [enrollWsDefaultRole, setEnrollWsDefaultRole] = useState<WorkspaceRole>('member');
+  const [enrollWsSelection, setEnrollWsSelection] = useState<Record<string, WorkspaceRole>>({});
+  const [isSavingWsEnroll, setIsSavingWsEnroll] = useState(false);
+
   if (!isOpen) return null;
+
+  const normalizeAssignRole = (role?: string): WorkspaceRole => {
+    if (role === 'owner' || role === 'dono') return 'owner';
+    if (role === 'admin' || role === 'administrador') return 'admin';
+    if (role === 'production' || role === 'producao') return 'production';
+    if (role === 'viewer' || role === 'visualizador') return 'viewer';
+    return 'member';
+  };
+
+  const openManageUserWorkspaces = (targetUser: User) => {
+    const initialSelection: Record<string, WorkspaceRole> = {};
+    workspaces.forEach((ws) => {
+      const m = (ws.members || []).find((item) => item.userId === targetUser.id);
+      if (ws.ownerId === targetUser.id) {
+        initialSelection[ws.id] = 'owner';
+      } else if (m) {
+        initialSelection[ws.id] = normalizeAssignRole(m.role);
+      }
+    });
+    setManageWsUser(targetUser);
+    setManageWsSearch('');
+    setManageWsSelection(initialSelection);
+    setIsSavingUserWs(false);
+  };
+
+  const handleSaveUserWorkspaces = async () => {
+    if (!manageWsUser || isSavingUserWs) return;
+    setIsSavingUserWs(true);
+    try {
+      const assignments = Object.entries(manageWsSelection).map(([workspaceId, role]) => ({
+        workspaceId,
+        role,
+      }));
+      const res = await StorageService.syncUserWorkspacesAsync(manageWsUser.id, assignments);
+      onUpdateWorkspaces(res.workspaces);
+      onUpdateUsers(res.users);
+      onShowToast({
+        type: 'success',
+        message: `Workspaces de ${manageWsUser.name} atualizados (${assignments.length} vínculo${assignments.length === 1 ? '' : 's'} ativo${assignments.length === 1 ? '' : 's'})!`,
+      });
+      setManageWsUser(null);
+    } catch (err: any) {
+      onShowToast({
+        type: 'error',
+        message: err?.message || 'Erro ao salvar vínculos de workspace.',
+      });
+    } finally {
+      setIsSavingUserWs(false);
+    }
+  };
+
+  const openEnrollUsersInWorkspace = (ws: Workspace) => {
+    setEnrollTargetWs(ws);
+    setEnrollWsUserSearch('');
+    setEnrollWsDefaultRole('member');
+    setEnrollWsSelection({});
+    setIsSavingWsEnroll(false);
+  };
+
+  const handleEnrollIntoTargetWs = async (entries: Array<{ userId: string; role: WorkspaceRole }>) => {
+    if (!enrollTargetWs || entries.length === 0 || isSavingWsEnroll) return;
+    setIsSavingWsEnroll(true);
+    try {
+      const res = await StorageService.enrollUsersInWorkspaceAsync(enrollTargetWs.id, entries);
+      onUpdateWorkspaces(res.workspaces);
+      onUpdateUsers(res.users);
+      if (res.updatedWorkspace) {
+        setEnrollTargetWs(res.updatedWorkspace);
+      }
+      setEnrollWsSelection((prev) => {
+        const next = { ...prev };
+        entries.forEach((e) => delete next[e.userId]);
+        return next;
+      });
+      onShowToast({
+        type: 'success',
+        message:
+          entries.length === 1
+            ? `Usuário inscrito no workspace "${enrollTargetWs.name}" com sucesso!`
+            : `${entries.length} usuários inscritos no workspace "${enrollTargetWs.name}" com sucesso!`,
+      });
+    } catch (err: any) {
+      onShowToast({
+        type: 'error',
+        message: err?.message || 'Erro ao inscrever usuário(s) no workspace.',
+      });
+    } finally {
+      setIsSavingWsEnroll(false);
+    }
+  };
 
   const handleCommitWsRename = (wsId: string) => {
     const trimmed = editingWsName.trim();
@@ -744,7 +850,7 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
                       <tr>
                         <th className="px-4 py-3">Usuário</th>
                         <th className="px-4 py-3">E-mail</th>
-                        <th className="px-4 py-3">Cargo / Função</th>
+                        <th className="px-4 py-3">Workspaces</th>
                         <th className="px-4 py-3">Nível de Sistema</th>
                         <th className="px-4 py-3 text-right">Ações Master</th>
                       </tr>
@@ -753,6 +859,11 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
                       {filteredUsers.map((u) => {
                         const isMaster = u.systemRole === 'master' || u.isSuperAdmin || u.email.toLowerCase() === 'alanvitordasilva@gmail.com.br';
                         const isSelf = u.id === currentUser.id;
+                        const userAssignedWorkspaces = workspaces.filter(
+                          (ws) =>
+                            ws.ownerId === u.id ||
+                            (ws.members || []).some((m) => m.userId === u.id)
+                        );
 
                         return (
                           <tr key={u.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-700/30 transition-colors">
@@ -762,18 +873,42 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
                                 <span className="font-bold text-slate-900 dark:text-slate-100 block truncate">
                                   {u.name}
                                 </span>
-                                {isSelf && (
-                                  <span className="text-[10px] text-teal-600 dark:text-teal-400 font-semibold">
-                                    (Você · Sessão Ativa)
-                                  </span>
-                                )}
+                                <span className="text-[10px] text-slate-400 block truncate">
+                                  {u.title || 'Membro'}
+                                  {isSelf ? ' · (Você)' : ''}
+                                </span>
                               </div>
                             </td>
                             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">
                               {u.email}
                             </td>
-                            <td className="px-4 py-3 text-slate-500 dark:text-slate-400">
-                              {u.title || 'Membro'}
+                            <td className="px-4 py-3">
+                              <div className="flex flex-wrap items-center gap-1 max-w-[200px]">
+                                {userAssignedWorkspaces.length === 0 ? (
+                                  <span className="text-[10px] text-slate-400 italic">Nenhum</span>
+                                ) : (
+                                  <>
+                                    {userAssignedWorkspaces.slice(0, 2).map((ws) => (
+                                      <span
+                                        key={ws.id}
+                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200/80 dark:border-slate-700 max-w-[110px] truncate"
+                                        title={ws.name}
+                                      >
+                                        <span
+                                          className="w-1.5 h-1.5 rounded-full shrink-0"
+                                          style={{ backgroundColor: ws.logoColor }}
+                                        />
+                                        <span className="truncate">{ws.name}</span>
+                                      </span>
+                                    ))}
+                                    {userAssignedWorkspaces.length > 2 && (
+                                      <span className="text-[10px] font-bold text-[#34B1AC] px-1">
+                                        +{userAssignedWorkspaces.length - 2}
+                                      </span>
+                                    )}
+                                  </>
+                                )}
+                              </div>
                             </td>
                             <td className="px-4 py-3">
                               {isMaster ? (
@@ -789,6 +924,17 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
                             </td>
                             <td className="px-4 py-3 text-right">
                               <div className="flex items-center justify-end gap-1.5">
+                                {/* Inscrever / Gerenciar Workspaces deste Usuário */}
+                                <button
+                                  type="button"
+                                  onClick={() => openManageUserWorkspaces(u)}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-teal-50 hover:bg-teal-100 text-teal-700 dark:bg-teal-950/50 dark:hover:bg-teal-900/60 dark:text-teal-300 border border-teal-200/80 dark:border-teal-800 transition-colors cursor-pointer"
+                                  title="Inscrever em novos ou existentes workspaces"
+                                >
+                                  <Building className="w-3 h-3" />
+                                  <span>Workspaces</span>
+                                </button>
+
                                 {/* Alternar Papel Master */}
                                 {!isSelf && (
                                   <button
@@ -812,7 +958,7 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
                                     setPasswordResetUser(u);
                                     setNewTempPassword('');
                                   }}
-                                  className="p-1.5 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+                                  className="p-1.5 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors cursor-pointer"
                                   title="Redefinir Senha de Acesso"
                                 >
                                   <KeyRound className="w-3.5 h-3.5" />
@@ -823,7 +969,7 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
                                   <button
                                     type="button"
                                     onClick={() => setDeleteTargetUser(u)}
-                                    className="p-1.5 rounded-lg text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors"
+                                    className="p-1.5 rounded-lg text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors cursor-pointer"
                                     title="Excluir Usuário do Sistema"
                                   >
                                     <Trash2 className="w-3.5 h-3.5" />
@@ -1017,14 +1163,26 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
                           <div />
                         )}
 
-                        <button
-                          type="button"
-                          onClick={() => setDeleteTargetWorkspace(ws)}
-                          className="flex items-center gap-1 text-[11px] font-semibold text-red-600 hover:text-red-700 p-1 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors cursor-pointer"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                          <span>Excluir Workspace</span>
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => openEnrollUsersInWorkspace(ws)}
+                            className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-600 dark:text-blue-400 hover:text-blue-700 px-2 py-1 rounded-lg bg-blue-50/70 dark:bg-blue-950/40 hover:bg-blue-100 dark:hover:bg-blue-900/50 border border-blue-200/70 dark:border-blue-800/70 transition-colors cursor-pointer"
+                            title="Inscrever usuários cadastrados neste workspace"
+                          >
+                            <UserPlus className="w-3.5 h-3.5" />
+                            <span>Inscrever Usuários</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setDeleteTargetWorkspace(ws)}
+                            className="flex items-center gap-1 text-[11px] font-semibold text-red-600 hover:text-red-700 p-1 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Excluir</span>
+                          </button>
+                        </div>
                       </div>
                     </div>
                   );
@@ -1759,6 +1917,403 @@ export const MasterAdminModal: React.FC<MasterAdminModalProps> = ({
           archiveButtonText="Arquivar Quadro"
         />
       )}
+
+      {/* Modal: Gerenciar Workspaces de um Usuário (Inscrever em novos ou existentes) */}
+      {manageWsUser && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-xs"
+          onClick={() => {
+            if (!isSavingUserWs) setManageWsUser(null);
+          }}
+        >
+          <div
+            className="w-full max-w-lg bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl overflow-hidden flex flex-col max-h-[88vh]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <UserAvatar user={manageWsUser} size="sm" />
+                <div className="min-w-0">
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 truncate">
+                    Workspaces de {manageWsUser.name}
+                  </h3>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                    Marque os workspaces (novos ou existentes) para inscrever ou ajustar o papel do usuário
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={isSavingUserWs}
+                onClick={() => setManageWsUser(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-3 overflow-y-auto flex-1">
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
+                <input
+                  type="text"
+                  value={manageWsSearch}
+                  onChange={(e) => setManageWsSearch(e.target.value)}
+                  placeholder="Filtrar workspaces pelo nome..."
+                  className="w-full pl-8 pr-3 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#34B1AC]"
+                />
+              </div>
+
+              <div className="space-y-2">
+                {workspaces
+                  .filter(
+                    (ws) =>
+                      !manageWsSearch.trim() ||
+                      ws.name.toLowerCase().includes(manageWsSearch.trim().toLowerCase())
+                  )
+                  .map((ws) => {
+                    const isOwner = ws.ownerId === manageWsUser.id;
+                    const isChecked = isOwner || Boolean(manageWsSelection[ws.id]);
+                    const wasPreviouslyAssigned =
+                      isOwner || (ws.members || []).some((m) => m.userId === manageWsUser.id);
+                    const currentRole = isOwner
+                      ? 'owner'
+                      : manageWsSelection[ws.id] ||
+                        (manageWsUser.tipo ? normalizeAssignRole(manageWsUser.tipo) : 'member');
+
+                    return (
+                      <div
+                        key={ws.id}
+                        className={`flex items-center justify-between gap-3 p-3 rounded-xl border transition-colors ${
+                          isChecked
+                            ? 'border-[#34B1AC] bg-teal-50/40 dark:bg-teal-950/20'
+                            : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800/40'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          disabled={isOwner}
+                          onClick={() => {
+                            setManageWsSelection((prev) => {
+                              const next = { ...prev };
+                              if (next[ws.id]) {
+                                delete next[ws.id];
+                              } else {
+                                const rawTipo = String(manageWsUser.tipo || '');
+                                next[ws.id] =
+                                  rawTipo && rawTipo !== 'owner' && rawTipo !== 'dono'
+                                    ? normalizeAssignRole(rawTipo)
+                                    : 'member';
+                              }
+                              return next;
+                            });
+                          }}
+                          className={`flex items-center gap-2.5 min-w-0 flex-1 text-left ${
+                            isOwner ? 'cursor-default' : 'cursor-pointer'
+                          }`}
+                        >
+                          <span
+                            className={`w-4 h-4 rounded-md border flex items-center justify-center shrink-0 transition-colors ${
+                              isChecked
+                                ? 'bg-[#34B1AC] border-[#34B1AC] text-white'
+                                : 'border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900'
+                            }`}
+                          >
+                            {isChecked && <Check className="w-3 h-3 stroke-[3]" />}
+                          </span>
+                          <span
+                            className="w-3 h-3 rounded-full shrink-0"
+                            style={{ backgroundColor: ws.logoColor }}
+                          />
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-xs font-bold text-slate-900 dark:text-slate-100 truncate">
+                                {ws.name}
+                              </span>
+                              {!wasPreviouslyAssigned && !isChecked && (
+                                <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">
+                                  Não atribuído
+                                </span>
+                              )}
+                              {!wasPreviouslyAssigned && isChecked && (
+                                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300">
+                                  Novo vínculo
+                                </span>
+                              )}
+                            </div>
+                            <span className="text-[10px] text-slate-400 block truncate">
+                              {(ws.members || []).length} membro(s)
+                            </span>
+                          </div>
+                        </button>
+
+                        {isOwner ? (
+                          <span className="text-[10px] font-bold px-2.5 py-1 rounded-lg bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-300/70 shrink-0">
+                            Dono
+                          </span>
+                        ) : isChecked ? (
+                          <select
+                            value={currentRole === 'owner' ? 'admin' : currentRole}
+                            onChange={(e) =>
+                              setManageWsSelection((prev) => ({
+                                ...prev,
+                                [ws.id]: e.target.value as WorkspaceRole,
+                              }))
+                            }
+                            className="text-[11px] px-2 py-1 rounded-lg border border-teal-200 dark:border-teal-800 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 font-medium shrink-0"
+                          >
+                            <option value="admin">Administrador</option>
+                            <option value="member">Membro</option>
+                            <option value="production">Produção</option>
+                            <option value="viewer">Visualizador</option>
+                          </select>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+
+            <div className="px-5 py-3.5 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2 bg-slate-50/70 dark:bg-slate-900/80">
+              <span className="text-[11px] text-slate-500">
+                {Object.keys(manageWsSelection).length} workspace(s) selecionado(s)
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={isSavingUserWs}
+                  onClick={() => setManageWsUser(null)}
+                  className="px-3.5 py-2 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-slate-800 cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  disabled={isSavingUserWs}
+                  onClick={handleSaveUserWorkspaces}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-[#34B1AC] hover:bg-[#289e99] disabled:opacity-50 shadow-xs cursor-pointer"
+                >
+                  {isSavingUserWs && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  <span>Salvar Vínculos</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Inscrever Usuários Cadastrados em um Workspace Específico */}
+      {enrollTargetWs && (() => {
+        const liveWs = workspaces.find((w) => w.id === enrollTargetWs.id) || enrollTargetWs;
+        const memberSet = new Set<string>(
+          (liveWs.members || []).map((m) => m.userId).concat(liveWs.ownerId ? [liveWs.ownerId] : [])
+        );
+        const unassigned = users.filter((u) => u && u.id && !memberSet.has(u.id));
+        const q = enrollWsUserSearch.trim().toLowerCase();
+        const filteredUnassigned = q
+          ? unassigned.filter(
+              (u) =>
+                (u.name || '').toLowerCase().includes(q) ||
+                (u.email || '').toLowerCase().includes(q) ||
+                (u.username || '').toLowerCase().includes(q)
+            )
+          : unassigned;
+        const selectedCount = Object.keys(enrollWsSelection).length;
+
+        return (
+          <div
+            className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-xs"
+            onClick={() => {
+              if (!isSavingWsEnroll) setEnrollTargetWs(null);
+            }}
+          >
+            <div
+              className="w-full max-w-lg bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl overflow-hidden flex flex-col max-h-[88vh]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <span
+                    className="w-4 h-4 rounded-full shrink-0"
+                    style={{ backgroundColor: liveWs.logoColor }}
+                  />
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 truncate">
+                      Inscrever Usuários em "{liveWs.name}"
+                    </h3>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      {unassigned.length} usuário(s) cadastrado(s) ainda não atribuído(s) a este workspace
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={isSavingWsEnroll}
+                  onClick={() => setEnrollTargetWs(null)}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="p-5 space-y-3 overflow-y-auto flex-1">
+                {unassigned.length === 0 ? (
+                  <div className="text-center py-8 space-y-2">
+                    <UserCheck className="w-8 h-8 text-emerald-500 mx-auto" />
+                    <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">
+                      Todos os usuários cadastrados já estão inscritos neste workspace.
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <div className="relative flex-1">
+                        <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
+                        <input
+                          type="text"
+                          value={enrollWsUserSearch}
+                          onChange={(e) => setEnrollWsUserSearch(e.target.value)}
+                          placeholder="Buscar usuário cadastrado..."
+                          className="w-full pl-8 pr-3 py-1.5 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      <select
+                        value={enrollWsDefaultRole}
+                        onChange={(e) => setEnrollWsDefaultRole(e.target.value as WorkspaceRole)}
+                        className="text-xs px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-200 font-medium"
+                      >
+                        <option value="production">Papel: Produção</option>
+                        <option value="member">Papel: Membro</option>
+                        <option value="admin">Papel: Admin</option>
+                        <option value="viewer">Papel: Visualizador</option>
+                      </select>
+                    </div>
+
+                    <div className="space-y-2">
+                      {filteredUnassigned.map((u) => {
+                        const isSelected = Boolean(enrollWsSelection[u.id]);
+                        const roleVal =
+                          enrollWsSelection[u.id] ||
+                          (u.tipo ? normalizeAssignRole(u.tipo) : enrollWsDefaultRole);
+
+                        return (
+                          <div
+                            key={u.id}
+                            className={`flex items-center justify-between gap-2 p-2.5 rounded-xl border transition-colors ${
+                              isSelected
+                                ? 'border-blue-400 bg-blue-50/50 dark:bg-blue-950/25'
+                                : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800/40'
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setEnrollWsSelection((prev) => {
+                                  const next = { ...prev };
+                                  if (next[u.id]) delete next[u.id];
+                                  else {
+                                    const rawTipo = String(u.tipo || '');
+                                    next[u.id] =
+                                      rawTipo && rawTipo !== 'owner' && rawTipo !== 'dono'
+                                        ? normalizeAssignRole(rawTipo)
+                                        : enrollWsDefaultRole;
+                                  }
+                                  return next;
+                                })
+                              }
+                              className="flex items-center gap-2.5 min-w-0 flex-1 text-left cursor-pointer"
+                            >
+                              <span
+                                className={`w-4 h-4 rounded-md border flex items-center justify-center shrink-0 ${
+                                  isSelected
+                                    ? 'bg-blue-600 border-blue-600 text-white'
+                                    : 'border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900'
+                                }`}
+                              >
+                                {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
+                              </span>
+                              <UserAvatar user={u} size="sm" />
+                              <div className="min-w-0">
+                                <span className="text-xs font-bold text-slate-900 dark:text-slate-100 block truncate">
+                                  {u.name}
+                                </span>
+                                <span className="text-[10px] text-slate-500 block truncate">
+                                  {u.email || u.username}
+                                </span>
+                              </div>
+                            </button>
+
+                            {isSelected ? (
+                              <select
+                                value={roleVal === 'owner' ? 'admin' : roleVal}
+                                onChange={(e) =>
+                                  setEnrollWsSelection((prev) => ({
+                                    ...prev,
+                                    [u.id]: e.target.value as WorkspaceRole,
+                                  }))
+                                }
+                                className="text-[11px] px-2 py-1 rounded-lg border border-blue-200 dark:border-blue-800 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 font-medium"
+                              >
+                                <option value="admin">Administrador</option>
+                                <option value="member">Membro</option>
+                                <option value="production">Produção</option>
+                                <option value="viewer">Visualizador</option>
+                              </select>
+                            ) : (
+                              <button
+                                type="button"
+                                disabled={isSavingWsEnroll}
+                                onClick={() =>
+                                  handleEnrollIntoTargetWs([
+                                    { userId: u.id, role: enrollWsDefaultRole },
+                                  ])
+                                }
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/60 hover:bg-blue-600 hover:text-white border border-blue-200 dark:border-blue-800 transition-colors cursor-pointer"
+                              >
+                                <UserPlus className="w-3 h-3" />
+                                <span>Inscrever</span>
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <div className="px-5 py-3.5 border-t border-slate-100 dark:border-slate-800 flex items-center justify-end gap-2 bg-slate-50/70 dark:bg-slate-900/80">
+                <button
+                  type="button"
+                  disabled={isSavingWsEnroll}
+                  onClick={() => setEnrollTargetWs(null)}
+                  className="px-3.5 py-2 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-slate-800 cursor-pointer"
+                >
+                  Fechar
+                </button>
+                {selectedCount > 0 && (
+                  <button
+                    type="button"
+                    disabled={isSavingWsEnroll}
+                    onClick={() =>
+                      handleEnrollIntoTargetWs(
+                        Object.entries(enrollWsSelection).map(([userId, role]) => ({
+                          userId,
+                          role,
+                        }))
+                      )
+                    }
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 shadow-xs cursor-pointer"
+                  >
+                    {isSavingWsEnroll && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                    <span>Inscrever Selecionados ({selectedCount})</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Modal de Limpeza Geral de Dados de Teste */}
       {isResetModalOpen && (

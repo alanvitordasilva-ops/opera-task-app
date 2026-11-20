@@ -807,6 +807,27 @@ export default function App() {
     return StorageService.getSwitchableUsers(currentWorkspace, currentUser, users);
   }, [currentWorkspace, currentUser, users]);
 
+  // Base completa de usuários cadastrados elegíveis para inscrição em workspaces novos ou existentes
+  const enrollableUsers = useMemo(() => {
+    return StorageService.getEnrollableUsers(currentUser, users);
+  }, [currentUser, users]);
+
+  // Atualiza a lista de usuários cadastrados a partir do banco (servidor central / Supabase) ao abrir modais de gestão
+  useEffect(() => {
+    if (!isCreateWorkspaceModalOpen && !isWorkspaceModalOpen && !isMasterModalOpen) return;
+    let cancelled = false;
+    StorageService.fetchRegisteredUsersCloud()
+      .then((freshUsers) => {
+        if (!cancelled && Array.isArray(freshUsers) && freshUsers.length > 0) {
+          setUsers(freshUsers);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [isCreateWorkspaceModalOpen, isWorkspaceModalOpen, isMasterModalOpen]);
+
   // Papel do usuário atual no workspace ativo
   const currentUserRole: WorkspaceRole = useMemo(() => {
     return getUserRoleInWorkspace(currentWorkspace, currentUser, users);
@@ -1715,8 +1736,14 @@ export default function App() {
     }
   }, [isMasterModalOpen, currentUser]);
 
-  const handleCreateWorkspace = async (name: string, description: string, color: string) => {
+  const handleCreateWorkspace = async (
+    name: string,
+    description: string,
+    color: string,
+    initialMembers?: Array<{ userId: string; role: WorkspaceRole }>
+  ) => {
     try {
+      const nowIso = new Date().toISOString();
       const newWsId = `ws-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
       const assignedCompId = currentUser.companyId || currentUser.tenantId || newWsId;
       const baseSlug =
@@ -1730,6 +1757,23 @@ export default function App() {
         (max, w) => (typeof w.orderIndex === 'number' && w.orderIndex > max ? w.orderIndex : max),
         workspaces.length - 1
       );
+
+      const memberEntries: Workspace['members'] = [
+        { userId: currentUser.id, role: 'owner' as const, joinedAt: nowIso },
+      ];
+      const extraMembers = (initialMembers || []).filter(
+        (m) => m?.userId && m.userId !== currentUser.id
+      );
+      extraMembers.forEach((m) => {
+        if (!memberEntries.some((existing) => existing.userId === m.userId)) {
+          memberEntries.push({
+            userId: m.userId,
+            role: m.role || 'member',
+            joinedAt: nowIso,
+          });
+        }
+      });
+
       const newWs: Workspace = {
         id: newWsId,
         name,
@@ -1740,16 +1784,45 @@ export default function App() {
         companyId: assignedCompId,
         clientStatus: 'active',
         clientPlan: 'profissional',
-        members: [{ userId: currentUser.id, role: 'owner' as const, joinedAt: new Date().toISOString() }],
-        createdAt: new Date().toISOString(),
+        members: memberEntries,
+        createdAt: nowIso,
         orderIndex: maxOrder + 1,
       };
 
-      // 1. Salva imediatamente no cache local e no banco de dados Supabase (workspace antes do projeto)
+      // 1. Salva imediatamente no cache local e no banco de dados Supabase (workspace + workspace_members antes do projeto)
       const res = await StorageService.createWorkspaceAsync(newWs);
       const createdWs = res.workspace || newWs;
 
-      // 2. Atualiza estados React (workspaces, workspace ativo, quadros e clientes)
+      // 2. Atualiza workspaceIds dos usuários inscritos já na criação
+      if (extraMembers.length > 0) {
+        const enrolledSet = new Set(extraMembers.map((m) => m.userId));
+        const updatedUsers = StorageService.getUsers().map((u) => {
+          if (!enrolledSet.has(u.id)) return u;
+          const prevWsIds = Array.isArray(u.workspaceIds)
+            ? u.workspaceIds
+            : u.workspaceId
+            ? [u.workspaceId]
+            : [];
+          return {
+            ...u,
+            workspaceId: u.workspaceId || createdWs.id,
+            workspaceIds: Array.from(new Set([...prevWsIds, createdWs.id])),
+          };
+        });
+        StorageService.saveUsers(updatedUsers, true);
+        setUsers(updatedUsers);
+        extraMembers.forEach((m) => {
+          const roleLabel = ROLE_CONFIG[m.role]?.label || m.role;
+          sendNotification(
+            m.userId,
+            'status_change',
+            'Novo Workspace Atribuído!',
+            `Você foi inscrito no workspace "${createdWs.name}" com o papel ${roleLabel}.`
+          );
+        });
+      }
+
+      // 3. Atualiza estados React (workspaces, workspace ativo, quadros e clientes)
       setWorkspaces((prev) => {
         const exists = prev.some((w) => w.id === createdWs.id);
         return exists ? prev.map((w) => (w.id === createdWs.id ? createdWs : w)) : [...prev, createdWs];
@@ -1760,11 +1833,18 @@ export default function App() {
       setClients(StorageService.getClients());
       setSelectedProjectId(res.project?.id || 'all');
 
-      recordActivity(`criou o workspace "${createdWs.name}"`);
+      recordActivity(
+        extraMembers.length > 0
+          ? `criou o workspace "${createdWs.name}" e inscreveu ${extraMembers.length} usuário(s)`
+          : `criou o workspace "${createdWs.name}"`
+      );
 
       showToast({
         type: 'success',
-        message: `Workspace "${createdWs.name}" criado com sucesso!`,
+        message:
+          extraMembers.length > 0
+            ? `Workspace "${createdWs.name}" criado com ${extraMembers.length} usuário(s) inscrito(s)!`
+            : `Workspace "${createdWs.name}" criado com sucesso!`,
       });
     } catch (err: any) {
       console.error('[OperaTask] Erro ao criar workspace:', err);
@@ -1924,6 +2004,58 @@ export default function App() {
         `Você foi adicionado à equipe "${currentWorkspace.name}" com o cargo ${roleLabel}`
       );
     }
+  };
+
+  const handleEnrollUsersInWorkspace = async (
+    entries: Array<{ userId: string; role: WorkspaceRole }>
+  ) => {
+    if (!entries || entries.length === 0) return;
+
+    // Valida limite de membros do plano da empresa (Master possui acesso irrestrito)
+    if (!isUserMaster(currentUser)) {
+      const limitCheck = StorageService.validateWorkspaceLimit(currentWorkspace.id, 'invite_member');
+      if (!limitCheck.allowed) {
+        setPlanLimitState({
+          isOpen: true,
+          limitType: 'invite_member',
+          currentCount: limitCheck.currentCount,
+          maxLimit: limitCheck.maxLimit,
+          planName: limitCheck.planName,
+          customMessage: limitCheck.reason,
+        });
+        return;
+      }
+    }
+
+    const res = await StorageService.enrollUsersInWorkspaceAsync(currentWorkspace.id, entries);
+    setWorkspaces(res.workspaces);
+    setUsers(res.users);
+    if (res.updatedWorkspace) {
+      setCurrentWorkspace(res.updatedWorkspace);
+    }
+
+    entries.forEach((entry) => {
+      const targetUser = res.users.find((u) => u.id === entry.userId);
+      const roleLabel = ROLE_CONFIG[entry.role]?.label || entry.role;
+      if (targetUser) {
+        recordActivity(`inscreveu ${targetUser.name} (${roleLabel}) no workspace "${currentWorkspace.name}"`);
+        sendNotification(
+          targetUser.id,
+          'status_change',
+          'Você foi inscrito em um Workspace!',
+          `Você agora tem acesso ao workspace "${currentWorkspace.name}" como ${roleLabel}.`
+        );
+      }
+    });
+
+    const enrolledCount = res.enrolledIds.length || entries.length;
+    showToast({
+      type: 'success',
+      message:
+        enrolledCount === 1
+          ? `Usuário inscrito no workspace "${currentWorkspace.name}" com sucesso!`
+          : `${enrolledCount} usuários inscritos no workspace "${currentWorkspace.name}" com sucesso!`,
+    });
   };
 
   const handleChangeMemberRole = (userId: string, newRole: WorkspaceRole) => {
@@ -3039,12 +3171,14 @@ export default function App() {
         isOpen={isWorkspaceModalOpen}
         onClose={() => setIsWorkspaceModalOpen(false)}
         workspace={currentWorkspace}
-        allUsers={switchableUsers}
+        allUsers={users}
+        registeredUsers={enrollableUsers}
         currentUserId={currentUser.id}
         currentUser={currentUser}
         allWorkspaces={userVisibleWorkspaces}
         onSaveWorkspace={handleSaveWorkspace}
         onInviteMember={handleInviteMember}
+        onEnrollUsers={handleEnrollUsersInWorkspace}
         onChangeMemberRole={handleChangeMemberRole}
         onRemoveMember={handleRemoveMember}
         onDeleteWorkspace={handleDeleteWorkspace}
@@ -3090,6 +3224,8 @@ export default function App() {
       <CreateWorkspaceModal
         isOpen={isCreateWorkspaceModalOpen}
         onClose={() => setIsCreateWorkspaceModalOpen(false)}
+        availableUsers={enrollableUsers}
+        currentUserId={currentUser.id}
         onCreate={handleCreateWorkspace}
       />
 
@@ -3152,6 +3288,10 @@ export default function App() {
         onUpdateWorkspaces={(updated) => {
           setWorkspaces(updated);
           StorageService.saveWorkspaces(updated);
+          const refreshedCurrentWs = updated.find((w) => w.id === currentWorkspace.id);
+          if (refreshedCurrentWs) {
+            setCurrentWorkspace(refreshedCurrentWs);
+          }
         }}
         onUpdateProjects={(updated) => {
           setProjects(updated);

@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Workspace, User, WorkspaceRole } from '../types/index.ts';
-import { X, Users, UserPlus, Shield, Trash2, Check, Mail, Building, Lock, AlertTriangle, ShieldAlert } from 'lucide-react';
+import { X, Users, UserPlus, Shield, Trash2, Check, Mail, Building, Lock, AlertTriangle, ShieldAlert, Search, UserCheck, Loader2 } from 'lucide-react';
 import {
   ROLE_CONFIG,
   COLOR_PALETTE,
@@ -20,27 +20,38 @@ interface WorkspaceModalProps {
   onClose: () => void;
   workspace: Workspace;
   allUsers: User[];
+  registeredUsers?: User[];
   currentUserId: string;
   currentUser?: User;
   allWorkspaces?: Workspace[];
   onSaveWorkspace: (data: Partial<Workspace>) => void;
   onInviteMember: (email: string, role: WorkspaceRole) => void;
+  onEnrollUsers?: (entries: Array<{ userId: string; role: WorkspaceRole }>) => Promise<void> | void;
   onChangeMemberRole: (userId: string, newRole: WorkspaceRole) => void;
   onRemoveMember: (userId: string) => void;
   onDeleteWorkspace?: (workspaceId: string) => void;
   onUserCreated?: (newUser: User, role: WorkspaceRole, workspaceId: string, workspaceIds?: string[]) => void;
 }
 
+const normalizeEnrollRole = (role?: string): WorkspaceRole => {
+  if (role === 'admin' || role === 'administrador') return 'admin';
+  if (role === 'production' || role === 'producao') return 'production';
+  if (role === 'viewer' || role === 'visualizador') return 'viewer';
+  return 'member';
+};
+
 export const WorkspaceModal: React.FC<WorkspaceModalProps> = ({
   isOpen,
   onClose,
   workspace,
   allUsers,
+  registeredUsers,
   currentUserId,
   currentUser,
   allWorkspaces,
   onSaveWorkspace,
   onInviteMember,
+  onEnrollUsers,
   onChangeMemberRole,
   onRemoveMember,
   onDeleteWorkspace,
@@ -59,6 +70,12 @@ export const WorkspaceModal: React.FC<WorkspaceModalProps> = ({
   // Modal de cadastro de novos usuários pelo Dono/Admin
   const [isRegisterUserOpen, setIsRegisterUserOpen] = useState(false);
 
+  // Inscrição de usuários já cadastrados no banco de dados
+  const [enrollSearch, setEnrollSearch] = useState('');
+  const [defaultEnrollRole, setDefaultEnrollRole] = useState<WorkspaceRole>('member');
+  const [selectedToEnroll, setSelectedToEnroll] = useState<Record<string, WorkspaceRole>>({});
+  const [isEnrolling, setIsEnrolling] = useState(false);
+
   // Sincroniza campos quando o modal abre ou o workspace ativo muda
   useEffect(() => {
     setName(workspace.name || '');
@@ -66,7 +83,55 @@ export const WorkspaceModal: React.FC<WorkspaceModalProps> = ({
     setLogoColor(workspace.logoColor || '#173653');
     setIsConfirmingDelete(false);
     setDeleteConfirmText('');
+    setEnrollSearch('');
+    setSelectedToEnroll({});
+    setIsEnrolling(false);
   }, [workspace.id, workspace.name, workspace.description, workspace.logoColor, isOpen]);
+
+  // Base unificada de usuários para exibição de membros e inscrição
+  const userLookupPool = useMemo(() => {
+    const map = new Map<string, User>();
+    for (const u of allUsers || []) {
+      if (u?.id) map.set(u.id, u);
+    }
+    for (const u of registeredUsers || []) {
+      if (u?.id) map.set(u.id, { ...map.get(u.id), ...u });
+    }
+    return Array.from(map.values());
+  }, [allUsers, registeredUsers]);
+
+  // Usuários cadastrados no banco que AINDA NÃO estão atribuídos a este workspace
+  const unassignedUsers = useMemo(() => {
+    const memberIdSet = new Set<string>(
+      (workspace.members || []).map((m) => (m.userId || '').trim().toLowerCase()).filter(Boolean)
+    );
+    if (workspace.ownerId) {
+      memberIdSet.add(workspace.ownerId.trim().toLowerCase());
+    }
+    const sourceList = registeredUsers && registeredUsers.length > 0 ? registeredUsers : allUsers;
+    return (sourceList || []).filter((u) => {
+      if (!u || !u.id) return false;
+      const uid = u.id.trim().toLowerCase();
+      const uEmail = (u.email || '').trim().toLowerCase();
+      const uUsername = (u.username || '').trim().toLowerCase();
+      if (memberIdSet.has(uid)) return false;
+      if (uEmail && memberIdSet.has(uEmail)) return false;
+      if (uUsername && memberIdSet.has(uUsername)) return false;
+      return true;
+    });
+  }, [registeredUsers, allUsers, workspace.members, workspace.ownerId]);
+
+  const filteredUnassignedUsers = useMemo(() => {
+    const q = enrollSearch.trim().toLowerCase();
+    if (!q) return unassignedUsers;
+    return unassignedUsers.filter(
+      (u) =>
+        (u.name || '').toLowerCase().includes(q) ||
+        (u.email || '').toLowerCase().includes(q) ||
+        (u.username || '').toLowerCase().includes(q) ||
+        (u.title || '').toLowerCase().includes(q)
+    );
+  }, [unassignedUsers, enrollSearch]);
 
   if (!isOpen) return null;
 
@@ -103,7 +168,47 @@ export const WorkspaceModal: React.FC<WorkspaceModalProps> = ({
 
 
 
-  const getMemberUser = (userId: string) => allUsers.find((u) => u.id === userId);
+  const getMemberUser = (userId: string) => userLookupPool.find((u) => u.id === userId);
+
+  const toggleEnrollSelection = (user: User) => {
+    setSelectedToEnroll((prev) => {
+      const next = { ...prev };
+      if (next[user.id]) {
+        delete next[user.id];
+      } else {
+        next[user.id] = user.tipo ? normalizeEnrollRole(user.tipo) : defaultEnrollRole;
+      }
+      return next;
+    });
+  };
+
+  const handleEnrollEntries = async (entries: Array<{ userId: string; role: WorkspaceRole }>) => {
+    if (entries.length === 0 || isEnrolling) return;
+    setIsEnrolling(true);
+    try {
+      if (onEnrollUsers) {
+        await onEnrollUsers(entries);
+      } else {
+        const nowIso = new Date().toISOString();
+        const existingIds = new Set((workspace.members || []).map((m) => m.userId));
+        const additions = entries
+          .filter((e) => !existingIds.has(e.userId))
+          .map((e) => ({ userId: e.userId, role: e.role, joinedAt: nowIso }));
+        if (additions.length > 0) {
+          onSaveWorkspace({ members: [...(workspace.members || []), ...additions] });
+        }
+      }
+      setSelectedToEnroll((prev) => {
+        const next = { ...prev };
+        entries.forEach((e) => delete next[e.userId]);
+        return next;
+      });
+    } finally {
+      setIsEnrolling(false);
+    }
+  };
+
+  const selectedEnrollCount = Object.keys(selectedToEnroll).length;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs transition-opacity animate-in fade-in duration-200">
@@ -191,6 +296,176 @@ export const WorkspaceModal: React.FC<WorkspaceModalProps> = ({
                     <UserPlus className="w-4 h-4 text-[#34B1AC]" />
                     <span>Cadastrar novo usuário</span>
                   </button>
+                </div>
+              )}
+
+              {/* Inscrever Usuários Já Cadastrados no Banco de Dados */}
+              {isAdminOrOwner && (
+                <div className="p-4 sm:p-5 rounded-2xl border border-blue-200/80 dark:border-blue-900/50 bg-blue-50/40 dark:bg-blue-950/15 space-y-3 shadow-xs">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="space-y-0.5">
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-blue-900 dark:text-blue-300 flex items-center gap-1.5">
+                        <UserCheck className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                        <span>Inscrever Usuário Já Cadastrado</span>
+                        <span className="ml-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 dark:bg-blue-900/70 text-blue-700 dark:text-blue-300">
+                          {unassignedUsers.length} disponíve{unassignedUsers.length === 1 ? 'l' : 'is'}
+                        </span>
+                      </h3>
+                      <p className="text-xs text-slate-600 dark:text-slate-400">
+                        Selecione usuários existentes no banco de dados que ainda não estão atribuídos a este workspace.
+                      </p>
+                    </div>
+
+                    {selectedEnrollCount > 0 && (
+                      <button
+                        type="button"
+                        disabled={isEnrolling}
+                        onClick={() =>
+                          handleEnrollEntries(
+                            Object.entries(selectedToEnroll).map(([userId, role]) => ({
+                              userId,
+                              role,
+                            }))
+                          )
+                        }
+                        className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 shadow-xs transition-all shrink-0 cursor-pointer"
+                      >
+                        {isEnrolling ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Check className="w-3.5 h-3.5" />
+                        )}
+                        <span>
+                          Inscrever Selecionados ({selectedEnrollCount})
+                        </span>
+                      </button>
+                    )}
+                  </div>
+
+                  {unassignedUsers.length === 0 ? (
+                    <div className="text-xs text-slate-500 dark:text-slate-400 bg-white/70 dark:bg-slate-900/50 border border-slate-200/70 dark:border-slate-800 rounded-xl px-3.5 py-3 flex items-center gap-2">
+                      <Check className="w-4 h-4 text-emerald-500 shrink-0" />
+                      <span>Todos os usuários cadastrados no banco de dados já estão inscritos neste workspace.</span>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                        <div className="relative flex-1">
+                          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
+                          <input
+                            type="text"
+                            value={enrollSearch}
+                            onChange={(e) => setEnrollSearch(e.target.value)}
+                            placeholder="Buscar usuário cadastrado por nome, login ou e-mail..."
+                            className="w-full pl-8 pr-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 text-xs focus:ring-2 focus:ring-blue-500"
+                          />
+                        </div>
+                        <select
+                          value={defaultEnrollRole}
+                          onChange={(e) => setDefaultEnrollRole(e.target.value as WorkspaceRole)}
+                          title="Papel padrão para inscrição rápida"
+                          className="text-xs px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 font-medium"
+                        >
+                          <option value="production">Papel: Produção</option>
+                          <option value="member">Papel: Membro</option>
+                          <option value="admin">Papel: Administrador</option>
+                          <option value="viewer">Papel: Visualizador</option>
+                        </select>
+                      </div>
+
+                      <div className="max-h-52 overflow-y-auto space-y-1.5 pr-1">
+                        {filteredUnassignedUsers.length === 0 ? (
+                          <div className="text-center py-4 text-xs text-slate-400">
+                            Nenhum usuário cadastrado encontrado para "{enrollSearch}".
+                          </div>
+                        ) : (
+                          filteredUnassignedUsers.map((u) => {
+                            const isChecked = Boolean(selectedToEnroll[u.id]);
+                            const chosenRole =
+                              selectedToEnroll[u.id] ||
+                              (u.tipo ? normalizeEnrollRole(u.tipo) : defaultEnrollRole);
+
+                            return (
+                              <div
+                                key={u.id}
+                                className={`flex items-center justify-between gap-2 p-2.5 rounded-xl border transition-colors ${
+                                  isChecked
+                                    ? 'border-blue-400 dark:border-blue-600 bg-white dark:bg-slate-900 shadow-2xs'
+                                    : 'border-slate-200/80 dark:border-slate-800 bg-white/80 dark:bg-slate-900/60 hover:border-blue-300 dark:hover:border-blue-800'
+                                }`}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => toggleEnrollSelection(u)}
+                                  className="flex items-center gap-2.5 min-w-0 flex-1 text-left cursor-pointer"
+                                >
+                                  <span
+                                    className={`w-4 h-4 rounded-md border flex items-center justify-center shrink-0 transition-colors ${
+                                      isChecked
+                                        ? 'bg-blue-600 border-blue-600 text-white'
+                                        : 'border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800'
+                                    }`}
+                                  >
+                                    {isChecked && <Check className="w-3 h-3 stroke-[3]" />}
+                                  </span>
+                                  <div
+                                    className="w-7 h-7 rounded-full flex items-center justify-center text-white text-[11px] font-bold shrink-0"
+                                    style={{ backgroundColor: u.avatarColor || '#34B1AC' }}
+                                  >
+                                    {getInitials(u.name)}
+                                  </div>
+                                  <div className="min-w-0">
+                                    <span className="text-xs font-bold text-slate-900 dark:text-slate-100 block truncate">
+                                      {u.name}
+                                    </span>
+                                    <span className="text-[11px] text-slate-500 dark:text-slate-400 block truncate">
+                                      {u.email || u.username}
+                                      {u.title ? ` · ${u.title}` : ''}
+                                    </span>
+                                  </div>
+                                </button>
+
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  {isChecked ? (
+                                    <select
+                                      value={chosenRole}
+                                      onChange={(e) =>
+                                        setSelectedToEnroll((prev) => ({
+                                          ...prev,
+                                          [u.id]: e.target.value as WorkspaceRole,
+                                        }))
+                                      }
+                                      className="text-[11px] px-2 py-1 rounded-lg border border-blue-200 dark:border-blue-800 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-medium"
+                                    >
+                                      <option value="admin">Administrador</option>
+                                      <option value="member">Membro</option>
+                                      <option value="production">Produção</option>
+                                      <option value="viewer">Visualizador</option>
+                                    </select>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      disabled={isEnrolling}
+                                      onClick={() =>
+                                        handleEnrollEntries([
+                                          { userId: u.id, role: defaultEnrollRole },
+                                        ])
+                                      }
+                                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/60 hover:bg-blue-600 hover:text-white border border-blue-200 dark:border-blue-800 transition-colors disabled:opacity-50 cursor-pointer"
+                                      title={`Inscrever ${u.name} como ${ROLE_CONFIG[defaultEnrollRole]?.label || defaultEnrollRole}`}
+                                    >
+                                      <UserPlus className="w-3 h-3" />
+                                      <span>Inscrever</span>
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
 

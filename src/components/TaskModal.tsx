@@ -39,6 +39,7 @@ import {
   Sparkles,
   Factory,
   Lock,
+  Check,
 } from 'lucide-react';
 import {
   PRIORITY_CONFIG,
@@ -135,6 +136,8 @@ export const TaskModal: React.FC<TaskModalProps> = ({
   // Checklist
   const [checklist, setChecklist] = useState<ChecklistItem[]>([]);
   const [newChecklistText, setNewChecklistText] = useState('');
+  const [editingChecklistItemId, setEditingChecklistItemId] = useState<string | null>(null);
+  const [editingChecklistText, setEditingChecklistText] = useState('');
 
   // Comentários & Menções
   const [comments, setComments] = useState<Comment[]>([]);
@@ -239,6 +242,8 @@ export const TaskModal: React.FC<TaskModalProps> = ({
       setAssigneeIds(taskToEdit.assigneeIds || []);
       setSelectedTagIds(taskToEdit.tags?.map((t) => t.id) || []);
       setChecklist(taskToEdit.checklist || []);
+      setEditingChecklistItemId(null);
+      setEditingChecklistText('');
       setComments(taskToEdit.comments || []);
       setAttachments(taskToEdit.attachments || []);
       setFrameColor(taskToEdit.frameColor);
@@ -262,6 +267,8 @@ export const TaskModal: React.FC<TaskModalProps> = ({
       setAssigneeIds([currentUserRef.current.id]);
       setSelectedTagIds([]);
       setChecklist([]);
+      setEditingChecklistItemId(null);
+      setEditingChecklistText('');
       setComments([]);
       setAttachments([]);
       setFrameColor(undefined);
@@ -294,6 +301,15 @@ export const TaskModal: React.FC<TaskModalProps> = ({
     const isCompleted = targetCol?.isCompletedColumn || false;
     const finalDueDate = computeFinalDueDate(dueDateDate, dueDateTime);
 
+    const effectiveChecklist =
+      editingChecklistItemId && editingChecklistText.trim()
+        ? checklist.map((item) =>
+            item.id === editingChecklistItemId
+              ? { ...item, title: editingChecklistText.trim() }
+              : item
+          )
+        : checklist;
+
     return {
       ...(isExisting && taskToEdit ? { id: taskToEdit.id } : {}),
       title: title.trim(),
@@ -304,7 +320,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
       dueDate: finalDueDate,
       assigneeIds,
       tags: selectedTags,
-      checklist,
+      checklist: effectiveChecklist,
       attachments,
       comments,
       isCompleted,
@@ -536,8 +552,34 @@ export const TaskModal: React.FC<TaskModalProps> = ({
     );
   };
 
+  const handleStartEditChecklistItem = (item: ChecklistItem) => {
+    if (!canDeleteChecklist(currentUserRole, isMaster) || isCompletedBlocked) return;
+    setEditingChecklistItemId(item.id);
+    setEditingChecklistText(item.title);
+  };
+
+  const handleCommitEditChecklistItem = (itemId: string) => {
+    const trimmed = editingChecklistText.trim();
+    if (trimmed) {
+      setChecklist((prev) =>
+        prev.map((item) => (item.id === itemId ? { ...item, title: trimmed } : item))
+      );
+    }
+    setEditingChecklistItemId(null);
+    setEditingChecklistText('');
+  };
+
+  const handleCancelEditChecklistItem = () => {
+    setEditingChecklistItemId(null);
+    setEditingChecklistText('');
+  };
+
   const handleDeleteChecklistItem = (itemId: string) => {
     setChecklist((prev) => prev.filter((item) => item.id !== itemId));
+    if (editingChecklistItemId === itemId) {
+      setEditingChecklistItemId(null);
+      setEditingChecklistText('');
+    }
   };
 
   // Comentários & Menções
@@ -853,47 +895,105 @@ export const TaskModal: React.FC<TaskModalProps> = ({
 
                 {/* Itens do Checklist */}
                 <div className="space-y-1.5 mb-3">
-                  {checklist.map((item) => (
-                    <div
-                      key={item.id}
-                      className="group flex items-center justify-between p-2 rounded-lg hover:bg-white dark:hover:bg-slate-800 transition-colors"
-                    >
-                      <label className="flex items-center gap-2.5 flex-1 cursor-pointer min-w-0">
-                        <input
-                          type="checkbox"
-                          checked={item.isCompleted}
-                          onChange={() => handleToggleChecklistItem(item.id)}
-                          className="w-4 h-4 rounded-sm text-blue-600 focus:ring-blue-500 border-slate-300 dark:border-slate-600"
-                        />
-                        <span
-                          className={`text-xs ${
-                            item.isCompleted
-                              ? 'line-through text-slate-400 dark:text-slate-500'
-                              : 'text-slate-800 dark:text-slate-200'
-                          } break-words`}
-                        >
-                          {item.title}
-                        </span>
-                      </label>
-                      {canDeleteChecklist(currentUserRole) && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setDeleteConfirmState({
-                              isOpen: true,
-                              type: 'checklist',
-                              id: item.id,
-                              name: item.title,
-                            })
-                          }
-                          className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-red-600 dark:hover:text-red-400 rounded hover:bg-red-50 dark:hover:bg-red-950/30 transition-all"
-                          title="Excluir item do checklist"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </div>
-                  ))}
+                  {checklist.map((item) => {
+                    const isEditingItem = editingChecklistItemId === item.id;
+                    const canManageChecklistItem =
+                      canDeleteChecklist(currentUserRole, isMaster) && !isCompletedBlocked;
+
+                    return (
+                      <div
+                        key={item.id}
+                        className="group flex items-center justify-between gap-2 p-2 rounded-lg hover:bg-white dark:hover:bg-slate-800 transition-colors"
+                      >
+                        <div className="flex items-center gap-2.5 flex-1 min-w-0">
+                          <input
+                            type="checkbox"
+                            checked={item.isCompleted}
+                            onChange={() => handleToggleChecklistItem(item.id)}
+                            className="w-4 h-4 rounded-sm text-blue-600 focus:ring-blue-500 border-slate-300 dark:border-slate-600 shrink-0 cursor-pointer"
+                            aria-label={`Marcar "${item.title}" como concluído`}
+                          />
+
+                          {isEditingItem ? (
+                            <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                              <input
+                                type="text"
+                                autoFocus
+                                value={editingChecklistText}
+                                onChange={(e) => setEditingChecklistText(e.target.value)}
+                                onBlur={() => handleCommitEditChecklistItem(item.id)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    handleCommitEditChecklistItem(item.id);
+                                  } else if (e.key === 'Escape') {
+                                    e.preventDefault();
+                                    handleCancelEditChecklistItem();
+                                  }
+                                }}
+                                className="flex-1 min-w-0 px-2.5 py-1 text-xs rounded-lg border border-blue-500 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                                placeholder="Nome do item do checklist"
+                              />
+                              <button
+                                type="button"
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => handleCommitEditChecklistItem(item.id)}
+                                className="p-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white shrink-0 transition-colors cursor-pointer"
+                                title="Salvar edição do item"
+                              >
+                                <Check className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ) : canManageChecklistItem ? (
+                            <button
+                              type="button"
+                              onClick={() => handleStartEditChecklistItem(item)}
+                              title="Toque para editar a nomenclatura"
+                              className={`flex-1 min-w-0 text-left text-xs break-words rounded-md px-1.5 py-0.5 -mx-1.5 hover:bg-slate-100 dark:hover:bg-slate-700/70 transition-colors cursor-text ${
+                                item.isCompleted
+                                  ? 'line-through text-slate-400 dark:text-slate-500'
+                                  : 'text-slate-800 dark:text-slate-200'
+                              }`}
+                            >
+                              {item.title}
+                            </button>
+                          ) : (
+                            <span
+                              className={`flex-1 min-w-0 text-xs break-words ${
+                                item.isCompleted
+                                  ? 'line-through text-slate-400 dark:text-slate-500'
+                                  : 'text-slate-800 dark:text-slate-200'
+                              }`}
+                            >
+                              {item.title}
+                            </span>
+                          )}
+                        </div>
+
+                        {canManageChecklistItem && (
+                          <button
+                            type="button"
+                            onMouseDown={(e) => {
+                              if (isEditingItem) e.preventDefault();
+                            }}
+                            onClick={() =>
+                              setDeleteConfirmState({
+                                isOpen: true,
+                                type: 'checklist',
+                                id: item.id,
+                                name: item.title,
+                              })
+                            }
+                            className="p-1.5 text-slate-400 hover:text-red-600 dark:hover:text-red-400 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors shrink-0 cursor-pointer"
+                            title="Excluir item do checklist"
+                            aria-label={`Excluir "${item.title}"`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
 
                 {/* Adicionar Item ao Checklist */}

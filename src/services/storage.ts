@@ -1184,6 +1184,127 @@ export const StorageService = {
   },
 
   /**
+   * Retorna todos os usuários cadastrados no banco de dados elegíveis para inscrição
+   * em workspaces novos ou existentes (ocultando contas Master para usuários não-Master).
+   */
+  getEnrollableUsers(currentViewingUser: User, allUsersList?: User[]): User[] {
+    const users = allUsersList || this.getUsers();
+    const isViewerMaster = isUserMaster(currentViewingUser);
+
+    return users.filter((u) => {
+      if (!u || !u.id) return false;
+      if (u.status === 'inactive' || u.isActive === false) return false;
+      if (!isViewerMaster) {
+        if (
+          isUserMaster(u) ||
+          u.systemRole === 'master' ||
+          u.isSuperAdmin ||
+          u.email?.toLowerCase().includes('alanvitordasilva') ||
+          u.username?.toLowerCase() === 'alan'
+        ) {
+          return false;
+        }
+      }
+      return true;
+    });
+  },
+
+  /**
+   * Atualiza o cache local de usuários cadastrados consultando o servidor central e o Supabase (tabela profiles),
+   * garantindo que a lista de inscrição reflita o banco de dados real.
+   */
+  async fetchRegisteredUsersCloud(): Promise<User[]> {
+    const mergedMap = new Map<string, User>();
+    const existing = this.getUsers();
+    for (const u of existing) {
+      if (u?.id) mergedMap.set(u.id, u);
+    }
+
+    let changed = false;
+
+    // 1. Consulta servidor central (/api/sync/state)
+    if (isServerApiAvailable()) {
+      try {
+        const resp = await fetch('/api/sync/state', {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+        });
+        if (resp.ok) {
+          const json = await resp.json().catch(() => null);
+          const serverUsers: User[] = Array.isArray(json?.users)
+            ? json.users
+            : Array.isArray(json?.data?.users)
+            ? json.data.users
+            : [];
+          for (const su of serverUsers) {
+            if (!su?.id) continue;
+            const prev = mergedMap.get(su.id);
+            if (!prev) {
+              mergedMap.set(su.id, { ...su, status: 'active', isActive: true });
+              changed = true;
+            } else {
+              const combinedWs = Array.from(
+                new Set([...(prev.workspaceIds || []), ...(su.workspaceIds || [])])
+              );
+              mergedMap.set(su.id, {
+                ...prev,
+                ...su,
+                workspaceIds: combinedWs.length > 0 ? combinedWs : prev.workspaceIds || su.workspaceIds,
+              });
+            }
+          }
+        }
+      } catch {
+        // fallback silencioso
+      }
+    }
+
+    // 2. Consulta Supabase (tabela profiles) se conectado
+    if (SupabaseService.isConfigured()) {
+      try {
+        const profiles = await SupabaseService.fetchProfiles();
+        for (const p of profiles) {
+          if (!p?.id) continue;
+          const prev =
+            mergedMap.get(p.id) ||
+            Array.from(mergedMap.values()).find(
+              (u) => p.email && u.email && u.email.toLowerCase() === p.email.toLowerCase()
+            );
+          const pAny = p as any;
+          const mappedUser: User = {
+            ...(prev || {}),
+            id: prev?.id || p.id,
+            name: p.nome || prev?.name || p.email?.split('@')[0] || 'Usuário',
+            username: p.username || prev?.username || p.email || p.id,
+            email: p.email || prev?.email || `${p.id}@operatask.app`,
+            avatarColor: pAny.avatar_color || prev?.avatarColor || '#34B1AC',
+            title: pAny.title || prev?.title || 'Membro da Equipe',
+            tipo: (p.tipo || prev?.tipo || 'membro') as User['tipo'],
+            systemRole: p.tipo === 'master' ? 'master' : prev?.systemRole,
+            isSuperAdmin: p.tipo === 'master' ? true : prev?.isSuperAdmin,
+            companyId: p.company_id || prev?.companyId,
+            tenantId: p.tenant_id || p.company_id || prev?.tenantId,
+            status: 'active',
+            isActive: true,
+            createdAt: p.created_at || prev?.createdAt || new Date().toISOString(),
+          };
+          if (!prev) changed = true;
+          mergedMap.set(mappedUser.id, mappedUser);
+        }
+      } catch {
+        // fallback silencioso
+      }
+    }
+
+    const finalList = Array.from(mergedMap.values());
+    if (changed || finalList.length > existing.length) {
+      localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(finalList));
+      writeIndexedDB(STORAGE_KEYS.USERS, finalList).catch(() => {});
+    }
+    return finalList;
+  },
+
+  /**
    * Zera todos os membros cadastrados no sistema, mantendo exclusivamente a conta Master (Alan Silva).
    * Não apaga a estrutura de Workspaces, Quadros, Colunas, Fichas Técnicas ou Cards.
    */
@@ -1862,6 +1983,232 @@ export const StorageService = {
     }
 
     return { success: true, workspace: updatedWorkspace };
+  },
+
+  /**
+   * Inscrever um ou mais usuários já cadastrados no banco em um workspace existente,
+   * atualizando workspace.members, user.workspaceIds, servidor central, Realtime e Supabase.
+   */
+  async enrollUsersInWorkspaceAsync(
+    workspaceId: string,
+    entries: Array<{ userId: string; role: WorkspaceRole }>
+  ): Promise<{ workspaces: Workspace[]; users: User[]; updatedWorkspace?: Workspace; enrolledIds: string[] }> {
+    const cleanEntries = entries.filter((e) => e && e.userId);
+    if (!workspaceId || cleanEntries.length === 0) {
+      return {
+        workspaces: this.getWorkspaces(),
+        users: this.getUsers(),
+        enrolledIds: [],
+      };
+    }
+
+    const nowIso = new Date().toISOString();
+    const currentWorkspaces = this.getWorkspaces();
+    const currentUsers = this.getUsers();
+    const enrolledIds: string[] = [];
+    let updatedWorkspace: Workspace | undefined;
+
+    const nextWorkspaces = currentWorkspaces.map((ws) => {
+      if (ws.id !== workspaceId) return ws;
+      const membersMap = new Map<string, Workspace['members'][number]>();
+      for (const m of ws.members || []) {
+        if (m?.userId) membersMap.set(m.userId, m);
+      }
+
+      for (const entry of cleanEntries) {
+        const existingMember = membersMap.get(entry.userId);
+        if (!existingMember) {
+          membersMap.set(entry.userId, {
+            userId: entry.userId,
+            role: entry.role || 'member',
+            joinedAt: nowIso,
+          });
+          enrolledIds.push(entry.userId);
+        } else if (existingMember.role !== 'owner' && entry.role && existingMember.role !== entry.role) {
+          membersMap.set(entry.userId, {
+            ...existingMember,
+            role: entry.role,
+          });
+          enrolledIds.push(entry.userId);
+        }
+      }
+
+      updatedWorkspace = {
+        ...ws,
+        members: Array.from(membersMap.values()),
+      };
+      return updatedWorkspace;
+    });
+
+    const entryMap = new Map(cleanEntries.map((e) => [e.userId, e.role]));
+    const nextUsers = currentUsers.map((u) => {
+      if (!entryMap.has(u.id)) return u;
+      const existingWsIds = Array.isArray(u.workspaceIds)
+        ? u.workspaceIds
+        : u.workspaceId
+        ? [u.workspaceId]
+        : [];
+      const mergedWsIds = Array.from(new Set([...existingWsIds, workspaceId]));
+      return {
+        ...u,
+        workspaceId: u.workspaceId || workspaceId,
+        workspaceIds: mergedWsIds,
+        status: 'active' as const,
+        isActive: true,
+      };
+    });
+
+    this.saveWorkspaces(nextWorkspaces, true, { skipCloudPush: true });
+    this.saveUsers(nextUsers, true, { skipCloudPush: true });
+
+    RealtimeService.broadcast('workspaces', nextWorkspaces, {
+      action: 'enroll_members',
+      targetId: workspaceId,
+      userName: updatedWorkspace?.name,
+    });
+    RealtimeService.broadcast('users', nextUsers, {
+      action: 'enroll_members',
+      targetId: workspaceId,
+    });
+
+    if (isServerApiAvailable()) {
+      fetch('/api/sync/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaces: nextWorkspaces,
+          users: nextUsers,
+        }),
+      }).catch(() => {});
+    }
+
+    if (SupabaseService.isConfigured()) {
+      await Promise.all(
+        cleanEntries.map((entry) =>
+          SupabaseService.upsertWorkspaceMember(workspaceId, entry.userId, entry.role || 'member').catch(() => false)
+        )
+      );
+    }
+
+    return {
+      workspaces: nextWorkspaces,
+      users: nextUsers,
+      updatedWorkspace,
+      enrolledIds,
+    };
+  },
+
+  /**
+   * Sincroniza todos os vínculos de workspaces de um usuário específico (inscreve nos selecionados
+   * e remove dos desmarcados, preservando vínculos de Dono).
+   */
+  async syncUserWorkspacesAsync(
+    userId: string,
+    assignments: Array<{ workspaceId: string; role: WorkspaceRole }>
+  ): Promise<{ workspaces: Workspace[]; users: User[]; addedCount: number; removedCount: number }> {
+    const nowIso = new Date().toISOString();
+    const assignmentMap = new Map<string, WorkspaceRole>();
+    for (const a of assignments) {
+      if (a?.workspaceId) assignmentMap.set(a.workspaceId, a.role || 'member');
+    }
+
+    const currentWorkspaces = this.getWorkspaces();
+    const currentUsers = this.getUsers();
+    const toUpsertCloud: Array<{ workspaceId: string; role: WorkspaceRole }> = [];
+    const toRemoveCloud: string[] = [];
+    let addedCount = 0;
+    let removedCount = 0;
+
+    const finalUserWsIds: string[] = [];
+
+    const nextWorkspaces = currentWorkspaces.map((ws) => {
+      const members = Array.isArray(ws.members) ? [...ws.members] : [];
+      const existingIdx = members.findIndex((m) => m.userId === userId);
+      const isOwnerOfWs =
+        ws.ownerId === userId ||
+        (existingIdx !== -1 && (members[existingIdx].role === 'owner' || members[existingIdx].role === 'dono'));
+
+      if (assignmentMap.has(ws.id)) {
+        const chosenRole = isOwnerOfWs ? 'owner' : assignmentMap.get(ws.id) || 'member';
+        finalUserWsIds.push(ws.id);
+        if (existingIdx === -1) {
+          members.push({ userId, role: chosenRole, joinedAt: nowIso });
+          toUpsertCloud.push({ workspaceId: ws.id, role: chosenRole });
+          addedCount += 1;
+        } else if (!isOwnerOfWs && members[existingIdx].role !== chosenRole) {
+          members[existingIdx] = { ...members[existingIdx], role: chosenRole };
+          toUpsertCloud.push({ workspaceId: ws.id, role: chosenRole });
+        }
+        return { ...ws, members };
+      }
+
+      // Não está selecionado: se for dono, preserva vínculo; senão remove
+      if (isOwnerOfWs) {
+        finalUserWsIds.push(ws.id);
+        return ws;
+      }
+
+      if (existingIdx !== -1) {
+        removedCount += 1;
+        toRemoveCloud.push(ws.id);
+        return {
+          ...ws,
+          members: members.filter((m) => m.userId !== userId),
+        };
+      }
+      return ws;
+    });
+
+    const nextUsers = currentUsers.map((u) => {
+      if (u.id !== userId) return u;
+      return {
+        ...u,
+        workspaceId: finalUserWsIds[0] || u.workspaceId,
+        workspaceIds: finalUserWsIds,
+      };
+    });
+
+    this.saveWorkspaces(nextWorkspaces, true, { skipCloudPush: true });
+    this.saveUsers(nextUsers, true, { skipCloudPush: true });
+
+    RealtimeService.broadcast('workspaces', nextWorkspaces, {
+      action: 'sync_user_workspaces',
+      targetId: userId,
+    });
+    RealtimeService.broadcast('users', nextUsers, {
+      action: 'sync_user_workspaces',
+      targetId: userId,
+    });
+
+    if (isServerApiAvailable()) {
+      fetch('/api/sync/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaces: nextWorkspaces,
+          users: nextUsers,
+          replaceAll: true,
+        }),
+      }).catch(() => {});
+    }
+
+    if (SupabaseService.isConfigured()) {
+      await Promise.all([
+        ...toUpsertCloud.map((item) =>
+          SupabaseService.upsertWorkspaceMember(item.workspaceId, userId, item.role).catch(() => false)
+        ),
+        ...toRemoveCloud.map((wsId) =>
+          SupabaseService.removeWorkspaceMember(wsId, userId).catch(() => false)
+        ),
+      ]);
+    }
+
+    return {
+      workspaces: nextWorkspaces,
+      users: nextUsers,
+      addedCount,
+      removedCount,
+    };
   },
 
   /**
