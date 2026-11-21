@@ -3328,6 +3328,18 @@ export default function App() {
         onArchiveTask={handleArchiveTask}
         onCreateTag={handleCreateTag}
         onAddComment={handleAddComment}
+        onCardSentToStock={(taskTitle, projId) => {
+          recordActivity('enviou o card para o estoque', taskTitle, projId);
+          showToast({
+            type: 'success',
+            message: `Card "${taskTitle}" direcionado para a aba Estoque!`,
+            actionLabel: 'Abrir Estoque',
+            onAction: () => {
+              if (projId) setSelectedProjectId(projId);
+              handleViewModeChange('stock');
+            },
+          });
+        }}
       />
 
       <ProjectModal

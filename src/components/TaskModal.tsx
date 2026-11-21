@@ -92,6 +92,7 @@ interface TaskModalProps {
   onArchiveTask?: (taskId: string) => void;
   onCreateTag: (newTag: Tag) => void;
   onAddComment?: (taskId: string, commentText: string, mentionedUserIds: string[]) => void;
+  onCardSentToStock?: (taskTitle: string, projectId: string) => void;
 }
 
 export const TaskModal: React.FC<TaskModalProps> = ({
@@ -111,6 +112,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
   onArchiveTask,
   onCreateTag,
   onAddComment,
+  onCardSentToStock,
 }) => {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -571,13 +573,19 @@ export const TaskModal: React.FC<TaskModalProps> = ({
     }
   };
 
-  const handleSendToStock = () => {
-    if (!canStock || !isCardCompleted) return;
+  const handleSendToStock = (closeModalImmediately = false) => {
+    if (!canStock || !isCardCompleted || isInStock) return;
     const nowIso = new Date().toISOString();
     setIsInStock(true);
     setStockedAt(nowIso);
     setStockedByUserId(currentUser.id);
     setStockedByUserName(currentUser.name);
+
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+    hasDirtyChangesRef.current = false;
 
     setNoFichaAlert(null);
     setProductionSuccessAlert('Card enviado para a aba Estoque!');
@@ -595,6 +603,9 @@ export const TaskModal: React.FC<TaskModalProps> = ({
     const updatedComments = [...comments, newCom];
     setComments(updatedComments);
 
+    const targetProjId = projectId || projects[0]?.id || '';
+    const resolvedTitle = title.trim() || taskToEdit?.title || 'Card';
+
     if (taskToEdit) {
       const selectedTags = tags.filter((t) => selectedTagIds.includes(t.id));
       const finalDueDate = computeFinalDueDate(dueDateDate, dueDateTime);
@@ -603,10 +614,10 @@ export const TaskModal: React.FC<TaskModalProps> = ({
 
       onSaveTask({
         id: taskToEdit.id,
-        title: title.trim() || taskToEdit.title,
+        title: resolvedTitle,
         description: description.trim(),
         priority,
-        projectId: projectId || projects[0]?.id || '',
+        projectId: targetProjId,
         columnId: currentColumnId,
         dueDate: finalDueDate,
         assigneeIds,
@@ -627,6 +638,12 @@ export const TaskModal: React.FC<TaskModalProps> = ({
 
       if (onAddComment) {
         onAddComment(taskToEdit.id, newCommentContent, []);
+      }
+
+      onCardSentToStock?.(resolvedTitle, targetProjId);
+
+      if (closeModalImmediately) {
+        onClose();
       }
     }
   };
@@ -905,6 +922,19 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                     {productionRecords.length}
                   </span>
                 )}
+              </button>
+            )}
+
+            {/* Botão Estoque ao lado de Produzir (visível somente quando o card estiver no quadro Concluído) */}
+            {canStock && isCardCompleted && !isInStock && (
+              <button
+                type="button"
+                onClick={() => handleSendToStock(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 active:scale-98 rounded-lg border border-indigo-500 shadow-xs transition-all cursor-pointer"
+                title="Direcionar este card concluído para a aba Estoque"
+              >
+                <Package className="w-3.5 h-3.5" />
+                <span>Estoque</span>
               </button>
             )}
 
@@ -1240,6 +1270,29 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                           </button>
                         )}
 
+                        {/* Botão Estoque ao lado do Produzir dentro da Ficha Técnica (somente quando card está em Concluído) */}
+                        {canStock && isCardCompleted && (
+                          isInStock ? (
+                            <span
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 rounded-xl"
+                              title="Este card já está na aba Estoque"
+                            >
+                              <Package className="w-3.5 h-3.5" />
+                              <span>No Estoque</span>
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => handleSendToStock(true)}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 active:scale-98 rounded-xl shadow-xs transition-all cursor-pointer"
+                              title="Direcionar este card concluído para a aba Estoque"
+                            >
+                              <Package className="w-3.5 h-3.5" />
+                              <span>Estoque</span>
+                            </button>
+                          )
+                        )}
+
                         {canManageFicha && (
                           <>
                             <button
@@ -1450,7 +1503,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                         Preencha os ingredientes para liberar o botão de cálculo de produção.
                       </span>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <button
                         type="button"
                         onClick={(e) => {
@@ -1463,6 +1516,32 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                         <Factory className="w-3.5 h-3.5" />
                         <span>Produzir</span>
                       </button>
+
+                      {canStock && isCardCompleted && (
+                        isInStock ? (
+                          <span
+                            onClick={(e) => e.stopPropagation()}
+                            className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 rounded-lg"
+                          >
+                            <Package className="w-3.5 h-3.5" />
+                            <span>No Estoque</span>
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleSendToStock(true);
+                            }}
+                            className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 active:scale-98 rounded-lg shadow-xs transition-all cursor-pointer"
+                            title="Direcionar este card concluído para a aba Estoque"
+                          >
+                            <Package className="w-3.5 h-3.5" />
+                            <span>Estoque</span>
+                          </button>
+                        )
+                      )}
+
                       <span className="text-[11px] font-bold text-teal-600 dark:text-teal-400">
                         + Preencher Ficha
                       </span>
@@ -2154,7 +2233,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
         isTaskCompleted={isCardCompleted}
         canAccessStock={canStock}
         isInStock={isInStock}
-        onSendToStock={handleSendToStock}
+        onSendToStock={() => handleSendToStock(false)}
       />
 
       {/* Modal de Confirmação Padronizado */}

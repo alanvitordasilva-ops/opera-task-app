@@ -131,7 +131,7 @@ export const StockView: React.FC<StockViewProps> = ({
                   Nenhum card no estoque
                 </h3>
                 <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm mx-auto leading-relaxed">
-                  Quando um card for concluído, abra a função <strong>Produzir</strong> e clique no botão <strong>Estoque</strong> para registrá-lo neste quadro.
+                  Quando um card estiver no quadro <strong>Concluído</strong>, clique no botão <strong>Estoque</strong> ao lado de <strong>Produzir</strong> na <strong>Ficha Técnica</strong> (ou dentro de <strong>Produzir</strong>) para direcioná-lo para cá.
                 </p>
               </div>
             ) : (
