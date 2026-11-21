@@ -43,6 +43,8 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  Package,
+  RotateCcw,
 } from 'lucide-react';
 import {
   PRIORITY_CONFIG,
@@ -58,6 +60,7 @@ import {
   canDeleteAttachment,
   canManageFichaTecnica,
   canAccessProduction,
+  canAccessStock,
   isUserMaster,
   canModifyCompletedTask,
   isTaskInDoneColumn,
@@ -173,16 +176,30 @@ export const TaskModal: React.FC<TaskModalProps> = ({
   const [productionSuccessAlert, setProductionSuccessAlert] = useState<string | null>(null);
   const [showAllProductionRecords, setShowAllProductionRecords] = useState(false);
 
-  // Permissões de Ficha Técnica e Produção
+  // Estoque
+  const [isInStock, setIsInStock] = useState<boolean>(Boolean(taskToEdit?.isInStock));
+  const [stockedAt, setStockedAt] = useState<string | null | undefined>(taskToEdit?.stockedAt);
+  const [stockedByUserId, setStockedByUserId] = useState<string | undefined>(taskToEdit?.stockedByUserId);
+  const [stockedByUserName, setStockedByUserName] = useState<string | undefined>(taskToEdit?.stockedByUserName);
+
+  // Permissões de Ficha Técnica, Produção e Estoque
   const isMaster = isUserMaster(currentUser);
   const canManageFicha = canManageFichaTecnica(currentUserRole, isMaster);
   const canProduce = canAccessProduction(currentUserRole, isMaster);
+  const canStock = canAccessStock(currentUserRole, isMaster);
 
   // Projeto selecionado atual
   const currentProject = projects.find((p) => p.id === projectId) || projects[0];
 
   // Regras de bloqueio de card concluído
   const canModifyCompleted = canModifyCompletedTask(currentUserRole, isMaster);
+  const currentSelectedCol = currentProject?.columns.find((c) => c.id === columnId);
+  const isCardCompleted = currentSelectedCol
+    ? Boolean(
+        currentSelectedCol.isCompletedColumn ||
+          currentSelectedCol.title.trim().toLowerCase().includes('conclu')
+      )
+    : Boolean(taskToEdit && isTaskInDoneColumn(taskToEdit, currentProject?.columns));
   const isTaskCompleted = taskToEdit
     ? isTaskInDoneColumn(taskToEdit, currentProject?.columns)
     : false;
@@ -254,6 +271,10 @@ export const TaskModal: React.FC<TaskModalProps> = ({
       setFichaTecnica(taskToEdit.fichaTecnica || null);
       setProductionRecords(taskToEdit.productionRecords || []);
       setShowAllProductionRecords(false);
+      setIsInStock(Boolean(taskToEdit.isInStock));
+      setStockedAt(taskToEdit.stockedAt || null);
+      setStockedByUserId(taskToEdit.stockedByUserId);
+      setStockedByUserName(taskToEdit.stockedByUserName);
     } else {
       const latestProjects = projectsRef.current;
       const defProj = defaultProjRef.current;
@@ -280,6 +301,10 @@ export const TaskModal: React.FC<TaskModalProps> = ({
       setFichaTecnica(null);
       setProductionRecords([]);
       setShowAllProductionRecords(false);
+      setIsInStock(false);
+      setStockedAt(null);
+      setStockedByUserId(undefined);
+      setStockedByUserName(undefined);
     }
     setIsCreatingTag(false);
     setShowMentionMenu(false);
@@ -330,6 +355,10 @@ export const TaskModal: React.FC<TaskModalProps> = ({
       attachments,
       comments,
       isCompleted,
+      isInStock,
+      stockedAt: isInStock ? stockedAt || null : null,
+      stockedByUserId: isInStock ? stockedByUserId : undefined,
+      stockedByUserName: isInStock ? stockedByUserName : undefined,
       frameColor: frameColor || undefined,
       fichaTecnica: fichaTecnica || undefined,
       productionRecords: productionRecords || undefined,
@@ -423,6 +452,10 @@ export const TaskModal: React.FC<TaskModalProps> = ({
         attachments,
         comments,
         isCompleted,
+        isInStock,
+        stockedAt: isInStock ? stockedAt || null : null,
+        stockedByUserId: isInStock ? stockedByUserId : undefined,
+        stockedByUserName: isInStock ? stockedByUserName : undefined,
         frameColor: frameColor || undefined,
         fichaTecnica: savedFicha,
         productionRecords,
@@ -452,6 +485,10 @@ export const TaskModal: React.FC<TaskModalProps> = ({
         attachments,
         comments,
         isCompleted,
+        isInStock,
+        stockedAt: isInStock ? stockedAt || null : null,
+        stockedByUserId: isInStock ? stockedByUserId : undefined,
+        stockedByUserName: isInStock ? stockedByUserName : undefined,
         frameColor: frameColor || undefined,
         fichaTecnica: undefined,
         productionRecords,
@@ -519,6 +556,10 @@ export const TaskModal: React.FC<TaskModalProps> = ({
         comments: updatedComments,
         isCompleted: currentIsCompleted,
         completedAt: taskToEdit.completedAt,
+        isInStock,
+        stockedAt: isInStock ? stockedAt || null : null,
+        stockedByUserId: isInStock ? stockedByUserId : undefined,
+        stockedByUserName: isInStock ? stockedByUserName : undefined,
         frameColor: frameColor || undefined,
         fichaTecnica: fichaTecnica || undefined,
         productionRecords: updatedRecords,
@@ -527,6 +568,110 @@ export const TaskModal: React.FC<TaskModalProps> = ({
       if (onAddComment) {
         onAddComment(taskToEdit.id, newCommentContent, []);
       }
+    }
+  };
+
+  const handleSendToStock = () => {
+    if (!canStock || !isCardCompleted) return;
+    const nowIso = new Date().toISOString();
+    setIsInStock(true);
+    setStockedAt(nowIso);
+    setStockedByUserId(currentUser.id);
+    setStockedByUserName(currentUser.name);
+
+    setNoFichaAlert(null);
+    setProductionSuccessAlert('Card enviado para a aba Estoque!');
+    setTimeout(() => {
+      setProductionSuccessAlert(null);
+    }, 5000);
+
+    const newCommentContent = `📦 Card concluído enviado para o Estoque por ${currentUser.name}.`;
+    const newCom: Comment = {
+      id: `com-stock-${Date.now()}`,
+      authorId: currentUser.id,
+      content: newCommentContent,
+      createdAt: nowIso,
+    };
+    const updatedComments = [...comments, newCom];
+    setComments(updatedComments);
+
+    if (taskToEdit) {
+      const selectedTags = tags.filter((t) => selectedTagIds.includes(t.id));
+      const finalDueDate = computeFinalDueDate(dueDateDate, dueDateTime);
+      const currentColumnId =
+        columnId || taskToEdit.columnId || currentProject?.columns[0]?.id || '';
+
+      onSaveTask({
+        id: taskToEdit.id,
+        title: title.trim() || taskToEdit.title,
+        description: description.trim(),
+        priority,
+        projectId: projectId || projects[0]?.id || '',
+        columnId: currentColumnId,
+        dueDate: finalDueDate,
+        assigneeIds,
+        tags: selectedTags,
+        checklist,
+        attachments,
+        comments: updatedComments,
+        isCompleted: true,
+        completedAt: taskToEdit.completedAt || nowIso,
+        isInStock: true,
+        stockedAt: nowIso,
+        stockedByUserId: currentUser.id,
+        stockedByUserName: currentUser.name,
+        frameColor: frameColor || undefined,
+        fichaTecnica: fichaTecnica || undefined,
+        productionRecords,
+      });
+
+      if (onAddComment) {
+        onAddComment(taskToEdit.id, newCommentContent, []);
+      }
+    }
+  };
+
+  const handleRemoveFromStockInModal = () => {
+    if (!canStock || !isInStock) return;
+    setIsInStock(false);
+    setStockedAt(null);
+    setStockedByUserId(undefined);
+    setStockedByUserName(undefined);
+
+    setProductionSuccessAlert('Card retirado do Estoque e devolvido ao quadro!');
+    setTimeout(() => {
+      setProductionSuccessAlert(null);
+    }, 4000);
+
+    if (taskToEdit) {
+      const selectedTags = tags.filter((t) => selectedTagIds.includes(t.id));
+      const finalDueDate = computeFinalDueDate(dueDateDate, dueDateTime);
+      const currentColumnId =
+        columnId || taskToEdit.columnId || currentProject?.columns[0]?.id || '';
+
+      onSaveTask({
+        id: taskToEdit.id,
+        title: title.trim() || taskToEdit.title,
+        description: description.trim(),
+        priority,
+        projectId: projectId || projects[0]?.id || '',
+        columnId: currentColumnId,
+        dueDate: finalDueDate,
+        assigneeIds,
+        tags: selectedTags,
+        checklist,
+        attachments,
+        comments,
+        isCompleted: isCardCompleted,
+        completedAt: taskToEdit.completedAt,
+        isInStock: false,
+        stockedAt: null,
+        stockedByUserId: undefined,
+        stockedByUserName: undefined,
+        frameColor: frameColor || undefined,
+        fichaTecnica: fichaTecnica || undefined,
+        productionRecords,
+      });
     }
   };
 
@@ -695,9 +840,26 @@ export const TaskModal: React.FC<TaskModalProps> = ({
             </span>
             <span aria-hidden="true">/</span>
             <span>{currentProject?.columns.find((c) => c.id === columnId)?.title || 'Quadro'}</span>
+            {isInStock && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-teal-100 dark:bg-teal-950/70 text-teal-800 dark:text-teal-200 border border-teal-200 dark:border-teal-800 text-[10px] font-bold">
+                <Package className="w-3 h-3" />
+                <span>Em Estoque</span>
+              </span>
+            )}
           </div>
 
           <div className="flex items-center gap-1.5 flex-wrap">
+            {isInStock && canStock && (
+              <button
+                type="button"
+                onClick={handleRemoveFromStockInModal}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/50 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 border border-indigo-200 dark:border-indigo-800 rounded-lg transition-colors cursor-pointer"
+                title="Retirar este card do estoque e devolver ao quadro do projeto"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Retirar do Estoque</span>
+              </button>
+            )}
             {/* Botão de Ficha Técnica: exclusivo para Master, Dono e Administrador */}
             {canManageFicha && (
               <button
@@ -1916,23 +2078,25 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                   <span>Arquivar</span>
                 </button>
               )}
-              <button
-                type="button"
-                onClick={handleOpenProduction}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-xl transition-all cursor-pointer ${
-                  fichaTecnica && fichaTecnica.ingredientes && fichaTecnica.ingredientes.length > 0
-                    ? 'text-teal-700 dark:text-teal-300 bg-teal-50 dark:bg-teal-950/40 hover:bg-teal-100 dark:hover:bg-teal-900/50 border border-teal-200 dark:border-teal-800 shadow-2xs'
-                    : 'text-slate-400 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700'
-                }`}
-                title={
-                  fichaTecnica && fichaTecnica.ingredientes && fichaTecnica.ingredientes.length > 0
-                    ? 'Produzir este item'
-                    : 'Preencha a Ficha Técnica antes de produzir'
-                }
-              >
-                <Factory className="w-3.5 h-3.5" />
-                <span>Produzir</span>
-              </button>
+              {canProduce && (
+                <button
+                  type="button"
+                  onClick={handleOpenProduction}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-xl transition-all cursor-pointer ${
+                    fichaTecnica && fichaTecnica.ingredientes && fichaTecnica.ingredientes.length > 0
+                      ? 'text-teal-700 dark:text-teal-300 bg-teal-50 dark:bg-teal-950/40 hover:bg-teal-100 dark:hover:bg-teal-900/50 border border-teal-200 dark:border-teal-800 shadow-2xs'
+                      : 'text-slate-400 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700'
+                  }`}
+                  title={
+                    fichaTecnica && fichaTecnica.ingredientes && fichaTecnica.ingredientes.length > 0
+                      ? 'Produzir este item'
+                      : 'Preencha a Ficha Técnica antes de produzir'
+                  }
+                >
+                  <Factory className="w-3.5 h-3.5" />
+                  <span>Produzir</span>
+                </button>
+              )}
             </div>
 
             <div className="flex items-center gap-2 ml-auto">
@@ -1987,6 +2151,10 @@ export const TaskModal: React.FC<TaskModalProps> = ({
         currentUser={currentUser}
         productionRecords={productionRecords}
         onConfirmProduction={handleConfirmProduction}
+        isTaskCompleted={isCardCompleted}
+        canAccessStock={canStock}
+        isInStock={isInStock}
+        onSendToStock={handleSendToStock}
       />
 
       {/* Modal de Confirmação Padronizado */}

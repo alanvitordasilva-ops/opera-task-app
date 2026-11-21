@@ -44,6 +44,7 @@ import {
   MoreVertical,
   Copy,
   CopyPlus,
+  Package,
 } from 'lucide-react';
 import { ProjectIcon } from './ProjectIcon.tsx';
 import {
@@ -51,6 +52,7 @@ import {
   ROLE_CONFIG,
   isUserMaster,
   canAccessDashboard,
+  canAccessStock,
   getUserRoleInWorkspace,
   getUserIdentifiers,
   canManageWorkspace,
@@ -84,6 +86,7 @@ interface SidebarProps {
   myTasksCount: number;
   taskCountsByProject: Record<string, { pending: number; total: number }>;
   archivedTasks: Task[];
+  stockTasks?: Task[];
   onRestoreTask: (taskId: string, targetColumnId?: string) => void;
   onPermanentDeleteTask: (taskId: string) => void;
   onSelectArchivedTask?: (task: Task) => void;
@@ -122,6 +125,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   myTasksCount,
   taskCountsByProject,
   archivedTasks,
+  stockTasks = [],
   onRestoreTask,
   onPermanentDeleteTask,
   onSelectArchivedTask,
@@ -228,6 +232,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const canViewArchived = Boolean(
     isMaster || userRole === 'owner' || userRole === 'dono' || userRole === 'admin' || userRole === 'administrador'
   );
+
+  // Aba Estoque: visível apenas para Master, Dono, Administrador e Produção
+  const canViewStock = canAccessStock(userRole, isMaster);
 
   // Lista de usuários estritamente filtrada para troca rápida de sessão no workspace/empresa ativo
   const switchableUsers = useMemo(() => {
@@ -779,14 +786,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   const isSelected = selectedProjectId === proj.id;
                 const stats = taskCountsByProject[proj.id] || { pending: 0, total: 0 };
                 const projectArchivedTasks = archivedTasks.filter((t) => t.projectId === proj.id);
+                const projectStockTasks = stockTasks.filter((t) => t.projectId === proj.id);
                 const isArchivedExpanded = !!expandedArchivedProjects[proj.id];
+                const isStockActiveForProject = activeView === 'stock' && isSelected;
 
                 return (
                   <div key={proj.id} className="space-y-0.5">
                     {/* Item do Projeto Ativo */}
                     <div
                       className={`group flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium transition-colors ${
-                        isSelected
+                        isSelected && !isStockActiveForProject
                           ? 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-bold shadow-xs'
                           : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/60'
                       }`}
@@ -911,6 +920,49 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         )}
                       </div>
                     </div>
+
+                    {/* Aba de Estoque do Projeto - Visível APENAS para Dono, Administrador e Produção */}
+                    {canViewStock && (
+                      <div className="ml-3 pl-2.5 border-l border-slate-200 dark:border-slate-800 py-0.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onSelectProject(proj.id);
+                            onChangeView('stock');
+                            onCloseMobile();
+                          }}
+                          className={`w-full flex items-center justify-between px-2 py-1 rounded-lg text-[11px] transition-colors group/stock select-none cursor-pointer ${
+                            isStockActiveForProject
+                              ? 'bg-teal-50 dark:bg-teal-950/50 text-teal-700 dark:text-teal-300 font-bold'
+                              : 'text-slate-400 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-300 hover:bg-slate-100/60 dark:hover:bg-slate-800/40'
+                          }`}
+                          title={`Abrir aba Estoque de ${proj.name}`}
+                        >
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <Package
+                              className={`w-3 h-3 shrink-0 transition-colors ${
+                                isStockActiveForProject
+                                  ? 'text-teal-600 dark:text-teal-400'
+                                  : 'text-slate-400 group-hover/stock:text-teal-500'
+                              }`}
+                            />
+                            <span className={isStockActiveForProject ? 'font-bold truncate' : 'font-normal truncate'}>
+                              Estoque
+                            </span>
+                            <span
+                              className={`text-[10px] ${
+                                isStockActiveForProject
+                                  ? 'text-teal-600 dark:text-teal-300 font-bold'
+                                  : 'text-slate-400 dark:text-slate-500'
+                              }`}
+                            >
+                              ({projectStockTasks.length})
+                            </span>
+                          </div>
+                          <ChevronRight className="w-3 h-3 shrink-0 opacity-60" />
+                        </button>
+                      </div>
+                    )}
 
                     {/* Seção de Arquivados do Projeto - Visível APENAS para Dono (Owner) e Administrador */}
                     {canViewArchived && (

@@ -28,6 +28,7 @@ import {
   getUserRoleInWorkspace,
   ROLE_CONFIG,
   canAccessDashboard,
+  canAccessStock,
   canModifyCompletedTask,
   isTaskInDoneColumn,
   canRegisterUser,
@@ -43,6 +44,7 @@ import { Sidebar } from './components/Sidebar.tsx';
 import { Header } from './components/Header.tsx';
 import { KanbanView } from './components/KanbanView.tsx';
 import { ListView } from './components/ListView.tsx';
+import { StockView } from './components/StockView.tsx';
 import { MyTasksView } from './components/MyTasksView.tsx';
 import { TeamDashboardView } from './components/TeamDashboardView.tsx';
 import { ActivityFeedView } from './components/ActivityFeedView.tsx';
@@ -880,6 +882,22 @@ export default function App() {
     return tasks.filter((t) => t.workspaceId === currentWorkspace.id && !!t.isArchived);
   }, [tasks, currentWorkspace]);
 
+  // Tarefas em Estoque do workspace atual (cards concluídos enviados para o estoque)
+  const stockWorkspaceTasks = useMemo(() => {
+    const deletedSet = new Set(getDeletedTaskIds());
+    const activeProjectIds = new Set(workspaceProjects.map((p) => p.id));
+    return tasks.filter(
+      (t) =>
+        t &&
+        t.id &&
+        t.workspaceId === currentWorkspace.id &&
+        !!t.isInStock &&
+        !t.isArchived &&
+        !deletedSet.has(t.id) &&
+        activeProjectIds.has(t.projectId)
+    );
+  }, [tasks, currentWorkspace, workspaceProjects]);
+
   // Projeto ativo para o quadro Kanban
   const activeProject = useMemo(() => {
     if (selectedProjectId !== 'all') {
@@ -940,14 +958,18 @@ export default function App() {
   }, [isMaster, currentTenant?.paymentStatus, currentWorkspace.paymentStatus]);
 
   const canViewDashboard = canAccessDashboard(currentUserRole, isMaster);
+  const canViewStock = canAccessStock(currentUserRole, isMaster);
 
-  // Redireciona automaticamente se estiver no Dashboard sem permissão
+  // Redireciona automaticamente se estiver no Dashboard ou Estoque sem permissão
   useEffect(() => {
     if (viewMode === 'dashboard' && !canViewDashboard) {
       setViewMode('kanban');
       StorageService.saveViewMode('kanban');
+    } else if (viewMode === 'stock' && !canViewStock) {
+      setViewMode('kanban');
+      StorageService.saveViewMode('kanban');
     }
-  }, [viewMode, canViewDashboard]);
+  }, [viewMode, canViewDashboard, canViewStock]);
 
   // Alternador de visualização com verificação rigorosa de permissões
   const handleViewModeChange = (mode: ViewMode) => {
@@ -955,6 +977,13 @@ export default function App() {
       showToast({
         type: 'error',
         message: 'Acesso restrito: Apenas Administradores e o Dono podem visualizar o Dashboard.',
+      });
+      return;
+    }
+    if (mode === 'stock' && !canViewStock) {
+      showToast({
+        type: 'error',
+        message: 'Acesso restrito: Apenas Dono, Administrador e Produção podem acessar a aba Estoque.',
       });
       return;
     }
@@ -1043,8 +1072,57 @@ export default function App() {
     searchQuery,
   ]);
 
+  // Tarefas filtradas para exibição na aba Estoque (quadro único do projeto ativo)
+  const filteredStockTasks = useMemo(() => {
+    return stockWorkspaceTasks.filter((task) => {
+      if (activeProject && task.projectId !== activeProject.id) {
+        return false;
+      }
+      if (assigneeFilter !== 'all') {
+        if (!task.assigneeIds || !task.assigneeIds.includes(assigneeFilter)) {
+          return false;
+        }
+      }
+      if (priorityFilter !== 'all') {
+        const taskPriority = task.priority || 'none';
+        if (taskPriority !== priorityFilter) {
+          return false;
+        }
+      }
+      if (selectedTagId !== 'all') {
+        const hasTag = task.tags?.some((t) => t.id === selectedTagId);
+        if (!hasTag) return false;
+      }
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        const matchesTitle = task.title.toLowerCase().includes(q);
+        const matchesDesc = task.description?.toLowerCase().includes(q);
+        const matchesTags = task.tags?.some((t) => t.name.toLowerCase().includes(q));
+        const matchesFicha = task.fichaTecnica?.nomeItem?.toLowerCase().includes(q);
+        if (!matchesTitle && !matchesDesc && !matchesTags && !matchesFicha) return false;
+      }
+      return true;
+    });
+  }, [
+    stockWorkspaceTasks,
+    activeProject,
+    assigneeFilter,
+    priorityFilter,
+    selectedTagId,
+    searchQuery,
+  ]);
+
   // Título e subtítulo do cabeçalho
   const headerDetails = useMemo(() => {
+    if (viewMode === 'stock') {
+      const projStockCount = activeProject
+        ? stockWorkspaceTasks.filter((t) => t.projectId === activeProject.id).length
+        : stockWorkspaceTasks.length;
+      return {
+        title: `Estoque · ${activeProject?.name || currentWorkspace.name}`,
+        subtitle: `${projStockCount} ${projStockCount === 1 ? 'card em estoque' : 'cards em estoque'}`,
+      };
+    }
     if (viewMode === 'my_tasks') {
       return {
         title: 'Minhas Tarefas Atribuídas',
@@ -1078,7 +1156,7 @@ export default function App() {
       title: currentWorkspace.name,
       subtitle: `${workspaceTasks.length} cards no workspace`,
     };
-  }, [viewMode, myTasksCount, workspaceMembers, workspaceProjects, activeProject, workspaceTasks, currentWorkspace]);
+  }, [viewMode, myTasksCount, workspaceMembers, workspaceProjects, activeProject, workspaceTasks, stockWorkspaceTasks, currentWorkspace]);
 
   // Auditoria e Atividade Helper
   const recordActivity = (action: string, taskTitle?: string, projectId?: string, taskId?: string) => {
@@ -1230,6 +1308,10 @@ export default function App() {
         fichaTecnica: taskData.fichaTecnica,
         productionRecords: taskData.productionRecords,
         isCompleted,
+        isInStock: Boolean(taskData.isInStock),
+        stockedAt: taskData.isInStock ? taskData.stockedAt || nowIso : null,
+        stockedByUserId: taskData.isInStock ? taskData.stockedByUserId : undefined,
+        stockedByUserName: taskData.isInStock ? taskData.stockedByUserName : undefined,
         order: tasksRef.current.filter(
           (t) => t.workspaceId === currentWorkspace.id && !t.isArchived && t.columnId === colId
         ).length,
@@ -1531,6 +1613,10 @@ export default function App() {
       ], // Não copiar histórico
       isArchived: false,
       archivedAt: undefined,
+      isInStock: false,
+      stockedAt: null,
+      stockedByUserId: undefined,
+      stockedByUserName: undefined,
       order: nextOrder,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -1576,6 +1662,7 @@ export default function App() {
               ...t,
               isArchived: true,
               archivedAt,
+              isInStock: false,
               updatedAt: new Date().toISOString(),
             }
           : t
@@ -1586,6 +1673,7 @@ export default function App() {
     StorageService.updateTaskAsync(taskId, {
       isArchived: true,
       archivedAt,
+      isInStock: false,
     });
 
     recordActivity('arquivou o card', taskToArchive.title, taskToArchive.projectId, taskToArchive.id);
@@ -1595,6 +1683,43 @@ export default function App() {
       message: `Card "${taskToArchive.title}" arquivado.`,
       actionLabel: 'Desfazer',
       onAction: () => handleRestoreTask(taskId),
+    });
+  };
+
+  const handleRemoveFromStock = (taskId: string) => {
+    if (!canViewStock) return;
+    const targetTask = tasks.find((t) => t.id === taskId);
+    if (!targetTask) return;
+
+    const updatedAt = new Date().toISOString();
+    setTasks((prev) =>
+      prev.map((t) =>
+        t.id === taskId
+          ? {
+              ...t,
+              isInStock: false,
+              stockedAt: null,
+              stockedByUserId: undefined,
+              stockedByUserName: undefined,
+              updatedAt,
+            }
+          : t
+      )
+    );
+
+    StorageService.updateTaskAsync(taskId, {
+      isInStock: false,
+      stockedAt: null,
+      stockedByUserId: undefined,
+      stockedByUserName: undefined,
+      updatedAt,
+    });
+
+    recordActivity('retirou o card do estoque', targetTask.title, targetTask.projectId, targetTask.id);
+
+    showToast({
+      type: 'success',
+      message: `Card "${targetTask.title}" retirado do Estoque e devolvido ao quadro.`,
     });
   };
 
@@ -2368,6 +2493,10 @@ export default function App() {
       assigneeIds: [...(origTask.assigneeIds || [])],
       isArchived: false,
       archivedAt: undefined,
+      isInStock: false,
+      stockedAt: null,
+      stockedByUserId: undefined,
+      stockedByUserName: undefined,
       createdAt: nowIso,
       updatedAt: nowIso,
     };
@@ -2863,6 +2992,7 @@ export default function App() {
         onArchiveProject={handleArchiveProject}
         onDeleteProject={handleDeleteProject}
         archivedTasks={archivedWorkspaceTasks}
+        stockTasks={stockWorkspaceTasks}
         onRestoreTask={handleRestoreTask}
         onPermanentDeleteTask={handlePermanentDeleteTask}
         onSelectArchivedTask={(task) => {
@@ -3097,6 +3227,23 @@ export default function App() {
                       setDefaultColumnId(activeProject?.columns.find((c) => !c.isArchived)?.id || activeProject?.columns[0]?.id);
                       setIsTaskModalOpen(true);
                     }}
+                  />
+                )}
+
+                {viewMode === 'stock' && canViewStock && activeProject && (
+                  <StockView
+                    project={activeProject}
+                    tasks={filteredStockTasks}
+                    workspaceMembers={workspaceMembers}
+                    currentUserRole={currentUserRole}
+                    isMaster={isMaster}
+                    onEditTask={(task) => {
+                      setTaskToEdit(task);
+                      setIsTaskModalOpen(true);
+                    }}
+                    onRemoveFromStock={handleRemoveFromStock}
+                    onArchiveTask={handleArchiveTask}
+                    onBackToBoard={() => handleViewModeChange('kanban')}
                   />
                 )}
 

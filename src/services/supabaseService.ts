@@ -1392,7 +1392,19 @@ export class SupabaseService {
     if (!client) return { data: null, error: { message: 'Supabase não configurado' } };
 
     let currentRows = rows.map((r) => ({ ...r }));
-    const optionalCols = ['frame_color', 'ficha_tecnica', 'production_records', 'archived_at', 'completed_at', 'order_index', 'activities'];
+    const optionalCols = [
+      'frame_color',
+      'ficha_tecnica',
+      'production_records',
+      'is_in_stock',
+      'stocked_at',
+      'stocked_by_user_id',
+      'stocked_by_user_name',
+      'archived_at',
+      'completed_at',
+      'order_index',
+      'activities',
+    ];
 
     for (let attempt = 0; attempt < optionalCols.length + 2; attempt++) {
       const payload = returningSingle ? currentRows[0] : currentRows;
@@ -1447,6 +1459,10 @@ export class SupabaseService {
       productionRecords: parseJsonField(row.production_records, []),
       isCompleted: Boolean(row.is_completed),
       completedAt: row.completed_at || null,
+      isInStock: Boolean(row.is_in_stock),
+      stockedAt: row.stocked_at || null,
+      stockedByUserId: row.stocked_by_user_id || undefined,
+      stockedByUserName: row.stocked_by_user_name || undefined,
       isArchived: Boolean(row.is_archived),
       archivedAt: row.archived_at || null,
       order: typeof row.order_index === 'number' ? row.order_index : (row.order ?? 0),
@@ -1476,6 +1492,10 @@ export class SupabaseService {
     if (task.productionRecords !== undefined) row.production_records = task.productionRecords;
     if (task.isCompleted !== undefined) row.is_completed = Boolean(task.isCompleted);
     if (task.completedAt !== undefined) row.completed_at = task.completedAt;
+    if (task.isInStock !== undefined) row.is_in_stock = Boolean(task.isInStock);
+    if (task.stockedAt !== undefined) row.stocked_at = task.stockedAt;
+    if (task.stockedByUserId !== undefined) row.stocked_by_user_id = task.stockedByUserId;
+    if (task.stockedByUserName !== undefined) row.stocked_by_user_name = task.stockedByUserName;
     if (task.isArchived !== undefined) row.is_archived = Boolean(task.isArchived);
     if (task.archivedAt !== undefined) row.archived_at = task.archivedAt;
     if (task.order !== undefined) row.order_index = task.order;

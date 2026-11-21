@@ -27,6 +27,7 @@ import {
   History,
   ChevronDown,
   ChevronUp,
+  Package,
 } from 'lucide-react';
 
 interface ProductionModalProps {
@@ -38,6 +39,10 @@ interface ProductionModalProps {
   currentUser?: User;
   productionRecords?: ProductionRecord[];
   onConfirmProduction: (record: ProductionRecord) => void;
+  isTaskCompleted?: boolean;
+  canAccessStock?: boolean;
+  isInStock?: boolean;
+  onSendToStock?: () => void;
 }
 
 const QUICK_QUANTITIES = ['1', '5', '10', '20', '50'];
@@ -52,6 +57,10 @@ export const ProductionModal: React.FC<ProductionModalProps> = ({
   currentUser,
   productionRecords = [],
   onConfirmProduction,
+  isTaskCompleted = false,
+  canAccessStock = false,
+  isInStock = false,
+  onSendToStock,
 }) => {
   // Quantidade que o usuário deseja produzir
   const [quantidadeDesejadaStr, setQuantidadeDesejadaStr] = useState<string>('1');
@@ -63,6 +72,7 @@ export const ProductionModal: React.FC<ProductionModalProps> = ({
   const [observacoes, setObservacoes] = useState<string>('');
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [isSuccess, setIsSuccess] = useState<boolean>(false);
+  const [stockSuccess, setStockSuccess] = useState<boolean>(false);
   const [copiedList, setCopiedList] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<'produce' | 'history'>('produce');
 
@@ -75,6 +85,7 @@ export const ProductionModal: React.FC<ProductionModalProps> = ({
       setObservacoes('');
       setErrorMsg('');
       setIsSuccess(false);
+      setStockSuccess(false);
       setCopiedList(false);
       setActiveTab('produce');
     }
@@ -213,6 +224,16 @@ export const ProductionModal: React.FC<ProductionModalProps> = ({
     }, 1200);
   };
 
+  const handleSendToStockClick = () => {
+    if (!isTaskCompleted || !canAccessStock || !onSendToStock || isInStock) return;
+    onSendToStock();
+    setStockSuccess(true);
+    setTimeout(() => {
+      setStockSuccess(false);
+      onClose();
+    }, 1000);
+  };
+
   // Copiar lista de ingredientes para área de transferência
   const handleCopyList = () => {
     if (!fichaTecnica) return;
@@ -332,6 +353,14 @@ export const ProductionModal: React.FC<ProductionModalProps> = ({
           <div className="mx-6 mt-4 p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 flex items-center gap-2.5 text-emerald-800 dark:text-emerald-300 text-xs font-semibold animate-in fade-in duration-150">
             <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
             <span>Produção confirmada e salva na Ficha Técnica!</span>
+          </div>
+        )}
+
+        {/* Feedback de Envio para Estoque */}
+        {stockSuccess && (
+          <div className="mx-6 mt-4 p-3 rounded-xl bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800 flex items-center gap-2.5 text-indigo-800 dark:text-indigo-200 text-xs font-semibold animate-in fade-in duration-150">
+            <Package className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0" />
+            <span>Card enviado para a aba Estoque com sucesso!</span>
           </div>
         )}
 
@@ -732,7 +761,7 @@ export const ProductionModal: React.FC<ProductionModalProps> = ({
         </div>
 
         {/* Rodapé com Botões de Ação */}
-        <div className="flex items-center justify-between px-6 py-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-850">
+        <div className="flex items-center justify-between gap-2 flex-wrap px-6 py-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-850">
           <button
             type="button"
             onClick={onClose}
@@ -741,8 +770,31 @@ export const ProductionModal: React.FC<ProductionModalProps> = ({
             Fechar
           </button>
 
-          {activeTab === 'produce' && (
-            <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            {/* Botão Estoque: visível SOMENTE quando o card estiver concluído e para Dono, Administrador e Produção */}
+            {isTaskCompleted && canAccessStock && onSendToStock && (
+              isInStock ? (
+                <span
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 rounded-xl"
+                  title="Este card já está registrado no quadro de Estoque"
+                >
+                  <Package className="w-4 h-4" />
+                  <span>No Estoque</span>
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleSendToStockClick}
+                  className="inline-flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 active:scale-98 rounded-xl shadow-md hover:shadow-indigo-600/25 transition-all cursor-pointer"
+                  title="Enviar este card concluído para o quadro de Estoque"
+                >
+                  <Package className="w-4 h-4" />
+                  <span>Estoque</span>
+                </button>
+              )
+            )}
+
+            {activeTab === 'produce' && (
               <button
                 type="button"
                 onClick={handleConfirm}
@@ -758,8 +810,8 @@ export const ProductionModal: React.FC<ProductionModalProps> = ({
                   Confirmar Produção ({quantidadeDesejadaStr || '0'} {unidadeProducao})
                 </span>
               </button>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </div>
     </div>

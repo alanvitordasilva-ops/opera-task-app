@@ -405,6 +405,18 @@ export function canRegisterUser(role: WorkspaceRole, isMaster = false): boolean 
   return role === 'owner' || role === 'dono' || role === 'admin' || role === 'administrador';
 }
 
+export function canAccessStock(role: WorkspaceRole, isMaster = false): boolean {
+  if (isMaster) return true;
+  return (
+    role === 'owner' ||
+    role === 'dono' ||
+    role === 'admin' ||
+    role === 'administrador' ||
+    role === 'production' ||
+    role === 'producao'
+  );
+}
+
 export function canAccessFichaTecnicaAndProduction(role: WorkspaceRole, isMaster = false): boolean {
   return canManageFichaTecnica(role, isMaster) || canAccessProduction(role, isMaster);
 }
@@ -948,7 +960,7 @@ export function filterActiveTasksForProjects(
   });
 
   return tasks.filter((t) => {
-    if (!t || !t.id || t.isArchived || deletedSet.has(t.id)) return false;
+    if (!t || !t.id || t.isArchived || t.isInStock || deletedSet.has(t.id)) return false;
     const colSet = projectColMap.get(t.projectId);
     if (!colSet) return false;
     return colSet.size === 0 || colSet.has(t.columnId);

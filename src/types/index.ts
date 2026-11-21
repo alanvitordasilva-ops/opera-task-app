@@ -536,6 +536,10 @@ export interface Task {
   productionRecords?: ProductionRecord[];
   isCompleted: boolean;
   completedAt?: string | null;
+  isInStock?: boolean;
+  stockedAt?: string | null;
+  stockedByUserId?: string;
+  stockedByUserName?: string;
   isArchived?: boolean;
   archivedAt?: string;
   order: number;
@@ -580,6 +584,7 @@ export interface Notification {
 export type ViewMode =
   | 'kanban'
   | 'list'
+  | 'stock'
   | 'my_tasks'
   | 'dashboard'
   | 'activity_feed';
