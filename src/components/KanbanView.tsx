@@ -1005,8 +1005,8 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                                 }`}
                                 title={
                                   columns.length <= 1
-                                    ? 'Mantenha pelo menos uma coluna ativa no quadro'
-                                    : 'Arquivar coluna'
+                                    ? 'Mantenha pelo menos um quadro ativo no projeto'
+                                    : 'Arquivar quadro (direciona para Arquivados do projeto)'
                                 }
                               >
                                 <Archive className="w-3.5 h-3.5 shrink-0" />

@@ -45,6 +45,7 @@ import {
   Copy,
   CopyPlus,
   Package,
+  Columns3,
 } from 'lucide-react';
 import { ProjectIcon } from './ProjectIcon.tsx';
 import {
@@ -90,6 +91,8 @@ interface SidebarProps {
   onRestoreTask: (taskId: string, targetColumnId?: string) => void;
   onPermanentDeleteTask: (taskId: string) => void;
   onSelectArchivedTask?: (task: Task) => void;
+  onRestoreColumn?: (projectId: string, columnId: string) => void;
+  onPermanentDeleteColumn?: (projectId: string, columnId: string) => void;
   currentUser: User;
   allUsers: User[];
   onSelectCurrentUser: (user: User) => void;
@@ -129,6 +132,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onRestoreTask,
   onPermanentDeleteTask,
   onSelectArchivedTask,
+  onRestoreColumn,
+  onPermanentDeleteColumn,
   currentUser,
   allUsers,
   onSelectCurrentUser,
@@ -162,6 +167,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [isArchivedBoardsExpanded, setIsArchivedBoardsExpanded] = useState(false);
   const [deleteConfirmProject, setDeleteConfirmProject] = useState<Project | null>(null);
   const [deleteConfirmTask, setDeleteConfirmTask] = useState<Task | null>(null);
+  const [deleteConfirmColumn, setDeleteConfirmColumn] = useState<{
+    projectId: string;
+    columnId: string;
+    title: string;
+  } | null>(null);
   const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -785,17 +795,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 {projects.map((proj) => {
                   const isSelected = selectedProjectId === proj.id;
                 const stats = taskCountsByProject[proj.id] || { pending: 0, total: 0 };
+                const projectArchivedColumns = (proj.columns || []).filter((c) => !!c.isArchived);
                 const projectArchivedTasks = archivedTasks.filter((t) => t.projectId === proj.id);
+                const totalArchivedCount = projectArchivedColumns.length + projectArchivedTasks.length;
                 const projectStockTasks = stockTasks.filter((t) => t.projectId === proj.id);
                 const isArchivedExpanded = !!expandedArchivedProjects[proj.id];
                 const isStockActiveForProject = activeView === 'stock' && isSelected;
+                const isArchivedActiveForProject = activeView === 'archived' && isSelected;
 
                 return (
                   <div key={proj.id} className="space-y-0.5">
                     {/* Item do Projeto Ativo */}
                     <div
                       className={`group flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium transition-colors ${
-                        isSelected && !isStockActiveForProject
+                        isSelected && !isStockActiveForProject && !isArchivedActiveForProject
                           ? 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-bold shadow-xs'
                           : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/60'
                       }`}
@@ -964,99 +977,198 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       </div>
                     )}
 
-                    {/* Seção de Arquivados do Projeto - Visível APENAS para Dono (Owner) e Administrador */}
+                    {/* Seção / Aba de Arquivados do Projeto (Quadros + Cards) - Visível APENAS para Dono e Administrador */}
                     {canViewArchived && (
                       <div className="ml-3 pl-2.5 border-l border-slate-200 dark:border-slate-800 space-y-1 py-0.5">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setExpandedArchivedProjects((prev) => ({
-                              ...prev,
-                              [proj.id]: !prev[proj.id],
-                            }));
-                          }}
-                          className="w-full flex items-center justify-between px-2 py-1 rounded-lg text-[11px] text-slate-400 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-300 hover:bg-slate-100/60 dark:hover:bg-slate-800/40 transition-colors group/arch select-none"
-                          title={`${isArchivedExpanded ? 'Recolher' : 'Expandir'} arquivados de ${proj.name}`}
-                        >
-                          <div className="flex items-center gap-1.5 min-w-0">
-                            <Archive className="w-3 h-3 text-slate-400 group-hover/arch:text-amber-500 transition-colors shrink-0" />
-                            <span className="font-normal truncate">
-                              Arquivados
-                            </span>
-                            <span className="text-[10px] text-slate-400 dark:text-slate-500">
-                              ({projectArchivedTasks.length})
-                            </span>
-                          </div>
+                        <div className="flex items-center gap-0.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onSelectProject(proj.id);
+                              onChangeView('archived');
+                              onCloseMobile();
+                            }}
+                            className={`flex-1 flex items-center justify-between px-2 py-1 rounded-lg text-[11px] transition-colors group/arch select-none cursor-pointer min-w-0 ${
+                              isArchivedActiveForProject
+                                ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300 font-bold'
+                                : 'text-slate-400 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-300 hover:bg-slate-100/60 dark:hover:bg-slate-800/40'
+                            }`}
+                            title={`Abrir aba Arquivados de ${proj.name} (${projectArchivedColumns.length} quadro(s) e ${projectArchivedTasks.length} card(s))`}
+                          >
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <Archive
+                                className={`w-3 h-3 shrink-0 transition-colors ${
+                                  isArchivedActiveForProject
+                                    ? 'text-amber-600 dark:text-amber-400'
+                                    : 'text-slate-400 group-hover/arch:text-amber-500'
+                                }`}
+                              />
+                              <span
+                                className={
+                                  isArchivedActiveForProject ? 'font-bold truncate' : 'font-normal truncate'
+                                }
+                              >
+                                Arquivados
+                              </span>
+                              <span
+                                className={`text-[10px] ${
+                                  isArchivedActiveForProject
+                                    ? 'text-amber-700 dark:text-amber-300 font-bold'
+                                    : 'text-slate-400 dark:text-slate-500'
+                                }`}
+                              >
+                                ({totalArchivedCount})
+                              </span>
+                            </div>
+                          </button>
 
-                          <div className="p-0.5 text-slate-400">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setExpandedArchivedProjects((prev) => ({
+                                ...prev,
+                                [proj.id]: !prev[proj.id],
+                              }));
+                            }}
+                            className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 rounded-md hover:bg-slate-100/80 dark:hover:bg-slate-800/60 transition-colors cursor-pointer shrink-0"
+                            title={`${isArchivedExpanded ? 'Recolher' : 'Expandir'} lista rápida de arquivados`}
+                          >
                             {isArchivedExpanded ? (
                               <ChevronDown className="w-3 h-3" />
                             ) : (
                               <ChevronRight className="w-3 h-3" />
                             )}
-                          </div>
-                        </button>
+                          </button>
+                        </div>
 
-                        {/* Itens arquivados do projeto quando expandido */}
+                        {/* Lista rápida inline de Quadros e Cards arquivados do projeto quando expandido */}
                         {isArchivedExpanded && (
                           <div className="space-y-1 pl-1 pt-0.5">
-                            {projectArchivedTasks.length === 0 ? (
+                            {totalArchivedCount === 0 ? (
                               <div className="px-2 py-1.5 text-[10px] text-slate-400 italic">
-                                Nenhum card arquivado
+                                Nenhum quadro ou card arquivado
                               </div>
                             ) : (
-                              projectArchivedTasks.map((task) => (
-                                <div
-                                  key={task.id}
-                                  className="group/item flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-lg bg-slate-50/80 dark:bg-slate-850/80 border border-slate-200/60 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 transition-all text-xs"
-                                >
-                                  <button
-                                    type="button"
-                                    onClick={() => onSelectArchivedTask?.(task)}
-                                    className="min-w-0 flex-1 text-left"
-                                    title={`Visualizar "${task.title}"`}
+                              <>
+                                {projectArchivedColumns.map((col) => (
+                                  <div
+                                    key={col.id}
+                                    className="group/item flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-lg bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200/70 dark:border-amber-900/50 hover:border-amber-300 dark:hover:border-amber-700 transition-all text-xs"
                                   >
-                                    <p className="font-bold text-[11px] text-zinc-900 dark:text-zinc-100 truncate hover:text-blue-600 dark:hover:text-blue-400">
-                                      {task.title}
-                                    </p>
-                                    <p className="text-[9px] font-medium text-zinc-600 dark:text-zinc-300 truncate">
-                                      {task.archivedAt
-                                        ? new Date(task.archivedAt).toLocaleDateString('pt-BR', {
-                                            day: '2-digit',
-                                            month: '2-digit',
-                                            hour: '2-digit',
-                                            minute: '2-digit',
-                                          })
-                                        : 'Arquivado'}
-                                    </p>
-                                  </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        onSelectProject(proj.id);
+                                        onChangeView('archived');
+                                        onCloseMobile();
+                                      }}
+                                      className="min-w-0 flex-1 text-left cursor-pointer"
+                                      title={`Ver quadro arquivado "${col.title}"`}
+                                    >
+                                      <div className="flex items-center gap-1.5">
+                                        <span
+                                          className="w-2 h-2 rounded-full shrink-0"
+                                          style={{ backgroundColor: col.color || '#d97706' }}
+                                        />
+                                        <p className="font-bold text-[11px] text-zinc-900 dark:text-zinc-100 truncate">
+                                          {col.title}
+                                        </p>
+                                      </div>
+                                      <p className="text-[9px] font-semibold text-amber-700 dark:text-amber-300 flex items-center gap-1 mt-0.5">
+                                        <Columns3 className="w-2.5 h-2.5 shrink-0" />
+                                        <span>Quadro arquivado</span>
+                                      </p>
+                                    </button>
 
-                                  <div className="flex items-center gap-0.5 shrink-0">
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        onRestoreTask(task.id, task.columnId);
-                                      }}
-                                      className="p-1 text-zinc-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-white dark:hover:bg-slate-750 rounded transition-colors"
-                                      title="Restaurar para o quadro"
-                                    >
-                                      <RotateCcw className="w-3 h-3" />
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setDeleteConfirmTask(task);
-                                      }}
-                                      className="p-1 text-zinc-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-white dark:hover:bg-slate-750 rounded transition-colors"
-                                      title="Excluir permanentemente"
-                                    >
-                                      <Trash2 className="w-3 h-3" />
-                                    </button>
+                                    <div className="flex items-center gap-0.5 shrink-0">
+                                      {onRestoreColumn && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            onRestoreColumn(proj.id, col.id);
+                                          }}
+                                          className="p-1 text-zinc-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-white dark:hover:bg-slate-750 rounded transition-colors cursor-pointer"
+                                          title="Restaurar quadro"
+                                        >
+                                          <RotateCcw className="w-3 h-3" />
+                                        </button>
+                                      )}
+                                      {onPermanentDeleteColumn && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setDeleteConfirmColumn({
+                                              projectId: proj.id,
+                                              columnId: col.id,
+                                              title: col.title,
+                                            });
+                                          }}
+                                          className="p-1 text-zinc-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-white dark:hover:bg-slate-750 rounded transition-colors cursor-pointer"
+                                          title="Excluir quadro permanentemente"
+                                        >
+                                          <Trash2 className="w-3 h-3" />
+                                        </button>
+                                      )}
+                                    </div>
                                   </div>
-                                </div>
-                              ))
+                                ))}
+
+                                {projectArchivedTasks.map((task) => (
+                                  <div
+                                    key={task.id}
+                                    className="group/item flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-lg bg-slate-50/80 dark:bg-slate-850/80 border border-slate-200/60 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 transition-all text-xs"
+                                  >
+                                    <button
+                                      type="button"
+                                      onClick={() => onSelectArchivedTask?.(task)}
+                                      className="min-w-0 flex-1 text-left cursor-pointer"
+                                      title={`Visualizar "${task.title}"`}
+                                    >
+                                      <p className="font-bold text-[11px] text-zinc-900 dark:text-zinc-100 truncate hover:text-blue-600 dark:hover:text-blue-400">
+                                        {task.title}
+                                      </p>
+                                      <p className="text-[9px] font-medium text-zinc-600 dark:text-zinc-300 truncate">
+                                        {task.archivedAt
+                                          ? new Date(task.archivedAt).toLocaleDateString('pt-BR', {
+                                              day: '2-digit',
+                                              month: '2-digit',
+                                              hour: '2-digit',
+                                              minute: '2-digit',
+                                            })
+                                          : 'Card arquivado'}
+                                      </p>
+                                    </button>
+
+                                    <div className="flex items-center gap-0.5 shrink-0">
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          onRestoreTask(task.id, task.columnId);
+                                        }}
+                                        className="p-1 text-zinc-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-white dark:hover:bg-slate-750 rounded transition-colors cursor-pointer"
+                                        title="Restaurar para o quadro"
+                                      >
+                                        <RotateCcw className="w-3 h-3" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setDeleteConfirmTask(task);
+                                        }}
+                                        className="p-1 text-zinc-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-white dark:hover:bg-slate-750 rounded transition-colors cursor-pointer"
+                                        title="Excluir permanentemente"
+                                      >
+                                        <Trash2 className="w-3 h-3" />
+                                      </button>
+                                    </div>
+                                  </div>
+                                ))}
+                              </>
                             )}
                           </div>
                         )}
@@ -1359,6 +1471,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
             itemName={deleteConfirmTask.title}
             itemType="este card"
             message={`Tem certeza que deseja excluir permanentemente o card arquivado "${deleteConfirmTask.title}"? Esta ação não pode ser desfeita.`}
+            confirmButtonText="Excluir Definitivamente"
+          />
+        )}
+
+        {/* Modal de Confirmação Padronizado para Quadros (Colunas) Arquivados */}
+        {deleteConfirmColumn && onPermanentDeleteColumn && (
+          <ConfirmDeleteModal
+            isOpen={!!deleteConfirmColumn}
+            onClose={() => setDeleteConfirmColumn(null)}
+            onConfirm={() => {
+              onPermanentDeleteColumn(deleteConfirmColumn.projectId, deleteConfirmColumn.columnId);
+              setDeleteConfirmColumn(null);
+            }}
+            title="Excluir quadro arquivado permanentemente?"
+            itemName={deleteConfirmColumn.title}
+            itemType="este quadro"
+            message={`Tem certeza que deseja excluir permanentemente o quadro arquivado "${deleteConfirmColumn.title}" e seus cards? Esta ação não pode ser desfeita.`}
             confirmButtonText="Excluir Definitivamente"
           />
         )}

@@ -45,6 +45,7 @@ import { Header } from './components/Header.tsx';
 import { KanbanView } from './components/KanbanView.tsx';
 import { ListView } from './components/ListView.tsx';
 import { StockView } from './components/StockView.tsx';
+import { ArchivedView } from './components/ArchivedView.tsx';
 import { MyTasksView } from './components/MyTasksView.tsx';
 import { TeamDashboardView } from './components/TeamDashboardView.tsx';
 import { ActivityFeedView } from './components/ActivityFeedView.tsx';
@@ -959,8 +960,15 @@ export default function App() {
 
   const canViewDashboard = canAccessDashboard(currentUserRole, isMaster);
   const canViewStock = canAccessStock(currentUserRole, isMaster);
+  const canViewArchived = Boolean(
+    isMaster ||
+      currentUserRole === 'owner' ||
+      currentUserRole === 'dono' ||
+      currentUserRole === 'admin' ||
+      currentUserRole === 'administrador'
+  );
 
-  // Redireciona automaticamente se estiver no Dashboard ou Estoque sem permissão
+  // Redireciona automaticamente se estiver no Dashboard, Estoque ou Arquivados sem permissão
   useEffect(() => {
     if (viewMode === 'dashboard' && !canViewDashboard) {
       setViewMode('kanban');
@@ -968,8 +976,11 @@ export default function App() {
     } else if (viewMode === 'stock' && !canViewStock) {
       setViewMode('kanban');
       StorageService.saveViewMode('kanban');
+    } else if (viewMode === 'archived' && !canViewArchived) {
+      setViewMode('kanban');
+      StorageService.saveViewMode('kanban');
     }
-  }, [viewMode, canViewDashboard, canViewStock]);
+  }, [viewMode, canViewDashboard, canViewStock, canViewArchived]);
 
   // Alternador de visualização com verificação rigorosa de permissões
   const handleViewModeChange = (mode: ViewMode) => {
@@ -984,6 +995,13 @@ export default function App() {
       showToast({
         type: 'error',
         message: 'Acesso restrito: Apenas Dono, Administrador e Produção podem acessar a aba Estoque.',
+      });
+      return;
+    }
+    if (mode === 'archived' && !canViewArchived) {
+      showToast({
+        type: 'error',
+        message: 'Acesso restrito: Apenas Dono e Administradores podem acessar a aba Arquivados.',
       });
       return;
     }
@@ -1112,8 +1130,74 @@ export default function App() {
     searchQuery,
   ]);
 
+  // Quadros e Cards filtrados para a aba Arquivados do projeto ativo
+  const activeProjectArchivedColumns = useMemo(() => {
+    if (!activeProject) return [];
+    const cols = (activeProject.columns || []).filter((c) => !!c.isArchived);
+    if (!searchQuery.trim()) return cols;
+    const q = searchQuery.toLowerCase();
+    return cols.filter((c) => c.title.toLowerCase().includes(q));
+  }, [activeProject, searchQuery]);
+
+  const activeProjectArchivedTasks = useMemo(() => {
+    if (!activeProject) return [];
+    const deletedSet = new Set(getDeletedTaskIds());
+    return archivedWorkspaceTasks.filter((task) => {
+      if (task.projectId !== activeProject.id || deletedSet.has(task.id)) return false;
+      if (assigneeFilter !== 'all' && (!task.assigneeIds || !task.assigneeIds.includes(assigneeFilter))) {
+        return false;
+      }
+      if (priorityFilter !== 'all' && (task.priority || 'none') !== priorityFilter) {
+        return false;
+      }
+      if (selectedTagId !== 'all' && !task.tags?.some((t) => t.id === selectedTagId)) {
+        return false;
+      }
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        const matchesTitle = task.title.toLowerCase().includes(q);
+        const matchesDesc = task.description?.toLowerCase().includes(q);
+        const matchesTags = task.tags?.some((t) => t.name.toLowerCase().includes(q));
+        if (!matchesTitle && !matchesDesc && !matchesTags) return false;
+      }
+      return true;
+    });
+  }, [
+    activeProject,
+    archivedWorkspaceTasks,
+    assigneeFilter,
+    priorityFilter,
+    selectedTagId,
+    searchQuery,
+  ]);
+
+  const activeProjectAllNonDeletedTasks = useMemo(() => {
+    if (!activeProject) return [];
+    const deletedSet = new Set(getDeletedTaskIds());
+    return tasks.filter(
+      (t) =>
+        t &&
+        t.id &&
+        t.workspaceId === currentWorkspace.id &&
+        t.projectId === activeProject.id &&
+        !deletedSet.has(t.id)
+    );
+  }, [tasks, currentWorkspace.id, activeProject]);
+
   // Título e subtítulo do cabeçalho
   const headerDetails = useMemo(() => {
+    if (viewMode === 'archived') {
+      const archivedColsCount = activeProject
+        ? (activeProject.columns || []).filter((c) => !!c.isArchived).length
+        : 0;
+      const archivedCardsCount = activeProject
+        ? archivedWorkspaceTasks.filter((t) => t.projectId === activeProject.id).length
+        : archivedWorkspaceTasks.length;
+      return {
+        title: `Arquivados · ${activeProject?.name || currentWorkspace.name}`,
+        subtitle: `${archivedColsCount} ${archivedColsCount === 1 ? 'quadro' : 'quadros'} · ${archivedCardsCount} ${archivedCardsCount === 1 ? 'card arquivado' : 'cards arquivados'}`,
+      };
+    }
     if (viewMode === 'stock') {
       const projStockCount = activeProject
         ? stockWorkspaceTasks.filter((t) => t.projectId === activeProject.id).length
@@ -1156,7 +1240,7 @@ export default function App() {
       title: currentWorkspace.name,
       subtitle: `${workspaceTasks.length} cards no workspace`,
     };
-  }, [viewMode, myTasksCount, workspaceMembers, workspaceProjects, activeProject, workspaceTasks, stockWorkspaceTasks, currentWorkspace]);
+  }, [viewMode, myTasksCount, workspaceMembers, workspaceProjects, activeProject, workspaceTasks, stockWorkspaceTasks, archivedWorkspaceTasks, currentWorkspace]);
 
   // Auditoria e Atividade Helper
   const recordActivity = (action: string, taskTitle?: string, projectId?: string, taskId?: string) => {
@@ -1680,9 +1764,14 @@ export default function App() {
 
     showToast({
       type: 'info',
-      message: `Card "${taskToArchive.title}" arquivado.`,
-      actionLabel: 'Desfazer',
-      onAction: () => handleRestoreTask(taskId),
+      message: `Card "${taskToArchive.title}" enviado para a aba Arquivados.`,
+      actionLabel: canViewArchived ? 'Abrir Arquivados' : 'Desfazer',
+      onAction: canViewArchived
+        ? () => {
+            setSelectedProjectId(taskToArchive.projectId);
+            handleViewModeChange('archived');
+          }
+        : () => handleRestoreTask(taskId),
     });
   };
 
@@ -1727,7 +1816,14 @@ export default function App() {
     const taskToRestore = tasks.find((t) => t.id === taskId);
     if (!taskToRestore) return;
 
-    const nextColumnId = targetColumnId || taskToRestore.columnId;
+    const proj = projects.find((p) => p.id === taskToRestore.projectId);
+    const activeCols = (proj?.columns || []).filter((c) => !c.isArchived);
+    const preferredColId = targetColumnId || taskToRestore.columnId;
+    const isPreferredActive = activeCols.some((c) => c.id === preferredColId);
+    const nextColumnId = isPreferredActive
+      ? preferredColId
+      : activeCols[0]?.id || preferredColId;
+
     setTasks((prev) =>
       prev.map((t) => {
         if (t.id !== taskId) return t;
@@ -2348,15 +2444,22 @@ export default function App() {
     });
   };
 
-  const handleDeleteColumn = (columnId: string) => {
-    if (!activeProject) return;
+  const handleDeleteColumn = (
+    columnId: string,
+    targetProjectId?: string,
+    deleteTasksWithColumn = false
+  ) => {
+    const targetProj = targetProjectId
+      ? projects.find((p) => p.id === targetProjectId) || activeProject
+      : activeProject;
+    if (!targetProj) return;
 
-    // Autonomia: Apenas Master, Dono ou Administrador do Workspace podem excluir colunas
-    const isMaster = isUserMaster(currentUser);
+    // Autonomia: Apenas Master, Dono ou Administrador do Workspace podem excluir quadros/colunas
+    const isMasterUser = isUserMaster(currentUser);
     const member = currentWorkspace?.members?.find((m) => m.userId === currentUser.id);
     const role = (member?.role || currentUserRole || '').toLowerCase();
     const canDeleteCol =
-      isMaster ||
+      isMasterUser ||
       role === 'owner' ||
       role === 'dono' ||
       role === 'admin' ||
@@ -2366,35 +2469,44 @@ export default function App() {
     if (!canDeleteCol) {
       showToast({
         type: 'error',
-        message: 'Ação não permitida: Apenas Administradores ou Donos do Workspace têm autonomia para excluir colunas.',
+        message: 'Ação não permitida: Apenas Administradores ou Donos do Workspace têm autonomia para excluir quadros.',
       });
       return;
     }
 
-    const targetCol = activeProject.columns.find((c) => c.id === columnId);
-    const activeColumns = activeProject.columns.filter((c) => !c.isArchived);
+    const targetCol = targetProj.columns.find((c) => c.id === columnId);
+    const activeColumns = targetProj.columns.filter((c) => !c.isArchived);
 
     if (activeColumns.length <= 1 && !targetCol?.isArchived) {
       showToast({
         type: 'error',
-        message: 'O projeto precisa manter pelo menos uma coluna ativa no quadro.',
+        message: 'O projeto precisa manter pelo menos um quadro ativo.',
       });
       return;
     }
     const deletedCol = targetCol;
-    const remainingCols = activeProject.columns.filter((c) => c.id !== columnId);
+    const remainingCols = targetProj.columns.filter((c) => c.id !== columnId);
     const fallbackCol = remainingCols.find((c) => !c.isArchived) || remainingCols[0];
 
-    // Move tarefas da coluna excluída para a coluna remanescente e persiste no servidor/Supabase
-    if (fallbackCol) {
+    if (deleteTasksWithColumn || !fallbackCol) {
+      const orphanedIds = tasks
+        .filter((t) => t.projectId === targetProj.id && t.columnId === columnId)
+        .map((t) => t.id);
+      if (orphanedIds.length > 0) {
+        const orphanSet = new Set(orphanedIds);
+        setTasks((prev) => prev.filter((t) => !orphanSet.has(t.id)));
+        StorageService.batchDeleteTasksAsync(orphanedIds);
+      }
+    } else {
+      // Move tarefas do quadro excluído para o quadro remanescente e persiste no servidor/Supabase
       const movedAt = new Date().toISOString();
       const tasksToMove = tasks.filter(
-        (t) => t.projectId === activeProject.id && t.columnId === columnId
+        (t) => t.projectId === targetProj.id && t.columnId === columnId
       );
       if (tasksToMove.length > 0) {
         setTasks((prev) =>
           prev.map((t) =>
-            t.projectId === activeProject.id && t.columnId === columnId
+            t.projectId === targetProj.id && t.columnId === columnId
               ? { ...t, columnId: fallbackCol.id, updatedAt: movedAt }
               : t
           )
@@ -2403,22 +2515,13 @@ export default function App() {
           tasksToMove.map((t) => ({ id: t.id, columnId: fallbackCol.id }))
         );
       }
-    } else {
-      const orphanedIds = tasks
-        .filter((t) => t.projectId === activeProject.id && t.columnId === columnId)
-        .map((t) => t.id);
-      if (orphanedIds.length > 0) {
-        const orphanSet = new Set(orphanedIds);
-        setTasks((prev) => prev.filter((t) => !orphanSet.has(t.id)));
-        StorageService.batchDeleteTasksAsync(orphanedIds);
-      }
     }
 
-    // Atualiza colunas do projeto
+    // Atualiza quadros/colunas do projeto
     const updatedColumns = remainingCols.map((c, idx) => ({ ...c, order: idx }));
     setProjects((prev) =>
       prev.map((p) =>
-        p.id === activeProject.id
+        p.id === targetProj.id
           ? {
               ...p,
               columns: updatedColumns,
@@ -2426,12 +2529,14 @@ export default function App() {
           : p
       )
     );
-    StorageService.updateProjectAsync(activeProject.id, { columns: updatedColumns });
+    StorageService.updateProjectAsync(targetProj.id, { columns: updatedColumns });
 
-    recordActivity(`excluiu a coluna "${deletedCol?.title || 'Coluna'}" do projeto "${activeProject.name}"`);
+    recordActivity(`excluiu o quadro "${deletedCol?.title || 'Quadro'}" do projeto "${targetProj.name}"`);
     showToast({
       type: 'info',
-      message: `Coluna "${deletedCol?.title || 'Coluna'}" excluída. Tarefas transferidas para "${fallbackCol?.title || 'outra coluna'}".`,
+      message: deleteTasksWithColumn
+        ? `Quadro "${deletedCol?.title || 'Quadro'}" excluído permanentemente.`
+        : `Quadro "${deletedCol?.title || 'Quadro'}" excluído. Tarefas transferidas para "${fallbackCol?.title || 'outro quadro'}".`,
     });
   };
 
@@ -2638,8 +2743,15 @@ export default function App() {
     });
   };
 
-  const handleArchiveColumn = (columnId: string, restore = false) => {
-    if (!activeProject) return;
+  const handleArchiveColumn = (
+    columnId: string,
+    restore = false,
+    targetProjectId?: string
+  ) => {
+    const targetProj = targetProjectId
+      ? projects.find((p) => p.id === targetProjectId) || activeProject
+      : activeProject;
+    if (!targetProj) return;
 
     const isMasterUser = isUserMaster(currentUser);
     const member = currentWorkspace?.members?.find((m) => m.userId === currentUser.id);
@@ -2655,12 +2767,12 @@ export default function App() {
     if (!canArchiveCol) {
       showToast({
         type: 'error',
-        message: 'Ação não permitida: Apenas Administradores ou Donos do Workspace podem arquivar colunas.',
+        message: 'Ação não permitida: Apenas Administradores ou Donos do Workspace podem arquivar quadros.',
       });
       return;
     }
 
-    const cols = activeProject.columns || [];
+    const cols = targetProj.columns || [];
     const targetCol = cols.find((c) => c.id === columnId);
     if (!targetCol) return;
 
@@ -2668,30 +2780,36 @@ export default function App() {
     if (!restore && activeCols.length <= 1) {
       showToast({
         type: 'error',
-        message: 'O quadro precisa manter pelo menos uma coluna ativa.',
+        message: 'O projeto precisa manter pelo menos um quadro ativo.',
       });
       return;
     }
 
+    const archivedAt = !restore ? new Date().toISOString() : undefined;
     const updatedColumns = cols.map((c) =>
-      c.id === columnId ? { ...c, isArchived: !restore } : c
+      c.id === columnId ? { ...c, isArchived: !restore, archivedAt } : c
     );
 
     setProjects((prev) =>
-      prev.map((p) => (p.id === activeProject.id ? { ...p, columns: updatedColumns } : p))
+      prev.map((p) => (p.id === targetProj.id ? { ...p, columns: updatedColumns } : p))
     );
-    StorageService.updateProjectAsync(activeProject.id, { columns: updatedColumns });
+    StorageService.updateProjectAsync(targetProj.id, { columns: updatedColumns });
 
     recordActivity(
-      `${restore ? 'restaurou' : 'arquivou'} a coluna "${targetCol.title}" no quadro "${activeProject.name}"`
+      `${restore ? 'restaurou' : 'arquivou'} o quadro "${targetCol.title}" no projeto "${targetProj.name}"`
     );
     showToast({
-      type: 'info',
+      type: restore ? 'success' : 'info',
       message: restore
-        ? `Coluna "${targetCol.title}" restaurada para o quadro.`
-        : `Coluna "${targetCol.title}" arquivada. Você pode restaurá-la nas configurações do projeto.`,
-      actionLabel: !restore ? 'Desfazer' : undefined,
-      onAction: !restore ? () => handleArchiveColumn(columnId, true) : undefined,
+        ? `Quadro "${targetCol.title}" restaurado para o projeto.`
+        : `Quadro "${targetCol.title}" enviado para a aba Arquivados do projeto.`,
+      actionLabel: !restore ? 'Abrir Arquivados' : undefined,
+      onAction: !restore
+        ? () => {
+            setSelectedProjectId(targetProj.id);
+            handleViewModeChange('archived');
+          }
+        : undefined,
     });
   };
 
@@ -2999,6 +3117,8 @@ export default function App() {
           setTaskToEdit(task);
           setIsTaskModalOpen(true);
         }}
+        onRestoreColumn={(projId, colId) => handleArchiveColumn(colId, true, projId)}
+        onPermanentDeleteColumn={(projId, colId) => handleDeleteColumn(colId, projId, true)}
         onExportBackup={handleExportBackup}
         onImportBackup={handleImportBackup}
         onResetData={handleResetData}
@@ -3243,6 +3363,27 @@ export default function App() {
                     }}
                     onRemoveFromStock={handleRemoveFromStock}
                     onArchiveTask={handleArchiveTask}
+                    onBackToBoard={() => handleViewModeChange('kanban')}
+                  />
+                )}
+
+                {viewMode === 'archived' && canViewArchived && activeProject && (
+                  <ArchivedView
+                    project={activeProject}
+                    archivedColumns={activeProjectArchivedColumns}
+                    archivedTasks={activeProjectArchivedTasks}
+                    allProjectTasks={activeProjectAllNonDeletedTasks}
+                    workspaceMembers={workspaceMembers}
+                    onSelectTask={(task) => {
+                      setTaskToEdit(task);
+                      setIsTaskModalOpen(true);
+                    }}
+                    onRestoreTask={handleRestoreTask}
+                    onPermanentDeleteTask={handlePermanentDeleteTask}
+                    onRestoreColumn={(projId, colId) => handleArchiveColumn(colId, true, projId)}
+                    onPermanentDeleteColumn={(projId, colId) =>
+                      handleDeleteColumn(colId, projId, true)
+                    }
                     onBackToBoard={() => handleViewModeChange('kanban')}
                   />
                 )}

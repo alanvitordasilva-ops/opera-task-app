@@ -412,6 +412,7 @@ export interface BoardColumn {
   order: number;
   isCompletedColumn?: boolean;
   isArchived?: boolean;
+  archivedAt?: string;
 }
 
 export interface Tag {
@@ -585,6 +586,7 @@ export type ViewMode =
   | 'kanban'
   | 'list'
   | 'stock'
+  | 'archived'
   | 'my_tasks'
   | 'dashboard'
   | 'activity_feed';
