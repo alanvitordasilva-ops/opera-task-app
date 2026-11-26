@@ -45,7 +45,6 @@ import {
   Copy,
   CopyPlus,
   Package,
-  Columns3,
 } from 'lucide-react';
 import { ProjectIcon } from './ProjectIcon.tsx';
 import {
@@ -162,16 +161,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [dragOverWorkspaceId, setDragOverWorkspaceId] = useState<string | null>(null);
   const [isUserSwitcherOpen, setIsUserSwitcherOpen] = useState(false);
   const isMaster = isUserMaster(currentUser);
-  const [expandedArchivedProjects, setExpandedArchivedProjects] = useState<Record<string, boolean>>({});
   const [openMenuProjectId, setOpenMenuProjectId] = useState<string | null>(null);
   const [isArchivedBoardsExpanded, setIsArchivedBoardsExpanded] = useState(false);
   const [deleteConfirmProject, setDeleteConfirmProject] = useState<Project | null>(null);
-  const [deleteConfirmTask, setDeleteConfirmTask] = useState<Task | null>(null);
-  const [deleteConfirmColumn, setDeleteConfirmColumn] = useState<{
-    projectId: string;
-    columnId: string;
-    title: string;
-  } | null>(null);
   const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -791,393 +783,210 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 </button>
               </div>
             ) : (
-              <div className="space-y-1.5">
+              <div className="space-y-1">
                 {projects.map((proj) => {
                   const isSelected = selectedProjectId === proj.id;
-                const stats = taskCountsByProject[proj.id] || { pending: 0, total: 0 };
-                const projectArchivedColumns = (proj.columns || []).filter((c) => !!c.isArchived);
-                const projectArchivedTasks = archivedTasks.filter((t) => t.projectId === proj.id);
-                const totalArchivedCount = projectArchivedColumns.length + projectArchivedTasks.length;
-                const projectStockTasks = stockTasks.filter((t) => t.projectId === proj.id);
-                const isArchivedExpanded = !!expandedArchivedProjects[proj.id];
-                const isStockActiveForProject = activeView === 'stock' && isSelected;
-                const isArchivedActiveForProject = activeView === 'archived' && isSelected;
+                  const stats = taskCountsByProject[proj.id] || { pending: 0, total: 0 };
+                  const projectArchivedColumns = (proj.columns || []).filter((c) => !!c.isArchived);
+                  const projectArchivedTasks = archivedTasks.filter((t) => t.projectId === proj.id);
+                  const totalArchivedCount = projectArchivedColumns.length + projectArchivedTasks.length;
+                  const projectStockTasks = stockTasks.filter((t) => t.projectId === proj.id);
+                  const isStockActiveForProject = activeView === 'stock' && isSelected;
+                  const isArchivedActiveForProject = activeView === 'archived' && isSelected;
 
-                return (
-                  <div key={proj.id} className="space-y-0.5">
-                    {/* Item do Projeto Ativo */}
-                    <div
-                      className={`group flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium transition-colors ${
-                        isSelected && !isStockActiveForProject && !isArchivedActiveForProject
-                          ? 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-bold shadow-xs'
-                          : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/60'
-                      }`}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onSelectProject(proj.id);
-                          if (activeView !== 'kanban' && activeView !== 'list') {
-                            onChangeView('kanban');
-                          }
-                          onCloseMobile();
-                        }}
-                        className="flex items-center gap-2.5 min-w-0 flex-1 text-left"
+                  return (
+                    <div key={proj.id}>
+                      {/* Item do Projeto Ativo */}
+                      <div
+                        className={`group flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium transition-colors ${
+                          isSelected
+                            ? 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-bold shadow-xs'
+                            : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/60'
+                        }`}
                       >
-                        <span
-                          className="w-2.5 h-2.5 rounded-full shrink-0"
-                          style={{ backgroundColor: proj.color }}
-                        />
-                        <span className="truncate">{proj.name}</span>
-                      </button>
-
-                      <div className="flex items-center gap-1 relative shrink-0">
-                        <span className="text-[11px] text-slate-400">
-                          {stats.pending}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setOpenMenuProjectId(openMenuProjectId === proj.id ? null : proj.id);
-                          }}
-                          className={`p-1 rounded-md transition-all cursor-pointer ${
-                            openMenuProjectId === proj.id
-                              ? 'opacity-100 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 shadow-2xs'
-                              : 'opacity-70 sm:opacity-0 group-hover:opacity-100 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-white/80 dark:hover:bg-slate-700/70'
-                          }`}
-                          title={`Opções do quadro ${proj.name}`}
-                        >
-                          <MoreVertical className="w-3.5 h-3.5" />
-                        </button>
-
-                        {openMenuProjectId === proj.id && (
-                          <div
-                            className="absolute right-0 top-7 w-52 bg-white dark:bg-slate-800 rounded-xl shadow-xl border border-slate-200 dark:border-slate-700 py-1.5 z-50 animate-in fade-in zoom-in-95 duration-100"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setOpenMenuProjectId(null);
-                                onEditProject(proj);
-                              }}
-                              className="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 flex items-center gap-2 transition-colors font-medium cursor-pointer"
-                            >
-                              <Edit2 className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-                              <span>Editar</span>
-                            </button>
-
-                            {onDuplicateProject && (
-                              <>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setOpenMenuProjectId(null);
-                                    onDuplicateProject(proj.id, false);
-                                  }}
-                                  className="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 flex items-center gap-2 transition-colors cursor-pointer"
-                                >
-                                  <Copy className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-                                  <span>Copiar quadro</span>
-                                </button>
-
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setOpenMenuProjectId(null);
-                                    onDuplicateProject(proj.id, true);
-                                  }}
-                                  className="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 flex items-center gap-2 transition-colors cursor-pointer"
-                                >
-                                  <CopyPlus className="w-3.5 h-3.5 text-teal-500 shrink-0" />
-                                  <span>Duplicar com todos os cards</span>
-                                </button>
-                              </>
-                            )}
-
-                            {canDeleteProject(userRole, isMaster) && (onArchiveProject || onDeleteProject) && (
-                              <>
-                                <div className="my-1 border-t border-slate-100 dark:border-slate-700/60" />
-
-                                {onArchiveProject && (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setOpenMenuProjectId(null);
-                                      onArchiveProject(proj.id, true);
-                                    }}
-                                    className="w-full px-3 py-1.5 text-xs text-left text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30 flex items-center gap-2 transition-colors cursor-pointer"
-                                  >
-                                    <Archive className="w-3.5 h-3.5 shrink-0" />
-                                    <span>Arquivar</span>
-                                  </button>
-                                )}
-
-                                {onDeleteProject && (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setOpenMenuProjectId(null);
-                                      setDeleteConfirmProject(proj);
-                                    }}
-                                    className="w-full px-3 py-1.5 text-xs text-left text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 flex items-center gap-2 transition-colors font-medium cursor-pointer"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5 shrink-0" />
-                                    <span>Excluir</span>
-                                  </button>
-                                )}
-                              </>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Aba de Estoque do Projeto - Visível APENAS para Dono, Administrador e Produção */}
-                    {canViewStock && (
-                      <div className="ml-3 pl-2.5 border-l border-slate-200 dark:border-slate-800 py-0.5">
                         <button
                           type="button"
                           onClick={() => {
                             onSelectProject(proj.id);
-                            onChangeView('stock');
+                            if (activeView !== 'kanban' && activeView !== 'list') {
+                              onChangeView('kanban');
+                            }
                             onCloseMobile();
                           }}
-                          className={`w-full flex items-center justify-between px-2 py-1 rounded-lg text-[11px] transition-colors group/stock select-none cursor-pointer ${
-                            isStockActiveForProject
-                              ? 'bg-teal-50 dark:bg-teal-950/50 text-teal-700 dark:text-teal-300 font-bold'
-                              : 'text-slate-400 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-300 hover:bg-slate-100/60 dark:hover:bg-slate-800/40'
-                          }`}
-                          title={`Abrir aba Estoque de ${proj.name}`}
+                          className="flex items-center gap-2.5 min-w-0 flex-1 text-left"
                         >
-                          <div className="flex items-center gap-1.5 min-w-0">
-                            <Package
-                              className={`w-3 h-3 shrink-0 transition-colors ${
-                                isStockActiveForProject
-                                  ? 'text-teal-600 dark:text-teal-400'
-                                  : 'text-slate-400 group-hover/stock:text-teal-500'
-                              }`}
-                            />
-                            <span className={isStockActiveForProject ? 'font-bold truncate' : 'font-normal truncate'}>
-                              Estoque
-                            </span>
-                            <span
-                              className={`text-[10px] ${
-                                isStockActiveForProject
-                                  ? 'text-teal-600 dark:text-teal-300 font-bold'
-                                  : 'text-slate-400 dark:text-slate-500'
-                              }`}
-                            >
-                              ({projectStockTasks.length})
-                            </span>
-                          </div>
-                          <ChevronRight className="w-3 h-3 shrink-0 opacity-60" />
+                          <span
+                            className="w-2.5 h-2.5 rounded-full shrink-0"
+                            style={{ backgroundColor: proj.color }}
+                          />
+                          <span className="truncate">{proj.name}</span>
                         </button>
-                      </div>
-                    )}
 
-                    {/* Seção / Aba de Arquivados do Projeto (Quadros + Cards) - Visível APENAS para Dono e Administrador */}
-                    {canViewArchived && (
-                      <div className="ml-3 pl-2.5 border-l border-slate-200 dark:border-slate-800 space-y-1 py-0.5">
-                        <div className="flex items-center gap-0.5">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              onSelectProject(proj.id);
-                              onChangeView('archived');
-                              onCloseMobile();
-                            }}
-                            className={`flex-1 flex items-center justify-between px-2 py-1 rounded-lg text-[11px] transition-colors group/arch select-none cursor-pointer min-w-0 ${
-                              isArchivedActiveForProject
-                                ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300 font-bold'
-                                : 'text-slate-400 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-300 hover:bg-slate-100/60 dark:hover:bg-slate-800/40'
-                            }`}
-                            title={`Abrir aba Arquivados de ${proj.name} (${projectArchivedColumns.length} quadro(s) e ${projectArchivedTasks.length} card(s))`}
-                          >
-                            <div className="flex items-center gap-1.5 min-w-0">
-                              <Archive
-                                className={`w-3 h-3 shrink-0 transition-colors ${
-                                  isArchivedActiveForProject
-                                    ? 'text-amber-600 dark:text-amber-400'
-                                    : 'text-slate-400 group-hover/arch:text-amber-500'
-                                }`}
-                              />
-                              <span
-                                className={
-                                  isArchivedActiveForProject ? 'font-bold truncate' : 'font-normal truncate'
-                                }
-                              >
-                                Arquivados
-                              </span>
-                              <span
-                                className={`text-[10px] ${
-                                  isArchivedActiveForProject
-                                    ? 'text-amber-700 dark:text-amber-300 font-bold'
-                                    : 'text-slate-400 dark:text-slate-500'
-                                }`}
-                              >
-                                ({totalArchivedCount})
-                              </span>
-                            </div>
-                          </button>
-
+                        <div className="flex items-center gap-1 relative shrink-0">
+                          <span className="text-[11px] text-slate-400">
+                            {stats.pending}
+                          </span>
                           <button
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
-                              setExpandedArchivedProjects((prev) => ({
-                                ...prev,
-                                [proj.id]: !prev[proj.id],
-                              }));
+                              setOpenMenuProjectId(openMenuProjectId === proj.id ? null : proj.id);
                             }}
-                            className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 rounded-md hover:bg-slate-100/80 dark:hover:bg-slate-800/60 transition-colors cursor-pointer shrink-0"
-                            title={`${isArchivedExpanded ? 'Recolher' : 'Expandir'} lista rápida de arquivados`}
+                            className={`p-1 rounded-md transition-all cursor-pointer ${
+                              openMenuProjectId === proj.id || isStockActiveForProject || isArchivedActiveForProject
+                                ? 'opacity-100 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 shadow-2xs'
+                                : 'opacity-70 sm:opacity-0 group-hover:opacity-100 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-white/80 dark:hover:bg-slate-700/70'
+                            }`}
+                            title={`Opções do projeto ${proj.name}`}
                           >
-                            {isArchivedExpanded ? (
-                              <ChevronDown className="w-3 h-3" />
-                            ) : (
-                              <ChevronRight className="w-3 h-3" />
-                            )}
+                            <MoreVertical className="w-3.5 h-3.5" />
                           </button>
-                        </div>
 
-                        {/* Lista rápida inline de Quadros e Cards arquivados do projeto quando expandido */}
-                        {isArchivedExpanded && (
-                          <div className="space-y-1 pl-1 pt-0.5">
-                            {totalArchivedCount === 0 ? (
-                              <div className="px-2 py-1.5 text-[10px] text-slate-400 italic">
-                                Nenhum quadro ou card arquivado
-                              </div>
-                            ) : (
-                              <>
-                                {projectArchivedColumns.map((col) => (
-                                  <div
-                                    key={col.id}
-                                    className="group/item flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-lg bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200/70 dark:border-amber-900/50 hover:border-amber-300 dark:hover:border-amber-700 transition-all text-xs"
-                                  >
+                          {openMenuProjectId === proj.id && (
+                            <div
+                              className="absolute right-0 top-7 w-56 bg-white dark:bg-slate-800 rounded-xl shadow-xl border border-slate-200 dark:border-slate-700 py-1.5 z-50 animate-in fade-in zoom-in-95 duration-100"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              {/* Abas do Projeto: Estoque e Arquivados */}
+                              {(canViewStock || canViewArchived) && (
+                                <>
+                                  {canViewStock && (
                                     <button
                                       type="button"
                                       onClick={() => {
+                                        setOpenMenuProjectId(null);
+                                        onSelectProject(proj.id);
+                                        onChangeView('stock');
+                                        onCloseMobile();
+                                      }}
+                                      className={`w-full px-3 py-1.5 text-xs text-left flex items-center justify-between gap-2 transition-colors cursor-pointer ${
+                                        isStockActiveForProject
+                                          ? 'bg-teal-50 dark:bg-teal-950/50 text-teal-700 dark:text-teal-300 font-bold'
+                                          : 'text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 font-medium'
+                                      }`}
+                                      title={`Abrir aba Estoque de ${proj.name}`}
+                                    >
+                                      <span className="flex items-center gap-2 min-w-0">
+                                        <Package className="w-3.5 h-3.5 text-teal-500 shrink-0" />
+                                        <span className="truncate">Estoque</span>
+                                      </span>
+                                      <span className="text-[11px] font-semibold text-teal-600 dark:text-teal-400 shrink-0">
+                                        {projectStockTasks.length}
+                                      </span>
+                                    </button>
+                                  )}
+
+                                  {canViewArchived && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setOpenMenuProjectId(null);
                                         onSelectProject(proj.id);
                                         onChangeView('archived');
                                         onCloseMobile();
                                       }}
-                                      className="min-w-0 flex-1 text-left cursor-pointer"
-                                      title={`Ver quadro arquivado "${col.title}"`}
+                                      className={`w-full px-3 py-1.5 text-xs text-left flex items-center justify-between gap-2 transition-colors cursor-pointer ${
+                                        isArchivedActiveForProject
+                                          ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300 font-bold'
+                                          : 'text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 font-medium'
+                                      }`}
+                                      title={`Abrir aba Arquivados de ${proj.name} (${projectArchivedColumns.length} quadro(s) e ${projectArchivedTasks.length} card(s))`}
                                     >
-                                      <div className="flex items-center gap-1.5">
-                                        <span
-                                          className="w-2 h-2 rounded-full shrink-0"
-                                          style={{ backgroundColor: col.color || '#d97706' }}
-                                        />
-                                        <p className="font-bold text-[11px] text-zinc-900 dark:text-zinc-100 truncate">
-                                          {col.title}
-                                        </p>
-                                      </div>
-                                      <p className="text-[9px] font-semibold text-amber-700 dark:text-amber-300 flex items-center gap-1 mt-0.5">
-                                        <Columns3 className="w-2.5 h-2.5 shrink-0" />
-                                        <span>Quadro arquivado</span>
-                                      </p>
+                                      <span className="flex items-center gap-2 min-w-0">
+                                        <Archive className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                                        <span className="truncate">Arquivados</span>
+                                      </span>
+                                      <span className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 shrink-0">
+                                        {totalArchivedCount}
+                                      </span>
                                     </button>
+                                  )}
 
-                                    <div className="flex items-center gap-0.5 shrink-0">
-                                      {onRestoreColumn && (
-                                        <button
-                                          type="button"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            onRestoreColumn(proj.id, col.id);
-                                          }}
-                                          className="p-1 text-zinc-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-white dark:hover:bg-slate-750 rounded transition-colors cursor-pointer"
-                                          title="Restaurar quadro"
-                                        >
-                                          <RotateCcw className="w-3 h-3" />
-                                        </button>
-                                      )}
-                                      {onPermanentDeleteColumn && (
-                                        <button
-                                          type="button"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            setDeleteConfirmColumn({
-                                              projectId: proj.id,
-                                              columnId: col.id,
-                                              title: col.title,
-                                            });
-                                          }}
-                                          className="p-1 text-zinc-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-white dark:hover:bg-slate-750 rounded transition-colors cursor-pointer"
-                                          title="Excluir quadro permanentemente"
-                                        >
-                                          <Trash2 className="w-3 h-3" />
-                                        </button>
-                                      )}
-                                    </div>
-                                  </div>
-                                ))}
+                                  <div className="my-1 border-t border-slate-100 dark:border-slate-700/60" />
+                                </>
+                              )}
 
-                                {projectArchivedTasks.map((task) => (
-                                  <div
-                                    key={task.id}
-                                    className="group/item flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-lg bg-slate-50/80 dark:bg-slate-850/80 border border-slate-200/60 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 transition-all text-xs"
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setOpenMenuProjectId(null);
+                                  onEditProject(proj);
+                                }}
+                                className="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 flex items-center gap-2 transition-colors font-medium cursor-pointer"
+                              >
+                                <Edit2 className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                                <span>Editar</span>
+                              </button>
+
+                              {onDuplicateProject && (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setOpenMenuProjectId(null);
+                                      onDuplicateProject(proj.id, false);
+                                    }}
+                                    className="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 flex items-center gap-2 transition-colors cursor-pointer"
                                   >
+                                    <Copy className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                                    <span>Copiar quadro</span>
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setOpenMenuProjectId(null);
+                                      onDuplicateProject(proj.id, true);
+                                    }}
+                                    className="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 flex items-center gap-2 transition-colors cursor-pointer"
+                                  >
+                                    <CopyPlus className="w-3.5 h-3.5 text-teal-500 shrink-0" />
+                                    <span>Duplicar com todos os cards</span>
+                                  </button>
+                                </>
+                              )}
+
+                              {canDeleteProject(userRole, isMaster) && (onArchiveProject || onDeleteProject) && (
+                                <>
+                                  <div className="my-1 border-t border-slate-100 dark:border-slate-700/60" />
+
+                                  {onArchiveProject && (
                                     <button
                                       type="button"
-                                      onClick={() => onSelectArchivedTask?.(task)}
-                                      className="min-w-0 flex-1 text-left cursor-pointer"
-                                      title={`Visualizar "${task.title}"`}
+                                      onClick={() => {
+                                        setOpenMenuProjectId(null);
+                                        onArchiveProject(proj.id, true);
+                                      }}
+                                      className="w-full px-3 py-1.5 text-xs text-left text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30 flex items-center gap-2 transition-colors cursor-pointer"
                                     >
-                                      <p className="font-bold text-[11px] text-zinc-900 dark:text-zinc-100 truncate hover:text-blue-600 dark:hover:text-blue-400">
-                                        {task.title}
-                                      </p>
-                                      <p className="text-[9px] font-medium text-zinc-600 dark:text-zinc-300 truncate">
-                                        {task.archivedAt
-                                          ? new Date(task.archivedAt).toLocaleDateString('pt-BR', {
-                                              day: '2-digit',
-                                              month: '2-digit',
-                                              hour: '2-digit',
-                                              minute: '2-digit',
-                                            })
-                                          : 'Card arquivado'}
-                                      </p>
+                                      <Archive className="w-3.5 h-3.5 shrink-0" />
+                                      <span>Arquivar projeto</span>
                                     </button>
+                                  )}
 
-                                    <div className="flex items-center gap-0.5 shrink-0">
-                                      <button
-                                        type="button"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          onRestoreTask(task.id, task.columnId);
-                                        }}
-                                        className="p-1 text-zinc-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-white dark:hover:bg-slate-750 rounded transition-colors cursor-pointer"
-                                        title="Restaurar para o quadro"
-                                      >
-                                        <RotateCcw className="w-3 h-3" />
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setDeleteConfirmTask(task);
-                                        }}
-                                        className="p-1 text-zinc-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-white dark:hover:bg-slate-750 rounded transition-colors cursor-pointer"
-                                        title="Excluir permanentemente"
-                                      >
-                                        <Trash2 className="w-3 h-3" />
-                                      </button>
-                                    </div>
-                                  </div>
-                                ))}
-                              </>
-                            )}
-                          </div>
-                        )}
+                                  {onDeleteProject && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setOpenMenuProjectId(null);
+                                        setDeleteConfirmProject(proj);
+                                      }}
+                                      className="w-full px-3 py-1.5 text-xs text-left text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 flex items-center gap-2 transition-colors font-medium cursor-pointer"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                                      <span>Excluir</span>
+                                    </button>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </div>
                       </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+                    </div>
+                  );
+                })}
+              </div>
             )}
 
             {/* Seção de Quadros Arquivados (Restauração / Exclusão) */}
@@ -1457,40 +1266,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
           </div>
         </div>
-
-        {/* Modal de Confirmação Padronizado para Tarefas Arquivadas */}
-        {deleteConfirmTask && (
-          <ConfirmDeleteModal
-            isOpen={!!deleteConfirmTask}
-            onClose={() => setDeleteConfirmTask(null)}
-            onConfirm={() => {
-              onPermanentDeleteTask(deleteConfirmTask.id);
-              setDeleteConfirmTask(null);
-            }}
-            title="Excluir permanentemente este card?"
-            itemName={deleteConfirmTask.title}
-            itemType="este card"
-            message={`Tem certeza que deseja excluir permanentemente o card arquivado "${deleteConfirmTask.title}"? Esta ação não pode ser desfeita.`}
-            confirmButtonText="Excluir Definitivamente"
-          />
-        )}
-
-        {/* Modal de Confirmação Padronizado para Quadros (Colunas) Arquivados */}
-        {deleteConfirmColumn && onPermanentDeleteColumn && (
-          <ConfirmDeleteModal
-            isOpen={!!deleteConfirmColumn}
-            onClose={() => setDeleteConfirmColumn(null)}
-            onConfirm={() => {
-              onPermanentDeleteColumn(deleteConfirmColumn.projectId, deleteConfirmColumn.columnId);
-              setDeleteConfirmColumn(null);
-            }}
-            title="Excluir quadro arquivado permanentemente?"
-            itemName={deleteConfirmColumn.title}
-            itemType="este quadro"
-            message={`Tem certeza que deseja excluir permanentemente o quadro arquivado "${deleteConfirmColumn.title}" e seus cards? Esta ação não pode ser desfeita.`}
-            confirmButtonText="Excluir Definitivamente"
-          />
-        )}
 
         {/* Modal de Confirmação Padronizado para Quadros */}
         {deleteConfirmProject && onDeleteProject && (

@@ -35,6 +35,8 @@ import {
   sortWorkspacesByOrder,
   mergeTaskLists,
   getDeletedTaskIds,
+  getDeletedProjectIds,
+  getDeletedWorkspaceIds,
   buildUniqueTaskId,
   filterActiveTasksForProjects,
 } from './utils/helpers.ts';
@@ -254,13 +256,12 @@ export default function App() {
       setCurrentWorkspace(resolvedActiveWs);
       currentWorkspaceRef.current = resolvedActiveWs;
       StorageService.setCurrentWorkspaceId(resolvedActiveWs.id);
-      const ensuredProj = StorageService.ensureWorkspaceProject(resolvedActiveWs.id, resolvedActiveWs.name);
       const freshProjs = StorageService.getProjects();
       setProjects(freshProjs);
       setSelectedProjectId((prevProjId) => {
         const wsProjs = freshProjs.filter((p) => p.workspaceId === resolvedActiveWs!.id && !p.isArchived);
         if (wsProjs.some((p) => p.id === prevProjId)) return prevProjId;
-        return wsProjs[0]?.id || ensuredProj.id;
+        return wsProjs[0]?.id || 'all';
       });
       setClients(StorageService.getClients());
       setActivities(StorageService.getActivities());
@@ -428,7 +429,7 @@ export default function App() {
     const updatedUsers = users.map((u) => (u.id === updatedUser.id ? updatedUser : u));
     setUsers(updatedUsers);
     setCurrentUser(updatedUser);
-    StorageService.saveUsers(updatedUsers);
+    StorageService.saveUsers(updatedUsers, true, { action: 'update_user', targetId: updatedUser.id });
     StorageService.setCurrentUserId(updatedUser.id);
   };
 
@@ -467,6 +468,11 @@ export default function App() {
     }
     StorageService.saveTheme(theme);
   }, [theme]);
+
+  // Flags anti-eco: impedem que a montagem inicial ou atualizações vindas de outros dispositivos
+  // disparem broadcasts duplicados ou sobrescrevam o estado autoritativo no servidor.
+  const hasMountedSyncRef = useRef(false);
+  const remoteSyncSkipRef = useRef<Record<string, boolean>>({});
 
   // Sincronização autoritativa inicial com IndexedDB, servidor local e banco de dados remoto (Supabase)
   useEffect(() => {
@@ -539,6 +545,16 @@ export default function App() {
       const freshTasks = StorageService.getTasks();
       const freshTags = StorageService.getTags();
       const freshClients = StorageService.getClients();
+      const freshActivities = StorageService.getActivities();
+      const freshNotifications = StorageService.getNotifications();
+
+      remoteSyncSkipRef.current.users = true;
+      remoteSyncSkipRef.current.workspaces = true;
+      remoteSyncSkipRef.current.projects = true;
+      remoteSyncSkipRef.current.tasks = true;
+      remoteSyncSkipRef.current.tags = true;
+      remoteSyncSkipRef.current.activities = true;
+      remoteSyncSkipRef.current.notifications = true;
 
       setUsers(freshUsers);
       setWorkspaces(freshWorkspaces);
@@ -546,6 +562,8 @@ export default function App() {
       setClients(freshClients);
       setTasks((prev) => mergeTaskLists(prev, freshTasks, getDeletedTaskIds()));
       setTags(freshTags);
+      setActivities(freshActivities);
+      setNotifications(freshNotifications);
 
       // Nunca sobrescreve o usuário ou workspace antes da autenticação ou com referência desatualizada de closure
       if (!isAuthenticatedRef.current) {
@@ -571,7 +589,6 @@ export default function App() {
 
       if (preferredWs) {
         setCurrentWorkspace((prev) => (JSON.stringify(prev) === JSON.stringify(preferredWs) ? prev : preferredWs));
-        StorageService.ensureWorkspaceProject(preferredWs.id, preferredWs.name);
       }
     };
     fetchLatestServerState();
@@ -580,19 +597,16 @@ export default function App() {
   // Recarregar projetos e tarefas da nuvem do Supabase ao trocar de Workspace
   useEffect(() => {
     if (currentWorkspace?.id) {
-      const ensuredProj = StorageService.ensureWorkspaceProject(currentWorkspace.id, currentWorkspace.name);
-      setProjects((prev) => {
-        if (prev.some((p) => p.id === ensuredProj.id)) return prev;
-        return StorageService.getProjects();
-      });
       if (SupabaseService.isConfigured()) {
         StorageService.fetchProjectsCloud(currentWorkspace.id).then((res) => {
           if (res.success && Array.isArray(res.projects) && res.projects.length > 0) {
-            setProjects(res.projects);
+            remoteSyncSkipRef.current.projects = true;
+            setProjects(StorageService.getProjects());
           }
         });
         StorageService.fetchTasksCloud(currentWorkspace.id).then((res) => {
           if (res.success && Array.isArray(res.tasks)) {
+            remoteSyncSkipRef.current.tasks = true;
             setTasks((prev) => mergeTaskLists(prev, res.tasks, getDeletedTaskIds()));
           }
         });
@@ -622,9 +636,14 @@ export default function App() {
     } catch {}
   }, []);
 
-  // Auto-save de estado
+  // Auto-save de estado local (sem eco de rede para entidades que já fazem broadcast autoritativo explícito)
   useEffect(() => {
-    StorageService.saveUsers(users);
+    if (!hasMountedSyncRef.current) return;
+    if (remoteSyncSkipRef.current.users) {
+      remoteSyncSkipRef.current.users = false;
+      return;
+    }
+    StorageService.saveUsers(users, false, { skipBroadcast: true, skipCloudPush: true });
   }, [users]);
 
   useEffect(() => {
@@ -632,7 +651,12 @@ export default function App() {
   }, [currentUser.id]);
 
   useEffect(() => {
-    StorageService.saveWorkspaces(workspaces);
+    if (!hasMountedSyncRef.current) return;
+    if (remoteSyncSkipRef.current.workspaces) {
+      remoteSyncSkipRef.current.workspaces = false;
+      return;
+    }
+    StorageService.saveWorkspaces(workspaces, false, { skipBroadcast: true, skipCloudPush: true });
   }, [workspaces]);
 
   useEffect(() => {
@@ -640,104 +664,186 @@ export default function App() {
   }, [currentWorkspace.id]);
 
   useEffect(() => {
-    StorageService.saveProjects(projects, false, { skipCloudPush: true });
+    if (!hasMountedSyncRef.current) return;
+    if (remoteSyncSkipRef.current.projects) {
+      remoteSyncSkipRef.current.projects = false;
+      return;
+    }
+    StorageService.saveProjects(projects, false, { skipBroadcast: true, skipCloudPush: true });
   }, [projects]);
 
   useEffect(() => {
-    StorageService.saveTasks(tasks, false, { skipCloudPush: true });
+    if (!hasMountedSyncRef.current) return;
+    if (remoteSyncSkipRef.current.tasks) {
+      remoteSyncSkipRef.current.tasks = false;
+      return;
+    }
+    StorageService.saveTasks(tasks, false, { skipBroadcast: true, skipCloudPush: true });
   }, [tasks]);
 
+  // Tags, atividades e notificações propagam imediatamente quando alteradas localmente
   useEffect(() => {
-    StorageService.saveTags(tags);
+    if (!hasMountedSyncRef.current) return;
+    if (remoteSyncSkipRef.current.tags) {
+      remoteSyncSkipRef.current.tags = false;
+      return;
+    }
+    StorageService.saveTags(tags, true, { action: 'update_tags' });
   }, [tags]);
 
   useEffect(() => {
-    StorageService.saveActivities(activities);
+    if (!hasMountedSyncRef.current) return;
+    if (remoteSyncSkipRef.current.activities) {
+      remoteSyncSkipRef.current.activities = false;
+      return;
+    }
+    StorageService.saveActivities(activities, true, { action: 'update_activities' });
   }, [activities]);
 
   useEffect(() => {
-    StorageService.saveNotifications(notifications);
+    if (!hasMountedSyncRef.current) return;
+    if (remoteSyncSkipRef.current.notifications) {
+      remoteSyncSkipRef.current.notifications = false;
+      return;
+    }
+    StorageService.saveNotifications(notifications, true, { action: 'update_notifications' });
   }, [notifications]);
 
-  // Sincronização em Tempo Real (WebSockets + BroadcastChannel + Supabase)
+  // Ativa auto-save somente após o primeiro ciclo de montagem concluir
+  useEffect(() => {
+    hasMountedSyncRef.current = true;
+  }, []);
+
+  // Sincronização em Tempo Real Multiplataforma (WebSockets + HTTP Delta Polling + BroadcastChannel + Supabase)
   useEffect(() => {
     RealtimeService.init();
 
-    // Sincronização de Tarefas (Cards) com mesclagem não-destrutiva
+    // Sincronização de Tarefas (Cards) com respeito a exclusões e mesclagem segura
     const unsubTasks = RealtimeService.subscribe('tasks', (incomingTasks: Task[], meta) => {
       if (Array.isArray(incomingTasks)) {
         const action = String(meta?.action || '');
-        const isDestructive = action.includes('delete') || action.includes('reset');
+        const isAuthoritativeReplace =
+          action.includes('delete') ||
+          action.includes('reset') ||
+          action.includes('replace') ||
+          action === 'http_sync' ||
+          action === 'supabase_sync';
         const deletedIds = getDeletedTaskIds();
+        const deletedWsIds = new Set(getDeletedWorkspaceIds());
+        const deletedProjIds = new Set(getDeletedProjectIds());
+
+        const filteredIncoming = incomingTasks.filter(
+          (t) =>
+            t &&
+            t.id &&
+            !deletedIds.includes(t.id) &&
+            !deletedProjIds.has(t.projectId) &&
+            !deletedWsIds.has(t.workspaceId)
+        );
 
         setTasks((prev) => {
-          const next = isDestructive
-            ? incomingTasks.filter((t) => t && t.id && !deletedIds.includes(t.id))
-            : mergeTaskLists(prev, incomingTasks, deletedIds);
+          const next = isAuthoritativeReplace
+            ? filteredIncoming
+            : mergeTaskLists(prev, filteredIncoming, deletedIds);
           if (JSON.stringify(prev) === JSON.stringify(next)) return prev;
+          remoteSyncSkipRef.current.tasks = true;
           return next;
         });
 
         setTaskToEdit((currentOpen) => {
           if (!currentOpen) return null;
+          const wasDeleted =
+            deletedIds.includes(currentOpen.id) ||
+            (isAuthoritativeReplace && !filteredIncoming.some((t) => t.id === currentOpen.id));
+          if (wasDeleted) {
+            setIsTaskModalOpen(false);
+            return null;
+          }
           if (isTaskModalOpenRef.current) return currentOpen;
-          const fresh = incomingTasks.find((t) => t.id === currentOpen.id);
+          const fresh = filteredIncoming.find((t) => t.id === currentOpen.id);
           return fresh || currentOpen;
         });
       }
     });
 
-    // Sincronização de Projetos e Colunas
+    // Sincronização de Projetos e Quadros/Colunas (renomeação, cor, ordem, arquivamento, exclusão)
     const unsubProjects = RealtimeService.subscribe('projects', (incomingProjects: Project[]) => {
       if (Array.isArray(incomingProjects)) {
+        const deletedProjIds = new Set(getDeletedProjectIds());
+        const deletedWsIds = new Set(getDeletedWorkspaceIds());
+        const sanitized = incomingProjects.filter(
+          (p) => p && p.id && !deletedProjIds.has(p.id) && !deletedWsIds.has(p.workspaceId)
+        );
         setProjects((prev) => {
-          if (JSON.stringify(prev) === JSON.stringify(incomingProjects)) return prev;
-          return incomingProjects;
+          if (JSON.stringify(prev) === JSON.stringify(sanitized)) return prev;
+          remoteSyncSkipRef.current.projects = true;
+          return sanitized;
         });
       }
     });
 
-    // Sincronização de Workspaces e Membros
+    // Sincronização de Workspaces e Membros (respeita remoção/inscrição/reordenação/exclusão autoritativa)
     const unsubWorkspaces = RealtimeService.subscribe('workspaces', (incomingWorkspaces: Workspace[], meta) => {
       if (Array.isArray(incomingWorkspaces) && incomingWorkspaces.length > 0) {
         const action = String(meta?.action || '');
-        const isDestructive =
-          action.includes('reset') || action.includes('replace') || action.includes('delete');
+        const deletedWsIds = new Set(getDeletedWorkspaceIds());
+        const cleanIncoming = incomingWorkspaces.filter((w) => w && w.id && !deletedWsIds.has(w.id));
+        if (cleanIncoming.length === 0) return;
+
+        const isAuthoritative =
+          action.includes('reset') ||
+          action.includes('replace') ||
+          action.includes('delete') ||
+          action === 'remove_member' ||
+          action === 'sync_user_workspaces' ||
+          action === 'update_workspace' ||
+          action === 'reorder_workspaces' ||
+          action === 'enroll_members' ||
+          action === 'http_sync' ||
+          action === 'supabase_sync';
+
+        let resolvedList: Workspace[] = [];
         setWorkspaces((prev) => {
-          if (isDestructive) {
-            const next = sortWorkspacesByOrder(incomingWorkspaces);
-            if (JSON.stringify(prev) === JSON.stringify(next)) return prev;
-            return next;
+          let next: Workspace[];
+          if (isAuthoritative) {
+            next = sortWorkspacesByOrder(cleanIncoming);
+          } else {
+            const map = new Map<string, Workspace>();
+            prev.filter((w) => !deletedWsIds.has(w.id)).forEach((w) => map.set(w.id, w));
+            cleanIncoming.forEach((w) => {
+              const existing = map.get(w.id);
+              if (existing) {
+                map.set(w.id, { ...existing, ...w });
+              } else {
+                map.set(w.id, w);
+              }
+            });
+            next = sortWorkspacesByOrder(Array.from(map.values()));
           }
-          const map = new Map<string, Workspace>();
-          prev.forEach((w) => map.set(w.id, w));
-          incomingWorkspaces.forEach((w) => {
-            const existing = map.get(w.id);
-            if (existing) {
-              const mMap = new Map<string, Workspace['members'][number]>();
-              (existing.members || []).forEach((m) => m?.userId && mMap.set(m.userId, m));
-              (w.members || []).forEach((m) => m?.userId && mMap.set(m.userId, m));
-              map.set(w.id, { ...existing, ...w, members: Array.from(mMap.values()) });
-            } else {
-              map.set(w.id, w);
-            }
-          });
-          const merged = sortWorkspacesByOrder(Array.from(map.values()));
-          if (JSON.stringify(prev) === JSON.stringify(merged)) return prev;
-          return merged;
+          resolvedList = next;
+          if (JSON.stringify(prev) === JSON.stringify(next)) return prev;
+          remoteSyncSkipRef.current.workspaces = true;
+          return next;
         });
+
         setCurrentWorkspace((prev) => {
-          const updatedCurrent = incomingWorkspaces.find((w) => w.id === prev.id);
-          if (updatedCurrent) {
+          const pool = resolvedList.length > 0 ? resolvedList : sortWorkspacesByOrder(cleanIncoming);
+          const activeUserNow = currentUserRef.current;
+          const isMast = isUserMaster(activeUserNow);
+          const allUsersNow = StorageService.getUsers();
+          const updatedCurrent = pool.find((w) => w.id === prev.id);
+
+          if (updatedCurrent && (isMast || isWorkspaceMemberOrOwner(updatedCurrent, activeUserNow, allUsersNow))) {
             if (JSON.stringify(prev) !== JSON.stringify(updatedCurrent)) {
               return updatedCurrent;
             }
             return prev;
           }
-          if (isDestructive && incomingWorkspaces[0]) {
-            return incomingWorkspaces[0];
-          }
-          return prev;
+
+          const fallbackAllowed = isMast
+            ? pool[0]
+            : pool.find((w) => isWorkspaceMemberOrOwner(w, activeUserNow, allUsersNow)) || pool[0];
+          return fallbackAllowed || prev;
         });
       }
     });
@@ -747,6 +853,7 @@ export default function App() {
       if (Array.isArray(incomingUsers)) {
         setUsers((prev) => {
           if (JSON.stringify(prev) === JSON.stringify(incomingUsers)) return prev;
+          remoteSyncSkipRef.current.users = true;
           return incomingUsers;
         });
         setCurrentUser((prev) => {
@@ -762,8 +869,49 @@ export default function App() {
     // Sincronização de Clientes & Empresas
     const unsubClients = RealtimeService.subscribe('clients', (incomingClients: ClientCompany[]) => {
       if (Array.isArray(incomingClients)) {
-        setClients(incomingClients);
+        setClients((prev) => {
+          if (JSON.stringify(prev) === JSON.stringify(incomingClients)) return prev;
+          return incomingClients;
+        });
       }
+    });
+
+    // Sincronização de Tags
+    const unsubTags = RealtimeService.subscribe('tags', (incomingTags: Tag[]) => {
+      if (Array.isArray(incomingTags)) {
+        setTags((prev) => {
+          if (JSON.stringify(prev) === JSON.stringify(incomingTags)) return prev;
+          remoteSyncSkipRef.current.tags = true;
+          return incomingTags;
+        });
+      }
+    });
+
+    // Sincronização de Atividades
+    const unsubActivities = RealtimeService.subscribe('activities', (incomingActivities: WorkspaceActivity[]) => {
+      if (Array.isArray(incomingActivities)) {
+        setActivities((prev) => {
+          if (JSON.stringify(prev) === JSON.stringify(incomingActivities)) return prev;
+          remoteSyncSkipRef.current.activities = true;
+          return incomingActivities;
+        });
+      }
+    });
+
+    // Sincronização de Notificações
+    const unsubNotifications = RealtimeService.subscribe('notifications', (incomingNotifications: Notification[]) => {
+      if (Array.isArray(incomingNotifications)) {
+        setNotifications((prev) => {
+          if (JSON.stringify(prev) === JSON.stringify(incomingNotifications)) return prev;
+          remoteSyncSkipRef.current.notifications = true;
+          return incomingNotifications;
+        });
+      }
+    });
+
+    // Sincronização de Fichas Técnicas (já persistidas no localStorage/IndexedDB pelo RealtimeService)
+    const unsubFichas = RealtimeService.subscribe('fichas_tecnicas', () => {
+      // Listener ativo para manter o canal de fichas técnicas aquecido em todos os dispositivos
     });
 
     return () => {
@@ -772,6 +920,10 @@ export default function App() {
       unsubWorkspaces();
       unsubUsers();
       unsubClients();
+      unsubTags();
+      unsubActivities();
+      unsubNotifications();
+      unsubFichas();
     };
   }, []);
 
@@ -836,34 +988,10 @@ export default function App() {
     return getUserRoleInWorkspace(currentWorkspace, currentUser, users);
   }, [currentWorkspace, currentUser, users]);
 
-  // Projetos do workspace atual com garantia de persistência e fallback ativo anti-vazio
+  // Projetos ativos do workspace atual (sem criar projeto ou quadros pré-definidos automaticamente)
   const workspaceProjects = useMemo(() => {
     if (!currentWorkspace?.id) return [];
-    const allWsProjects = projects.filter((p) => p.workspaceId === currentWorkspace.id);
-    const activeList = allWsProjects.filter((p) => !p.isArchived);
-
-    // Se o workspace ainda não possuir nenhum quadro cadastrado, provê imediatamente o Quadro Principal ativo
-    if (allWsProjects.length === 0) {
-      const fallbackProject: Project = {
-        id: `proj-${currentWorkspace.id}-principal`,
-        workspaceId: currentWorkspace.id,
-        name: 'Quadro Principal',
-        description: `Quadro de tarefas e fluxo operacional do espaço ${currentWorkspace.name || 'Workspace'}`,
-        color: '#2563eb',
-        icon: 'folder',
-        columns: [
-          { id: `col-${currentWorkspace.id}-backlog`, title: 'Backlog', color: '#64748b', order: 0 },
-          { id: `col-${currentWorkspace.id}-progress`, title: 'Em Andamento', color: '#2563eb', order: 1 },
-          { id: `col-${currentWorkspace.id}-review`, title: 'Revisão / QA', color: '#d97706', order: 2 },
-          { id: `col-${currentWorkspace.id}-done`, title: 'Concluído', color: '#059669', order: 3, isCompletedColumn: true },
-        ],
-        memberIds: Array.isArray(currentWorkspace.members) ? currentWorkspace.members.map((m) => m.userId) : [currentWorkspace.ownerId],
-        isArchived: false,
-        createdAt: new Date().toISOString(),
-      };
-      return [fallbackProject];
-    }
-    return activeList;
+    return projects.filter((p) => p.workspaceId === currentWorkspace.id && !p.isArchived);
   }, [projects, currentWorkspace]);
 
   // Quadros arquivados do workspace atual
@@ -2049,10 +2177,13 @@ export default function App() {
         return exists ? prev.map((w) => (w.id === createdWs.id ? createdWs : w)) : [...prev, createdWs];
       });
       setCurrentWorkspace(createdWs);
+      currentWorkspaceRef.current = createdWs;
       StorageService.setCurrentWorkspaceId(createdWs.id);
       setProjects(StorageService.getProjects());
       setClients(StorageService.getClients());
-      setSelectedProjectId(res.project?.id || 'all');
+      setSelectedProjectId('all');
+      setViewMode('kanban');
+      StorageService.saveViewMode('kanban');
 
       recordActivity(
         extraMembers.length > 0
@@ -2077,7 +2208,11 @@ export default function App() {
     }
   };
 
-  const handleSaveWorkspace = (data: Partial<Workspace>, targetWorkspaceId?: string) => {
+  const handleSaveWorkspace = (
+    data: Partial<Workspace>,
+    targetWorkspaceId?: string,
+    action?: string
+  ) => {
     const targetId = targetWorkspaceId || currentWorkspace.id;
     const baseWs = workspaces.find((w) => w.id === targetId) || currentWorkspace;
 
@@ -2113,7 +2248,7 @@ export default function App() {
       setCurrentWorkspace(updatedWs);
     }
 
-    StorageService.updateWorkspaceAsync(targetId, nextUpdates);
+    StorageService.updateWorkspaceAsync(targetId, nextUpdates, action || 'update_workspace');
 
     if (typeof nextUpdates.name === 'string' && nextUpdates.name && nextUpdates.name !== baseWs.name) {
       recordActivity(`renomeou o workspace "${baseWs.name}" para "${nextUpdates.name}"`);
@@ -2294,7 +2429,7 @@ export default function App() {
 
   const handleRemoveMember = (userId: string) => {
     const updatedMembers = currentWorkspace.members.filter((m) => m.userId !== userId);
-    handleSaveWorkspace({ members: updatedMembers });
+    handleSaveWorkspace({ members: updatedMembers }, undefined, 'remove_member');
     if (SupabaseService.isConfigured()) {
       SupabaseService.removeWorkspaceMember(currentWorkspace.id, userId).catch(() => {});
     }
@@ -2382,7 +2517,7 @@ export default function App() {
       setProjects((prev) =>
         prev.map((p) => (p.id === projectData.id ? { ...p, ...projectData } : p))
       );
-      StorageService.updateProjectAsync(projectData.id, projectData);
+      StorageService.updateProjectAsync(projectData.id, projectData, 'update_project');
       recordActivity(`atualizou o projeto "${projectData.name}"`);
     } else {
       const newProj: Project = {
@@ -2529,7 +2664,7 @@ export default function App() {
           : p
       )
     );
-    StorageService.updateProjectAsync(targetProj.id, { columns: updatedColumns });
+    StorageService.updateProjectAsync(targetProj.id, { columns: updatedColumns }, 'delete_column');
 
     recordActivity(`excluiu o quadro "${deletedCol?.title || 'Quadro'}" do projeto "${targetProj.name}"`);
     showToast({
@@ -2706,7 +2841,7 @@ export default function App() {
     setProjects((prev) =>
       prev.map((p) => (p.id === activeProject.id ? { ...p, columns: updatedColumns } : p))
     );
-    StorageService.updateProjectAsync(activeProject.id, { columns: updatedColumns });
+    StorageService.updateProjectAsync(activeProject.id, { columns: updatedColumns }, 'reorder_columns');
     recordActivity(`reordenou os quadros em "${activeProject.name}"`);
   };
 
@@ -2730,7 +2865,7 @@ export default function App() {
     setProjects((prev) =>
       prev.map((p) => (p.id === activeProject.id ? { ...p, columns: updatedColumns } : p))
     );
-    StorageService.updateProjectAsync(activeProject.id, { columns: updatedColumns });
+    StorageService.updateProjectAsync(activeProject.id, { columns: updatedColumns }, 'update_column');
 
     recordActivity(
       prevCol.title !== trimmedTitle
@@ -2793,7 +2928,7 @@ export default function App() {
     setProjects((prev) =>
       prev.map((p) => (p.id === targetProj.id ? { ...p, columns: updatedColumns } : p))
     );
-    StorageService.updateProjectAsync(targetProj.id, { columns: updatedColumns });
+    StorageService.updateProjectAsync(targetProj.id, { columns: updatedColumns }, 'archive_column');
 
     recordActivity(
       `${restore ? 'restaurou' : 'arquivou'} o quadro "${targetCol.title}" no projeto "${targetProj.name}"`
@@ -2904,7 +3039,7 @@ export default function App() {
     } else if (!isArchived) {
       setSelectedProjectId(projectId);
     }
-    StorageService.updateProjectAsync(projectId, { isArchived });
+    StorageService.updateProjectAsync(projectId, { isArchived }, 'archive_project');
     const proj = projects.find((p) => p.id === projectId);
     recordActivity(`${isArchived ? 'arquivou' : 'desarquivou'} o quadro "${proj?.name || 'Quadro'}"`);
     showToast({
@@ -3204,6 +3339,14 @@ export default function App() {
           theme={theme}
           onToggleTheme={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
           onOpenNewTaskModal={() => {
+            if (workspaceProjects.length === 0) {
+              showToast({
+                type: 'info',
+                message: 'Crie seu primeiro projeto/quadro antes de adicionar cards.',
+              });
+              handleOpenCreateBoard();
+              return;
+            }
             setTaskToEdit(null);
             setDefaultColumnId(activeProject?.columns.find((c) => !c.isArchived)?.id || activeProject?.columns[0]?.id);
             setIsTaskModalOpen(true);
@@ -3288,7 +3431,7 @@ export default function App() {
         {/* Área Central Conforme ViewMode Selecionado com Espaço Seguro para Mobile Bottom Nav */}
         <main className="flex-1 overflow-y-auto px-3 sm:px-6 py-4 sm:py-6 pb-24 md:pb-8">
           <div className="max-w-7xl mx-auto h-full">
-            {workspaceProjects.length === 0 ? (
+            {workspaceProjects.length === 0 && viewMode !== 'archived' ? (
               <WelcomeEmptyState
                 onCreateFirstBoard={handleOpenCreateBoard}
                 onLoadSampleBoard={handleLoadSampleBoard}
@@ -3443,6 +3586,14 @@ export default function App() {
           onChangeView={handleViewModeChange}
           canAccessDashboard={canViewDashboard}
           onOpenNewTaskModal={() => {
+            if (workspaceProjects.length === 0) {
+              showToast({
+                type: 'info',
+                message: 'Crie seu primeiro projeto/quadro antes de adicionar cards.',
+              });
+              handleOpenCreateBoard();
+              return;
+            }
             setTaskToEdit(null);
             setDefaultColumnId(activeProject?.columns.find((c) => !c.isArchived)?.id || activeProject?.columns[0]?.id);
             setIsTaskModalOpen(true);
@@ -3613,7 +3764,7 @@ export default function App() {
         clients={clients}
         onUpdateUsers={(updated) => {
           setUsers(updated);
-          StorageService.saveUsers(updated);
+          StorageService.saveUsers(updated, true, { action: 'update_users' });
           const refreshedCurrent = updated.find((u) => u.id === currentUser.id);
           if (refreshedCurrent) {
             setCurrentUser(refreshedCurrent);
@@ -3621,7 +3772,7 @@ export default function App() {
         }}
         onUpdateWorkspaces={(updated) => {
           setWorkspaces(updated);
-          StorageService.saveWorkspaces(updated);
+          StorageService.saveWorkspaces(updated, true, { action: 'update_workspace' });
           const refreshedCurrentWs = updated.find((w) => w.id === currentWorkspace.id);
           if (refreshedCurrentWs) {
             setCurrentWorkspace(refreshedCurrentWs);
@@ -3629,15 +3780,15 @@ export default function App() {
         }}
         onUpdateProjects={(updated) => {
           setProjects(updated);
-          StorageService.saveProjects(updated);
+          StorageService.saveProjects(updated, true, { action: 'update_project' });
         }}
         onUpdateTasks={(updated) => {
           setTasks(updated);
-          StorageService.saveTasks(updated);
+          StorageService.saveTasks(updated, true, { action: 'update_task' });
         }}
         onUpdateClients={(updated) => {
           setClients(updated);
-          StorageService.saveClients(updated);
+          StorageService.saveClients(updated, true, { action: 'update_clients' });
         }}
         onSelectWorkspace={(workspaceId) => {
           handleSelectWorkspace(workspaceId);

@@ -35,6 +35,9 @@ import {
   getDeletedProjectIds,
   markProjectDeleted,
   clearProjectDeleted,
+  getDeletedWorkspaceIds,
+  markWorkspaceDeleted,
+  clearWorkspaceDeleted,
   mergeProjectColumns,
 } from '../utils/helpers.ts';
 
@@ -521,7 +524,10 @@ interface SaveMutationOptions {
   targetId?: string;
   replaceAll?: boolean;
   deletedTaskIds?: string[];
+  deletedProjectIds?: string[];
+  deletedWorkspaceIds?: string[];
   skipCloudPush?: boolean;
+  skipBroadcast?: boolean;
 }
 
 function handleSaveMutation(
@@ -533,7 +539,7 @@ function handleSaveMutation(
   pendingCount++;
   const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
 
-  // Broadcast em tempo real para todos os clientes conectados (celular e desktop)
+  // Broadcast em tempo real para todos os clientes conectados (Android, iOS, Web e Desktop)
   const keyToEntityMap: Record<string, SyncEntity> = {
     [STORAGE_KEYS.TASKS]: 'tasks',
     [STORAGE_KEYS.PROJECTS]: 'projects',
@@ -542,10 +548,11 @@ function handleSaveMutation(
     [STORAGE_KEYS.USERS]: 'users',
     [STORAGE_KEYS.TAGS]: 'tags',
     [STORAGE_KEYS.ACTIVITIES]: 'activities',
+    [STORAGE_KEYS.NOTIFICATIONS]: 'notifications',
     [STORAGE_KEYS.CLIENTS]: 'clients',
   };
   const entity = keyToEntityMap[entityKey];
-  if (entity) {
+  if (entity && !options?.skipBroadcast) {
     RealtimeService.broadcast(
       entity,
       data,
@@ -568,13 +575,19 @@ function handleSaveMutation(
       const currentOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
       const supaConfig = SupabaseService.getConfig();
 
-      if (currentOnline && supaConfig.enabled && supaConfig.url && !options?.skipCloudPush) {
+      if (currentOnline && supaConfig.enabled && supaConfig.url && !options?.skipCloudPush && !options?.skipBroadcast) {
         // Dispara sync em background sem travar
         StorageService.syncWithCloud().catch(() => {});
       }
 
-      // 3. Persistência Centralizada e Compartilhada no Servidor (apenas se API estiver disponível)
-      if (currentOnline && typeof window !== 'undefined' && entity && isServerApiAvailable()) {
+      // 3. Persistência Centralizada e Compartilhada no Servidor (com clientId + no-store + keepalive)
+      if (
+        currentOnline &&
+        typeof window !== 'undefined' &&
+        entity &&
+        !options?.skipBroadcast &&
+        isServerApiAvailable()
+      ) {
         const bodyPayload: Record<string, any> = {
           [entity]: data,
           clientId: RealtimeService.getClientId(),
@@ -584,14 +597,34 @@ function handleSaveMutation(
         if (options?.deletedTaskIds && options.deletedTaskIds.length > 0) {
           bodyPayload.deletedTaskIds = options.deletedTaskIds;
         }
+        if (options?.deletedProjectIds && options.deletedProjectIds.length > 0) {
+          bodyPayload.deletedProjectIds = options.deletedProjectIds;
+        }
+        if (options?.deletedWorkspaceIds && options.deletedWorkspaceIds.length > 0) {
+          bodyPayload.deletedWorkspaceIds = options.deletedWorkspaceIds;
+        }
+        const serialized = JSON.stringify(bodyPayload);
         fetch('/api/sync/state', {
           method: 'POST',
+          cache: 'no-store',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(bodyPayload),
-        }).catch((err) => {
-          setServerApiAvailable(false);
-          console.warn('[OperaTask] Servidor de sincronização indisponível:', err);
-        });
+          body: serialized,
+          keepalive: serialized.length < 60000,
+        })
+          .then(async (res) => {
+            if (res.status === 404) {
+              setServerApiAvailable(false);
+              return;
+            }
+            if (res.ok) {
+              const json = await res.json().catch(() => null);
+              if (json?.version) RealtimeService.updateKnownServerVersion(Number(json.version));
+            }
+          })
+          .catch((err) => {
+            // Nunca desabilita permanentemente o servidor por oscilação transitória de rede mobile
+            console.warn('[OperaTask] Falha temporária ao sincronizar com o servidor:', err);
+          });
       }
 
       pendingCount = Math.max(0, pendingCount - 1);
@@ -806,8 +839,9 @@ export const StorageService = {
   async pushLocalStateToServer(): Promise<void> {
     if (typeof window === 'undefined' || !isServerApiAvailable()) return;
     try {
-      await fetch('/api/sync/state', {
+      const res = await fetch('/api/sync/state', {
         method: 'POST',
+        cache: 'no-store',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           clientId: RealtimeService.getClientId(),
@@ -819,9 +853,17 @@ export const StorageService = {
           clients: this.getClients(),
           tags: this.getTags(),
           activities: this.getActivities(),
+          notifications: this.getNotifications(),
           fichas_tecnicas: this.getFichasTecnicas(),
+          deletedTaskIds: getDeletedTaskIds(),
+          deletedProjectIds: getDeletedProjectIds(),
+          deletedWorkspaceIds: getDeletedWorkspaceIds(),
         }),
       });
+      if (res.ok) {
+        const json = await res.json().catch(() => null);
+        if (json?.version) RealtimeService.updateKnownServerVersion(Number(json.version));
+      }
     } catch {}
   },
 
@@ -829,11 +871,29 @@ export const StorageService = {
   async syncWithServer(): Promise<boolean> {
     if (typeof window === 'undefined') return false;
     try {
-      const res = await fetch('/api/sync/state');
+      const res = await fetch('/api/sync/state', {
+        method: 'GET',
+        cache: 'no-store',
+        headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+      });
       if (res.ok) {
         const json = await res.json();
+        const nextVersion = Number(json.version || json.data?.version || 0);
+        if (nextVersion > 0) {
+          RealtimeService.updateKnownServerVersion(nextVersion);
+        }
         const data = json.data || json;
         if (data && typeof data === 'object') {
+          if (Array.isArray(data.deletedTaskIds)) {
+            data.deletedTaskIds.forEach((id: any) => id && markTaskDeleted(String(id)));
+          }
+          if (Array.isArray(data.deletedProjectIds)) {
+            data.deletedProjectIds.forEach((id: any) => id && markProjectDeleted(String(id)));
+          }
+          if (Array.isArray(data.deletedWorkspaceIds)) {
+            data.deletedWorkspaceIds.forEach((id: any) => id && markWorkspaceDeleted(String(id)));
+          }
+
           const serverResetRaw = data.lastResetAt || json.lastResetAt || null;
           const serverResetTs = serverResetRaw ? Date.parse(String(serverResetRaw)) : 0;
           const localResetTs = getLocalLastResetAtMs();
@@ -854,6 +914,7 @@ export const StorageService = {
           const serverWsCount = Array.isArray(data.workspaces) ? data.workspaces.length : 0;
           const serverProjCount = Array.isArray(data.projects) ? data.projects.length : 0;
           const serverTasksCount = Array.isArray(data.tasks) ? data.tasks.length : 0;
+          const deletedWsIds = new Set(getDeletedWorkspaceIds());
 
           if (Array.isArray(data.users) && data.users.length > 0) {
             const current = this.getUsers().filter((cu) => !isPreResetZombieRecord(cu, effectiveResetMs));
@@ -870,21 +931,16 @@ export const StorageService = {
             writeIndexedDB(STORAGE_KEYS.USERS, mergedUsers).catch(() => {});
           }
           if (Array.isArray(data.workspaces) && data.workspaces.length > 0) {
-            const currentWs = this.getWorkspaces().filter((cw) => !isPreResetZombieRecord(cw, effectiveResetMs));
+            const currentWs = this.getWorkspaces().filter(
+              (cw) => cw?.id && !deletedWsIds.has(cw.id) && !isPreResetZombieRecord(cw, effectiveResetMs)
+            );
             const wsMap = new Map<string, Workspace>();
             currentWs.forEach((cw) => wsMap.set(cw.id, cw));
             data.workspaces
-              .filter((rw: Workspace) => !isPreResetZombieRecord(rw, effectiveResetMs))
+              .filter((rw: Workspace) => rw?.id && !deletedWsIds.has(rw.id) && !isPreResetZombieRecord(rw, effectiveResetMs))
               .forEach((rw: Workspace) => {
                 const prev = wsMap.get(rw.id);
-                if (prev) {
-                  const mMap = new Map<string, Workspace['members'][number]>();
-                  (prev.members || []).forEach((m) => m?.userId && mMap.set(m.userId, m));
-                  (rw.members || []).forEach((m) => m?.userId && mMap.set(m.userId, m));
-                  wsMap.set(rw.id, { ...prev, ...rw, members: Array.from(mMap.values()) });
-                } else {
-                  wsMap.set(rw.id, rw);
-                }
+                wsMap.set(rw.id, prev ? { ...prev, ...rw } : rw);
               });
             const sortedWs = sortWorkspacesByOrder(Array.from(wsMap.values()));
             localStorage.setItem(STORAGE_KEYS.WORKSPACES, JSON.stringify(sortedWs));
@@ -894,11 +950,15 @@ export const StorageService = {
             const currentProj = this.getProjects().filter((cp) => !isPreResetZombieRecord(cp, effectiveResetMs));
             const deletedProjIds = new Set(getDeletedProjectIds());
             const filteredServerProj = data.projects.filter(
-              (mp: Project) => mp?.id && !deletedProjIds.has(mp.id) && !isPreResetZombieRecord(mp, effectiveResetMs)
+              (mp: Project) =>
+                mp?.id &&
+                !deletedProjIds.has(mp.id) &&
+                !deletedWsIds.has(mp.workspaceId) &&
+                !isPreResetZombieRecord(mp, effectiveResetMs)
             );
             const projMap = new Map<string, Project>();
             currentProj.forEach((cp) => {
-              if (cp?.id && !deletedProjIds.has(cp.id)) {
+              if (cp?.id && !deletedProjIds.has(cp.id) && !deletedWsIds.has(cp.workspaceId)) {
                 projMap.set(cp.id, cp);
               }
             });
@@ -906,12 +966,9 @@ export const StorageService = {
             filteredServerProj.forEach((sp: Project) => {
               const prev = projMap.get(sp.id);
               if (prev) {
-                const resolvedCols = mergeProjectColumns(
-                  prev.columns,
-                  sp.columns,
-                  sp.id,
-                  currentTasksForCols
-                );
+                const resolvedCols = Array.isArray(sp.columns) && sp.columns.length > 0
+                  ? sp.columns
+                  : mergeProjectColumns(prev.columns, sp.columns, sp.id, currentTasksForCols);
                 projMap.set(sp.id, { ...prev, ...sp, columns: resolvedCols });
               } else {
                 projMap.set(sp.id, sp);
@@ -924,7 +981,7 @@ export const StorageService = {
           if (Array.isArray(data.tasks) && data.tasks.length > 0) {
             const currentTasks = this.getTasks().filter((ct) => !isPreResetZombieRecord(ct, effectiveResetMs));
             const filteredServerTasks = data.tasks.filter(
-              (rt: Task) => !isPreResetZombieRecord(rt, effectiveResetMs)
+              (rt: Task) => !deletedWsIds.has(rt.workspaceId) && !isPreResetZombieRecord(rt, effectiveResetMs)
             );
             const mergedTasks = mergeTaskLists(currentTasks, filteredServerTasks, getDeletedTaskIds());
             localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(mergedTasks));
@@ -935,6 +992,12 @@ export const StorageService = {
           }
           if (Array.isArray(data.activities) && data.activities.length > 0) {
             localStorage.setItem(STORAGE_KEYS.ACTIVITIES, JSON.stringify(data.activities));
+          }
+          if (Array.isArray(data.notifications) && data.notifications.length > 0) {
+            localStorage.setItem(STORAGE_KEYS.NOTIFICATIONS, JSON.stringify(data.notifications));
+          }
+          if (Array.isArray(data.fichas_tecnicas) && data.fichas_tecnicas.length > 0) {
+            localStorage.setItem(STORAGE_KEYS.FICHAS_TECNICAS, JSON.stringify(data.fichas_tecnicas));
           }
           if (Array.isArray(data.clients) && data.clients.length > 0) {
             const currentClients = this.getClients().filter((cc) => !isPreResetZombieRecord(cc, effectiveResetMs));
@@ -1381,11 +1444,14 @@ export const StorageService = {
     try {
       const data = localStorage.getItem(STORAGE_KEYS.WORKSPACES);
       if (!data) {
-        this.saveWorkspaces(DEFAULT_WORKSPACES);
+        this.saveWorkspaces(DEFAULT_WORKSPACES, false, { skipBroadcast: true, skipCloudPush: true });
         return DEFAULT_WORKSPACES;
       }
       const parsed: Workspace[] = JSON.parse(data);
-      let clean = parsed.filter((w) => w.id !== 'ws-agency' && w.id !== 'ws-acme');
+      const deletedWsIds = new Set(getDeletedWorkspaceIds());
+      let clean = parsed.filter(
+        (w) => w && w.id && w.id !== 'ws-agency' && w.id !== 'ws-acme' && !deletedWsIds.has(w.id)
+      );
 
       // Sanitização multi-tenant: remove Master apenas de workspaces de terceiros onde ele NÃO seja o dono/criador
       let sanitized = false;
@@ -1414,7 +1480,7 @@ export const StorageService = {
       }
 
       if (clean.length === 0) {
-        this.saveWorkspaces(DEFAULT_WORKSPACES);
+        this.saveWorkspaces(DEFAULT_WORKSPACES, false, { skipBroadcast: true, skipCloudPush: true });
         return DEFAULT_WORKSPACES;
       }
       return sortWorkspacesByOrder(clean);
@@ -1794,20 +1860,25 @@ export const StorageService = {
   /**
    * Atualizar Projeto / Quadro com persistência imediata local, no servidor e no Supabase
    */
-  async updateProjectAsync(projectId: string, updates: Partial<Project>): Promise<{ success: boolean; error?: string }> {
+  async updateProjectAsync(
+    projectId: string,
+    updates: Partial<Project>,
+    action: string = 'update_project'
+  ): Promise<{ success: boolean; error?: string }> {
     const current = this.getProjects();
     const nextList = current.map((p) => (p.id === projectId ? { ...p, ...updates } : p));
     const updatedProject = nextList.find((p) => p.id === projectId);
-    this.saveProjects(nextList, true, { action: 'update_project', targetId: projectId, skipCloudPush: true });
+    this.saveProjects(nextList, true, { action, targetId: projectId, skipCloudPush: true });
 
     if (updatedProject && typeof window !== 'undefined' && isServerApiAvailable()) {
       const deltaPayload = JSON.stringify({
         projects: [updatedProject],
         clientId: RealtimeService.getClientId(),
-        action: 'update_project',
+        action,
       });
       fetch('/api/sync/state', {
         method: 'POST',
+        cache: 'no-store',
         headers: { 'Content-Type': 'application/json' },
         body: deltaPayload,
         keepalive: deltaPayload.length < 60000,
@@ -1885,23 +1956,21 @@ export const StorageService = {
 
   /**
    * Criar Workspace com persistência imediata local, no servidor e no Supabase
+   * (inicia limpo, sem projetos ou quadros pré-definidos)
    */
   async createWorkspaceAsync(
     workspace: Workspace
   ): Promise<{ success: boolean; workspace: Workspace; project?: Project; error?: string }> {
     let savedWorkspace = workspace;
 
-    // 1. Grava imediatamente em localStorage/IndexedDB para resposta instantânea sem disparar sync paralelo ainda
+    // 1. Grava imediatamente em localStorage/IndexedDB para resposta instantânea
     const current = this.getWorkspaces();
     let nextList = [...current.filter((w) => w.id !== workspace.id), savedWorkspace];
     localStorage.setItem(STORAGE_KEYS.WORKSPACES, JSON.stringify(nextList));
     writeIndexedDB(STORAGE_KEYS.WORKSPACES, nextList).catch(() => {});
     this.setCurrentWorkspaceId(savedWorkspace.id);
 
-    // 2. Cria Quadro Principal inicial localmente (sem push antecipado antes do workspace existir no banco)
-    const initialProject = this.ensureWorkspaceProject(savedWorkspace.id, savedWorkspace.name, true);
-
-    // 3. Persiste primeiro o Workspace no Supabase, e somente depois o seu Quadro Principal (evita erro de FK)
+    // 2. Persiste o Workspace no Supabase (sem criar projeto ou quadros pré-definidos)
     if (SupabaseService.isConfigured()) {
       try {
         const cloudRes = await SupabaseService.createWorkspace(savedWorkspace);
@@ -1909,46 +1978,47 @@ export const StorageService = {
           savedWorkspace = cloudRes.workspace;
           nextList = [...current.filter((w) => w.id !== savedWorkspace.id), savedWorkspace];
           localStorage.setItem(STORAGE_KEYS.WORKSPACES, JSON.stringify(nextList));
+          writeIndexedDB(STORAGE_KEYS.WORKSPACES, nextList).catch(() => {});
         } else if (!cloudRes.success) {
           console.warn('[StorageService] Falha na nuvem ao criar workspace:', cloudRes.error);
         }
-        await SupabaseService.createProject(initialProject).catch((projErr) => {
-          console.warn('[StorageService] Aviso ao criar quadro inicial no Supabase:', projErr);
-        });
       } catch (e: any) {
         console.warn('[StorageService] Erro ao gravar workspace no Supabase:', e);
       }
     }
 
-    // 4. Transmite via Realtime para todos os dispositivos conectados e atualiza o servidor central
+    // 3. Transmite via Realtime para todos os dispositivos conectados e atualiza o servidor central
     RealtimeService.broadcast('workspaces', nextList, {
       action: 'create_workspace',
       targetId: savedWorkspace.id,
       userName: savedWorkspace.name,
     });
-    RealtimeService.broadcast('projects', this.getProjects(), {
-      action: 'create_project',
-      targetId: initialProject.id,
-      userName: initialProject.name,
-    });
 
     if (isServerApiAvailable()) {
+      const payload = JSON.stringify({
+        workspaces: nextList,
+        clientId: RealtimeService.getClientId(),
+        action: 'create_workspace',
+      });
       fetch('/api/sync/state', {
         method: 'POST',
+        cache: 'no-store',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaces: nextList, projects: this.getProjects() }),
+        body: payload,
+        keepalive: payload.length < 60000,
       }).catch(() => {});
     }
 
-    return { success: true, workspace: savedWorkspace, project: initialProject };
+    return { success: true, workspace: savedWorkspace };
   },
 
   /**
-   * Atualizar metadados do Workspace (nome, descrição, cor, etc.) com persistência imediata
+   * Atualizar metadados do Workspace (nome, descrição, cor, membros, etc.) com persistência imediata
    */
   async updateWorkspaceAsync(
     workspaceId: string,
-    updates: Partial<Workspace>
+    updates: Partial<Workspace>,
+    action: string = 'update_workspace'
   ): Promise<{ success: boolean; workspace?: Workspace }> {
     const current = this.getWorkspaces();
     let updatedWorkspace: Workspace | undefined;
@@ -1960,21 +2030,12 @@ export const StorageService = {
       })
     );
 
-    this.saveWorkspaces(nextList, true);
-
-    RealtimeService.broadcast('workspaces', nextList, {
-      action: 'update_workspace',
+    this.saveWorkspaces(nextList, true, {
+      action,
       targetId: workspaceId,
-      userName: updatedWorkspace?.name,
+      replaceAll: true,
+      skipCloudPush: true,
     });
-
-    if (isServerApiAvailable()) {
-      fetch('/api/sync/state', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaces: nextList, replaceAll: true }),
-      }).catch(() => {});
-    }
 
     if (SupabaseService.isConfigured()) {
       SupabaseService.updateWorkspace(workspaceId, updates).catch((err) => {
@@ -2058,29 +2119,8 @@ export const StorageService = {
       };
     });
 
-    this.saveWorkspaces(nextWorkspaces, true, { skipCloudPush: true });
-    this.saveUsers(nextUsers, true, { skipCloudPush: true });
-
-    RealtimeService.broadcast('workspaces', nextWorkspaces, {
-      action: 'enroll_members',
-      targetId: workspaceId,
-      userName: updatedWorkspace?.name,
-    });
-    RealtimeService.broadcast('users', nextUsers, {
-      action: 'enroll_members',
-      targetId: workspaceId,
-    });
-
-    if (isServerApiAvailable()) {
-      fetch('/api/sync/state', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          workspaces: nextWorkspaces,
-          users: nextUsers,
-        }),
-      }).catch(() => {});
-    }
+    this.saveWorkspaces(nextWorkspaces, true, { action: 'enroll_members', targetId: workspaceId, skipCloudPush: true });
+    this.saveUsers(nextUsers, true, { action: 'enroll_members', targetId: workspaceId, skipCloudPush: true });
 
     if (SupabaseService.isConfigured()) {
       await Promise.all(
@@ -2168,29 +2208,18 @@ export const StorageService = {
       };
     });
 
-    this.saveWorkspaces(nextWorkspaces, true, { skipCloudPush: true });
-    this.saveUsers(nextUsers, true, { skipCloudPush: true });
-
-    RealtimeService.broadcast('workspaces', nextWorkspaces, {
+    this.saveWorkspaces(nextWorkspaces, true, {
       action: 'sync_user_workspaces',
       targetId: userId,
+      replaceAll: true,
+      skipCloudPush: true,
     });
-    RealtimeService.broadcast('users', nextUsers, {
+    this.saveUsers(nextUsers, true, {
       action: 'sync_user_workspaces',
       targetId: userId,
+      replaceAll: true,
+      skipCloudPush: true,
     });
-
-    if (isServerApiAvailable()) {
-      fetch('/api/sync/state', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          workspaces: nextWorkspaces,
-          users: nextUsers,
-          replaceAll: true,
-        }),
-      }).catch(() => {});
-    }
 
     if (SupabaseService.isConfigured()) {
       await Promise.all([
@@ -2222,20 +2251,12 @@ export const StorageService = {
       orderIndex: idx,
     }));
 
-    this.saveWorkspaces(indexed, true);
-
-    RealtimeService.broadcast('workspaces', indexed, {
+    this.saveWorkspaces(indexed, true, {
       action: 'reorder_workspaces',
       targetId: 'all',
+      replaceAll: true,
+      skipCloudPush: true,
     });
-
-    if (isServerApiAvailable()) {
-      fetch('/api/sync/state', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaces: indexed, replaceAll: true }),
-      }).catch(() => {});
-    }
 
     if (SupabaseService.isConfigured()) {
       SupabaseService.updateWorkspacesOrder(
@@ -2252,49 +2273,46 @@ export const StorageService = {
    * Excluir Workspace localmente e no banco de dados
    */
   async deleteWorkspaceAsync(workspaceId: string): Promise<{ success: boolean }> {
+    markWorkspaceDeleted(workspaceId);
     const current = this.getWorkspaces();
     const filtered = current.filter((w) => w.id !== workspaceId);
-    this.saveWorkspaces(filtered, true);
 
     if (this.getCurrentWorkspace().id === workspaceId && filtered.length > 0) {
       this.setCurrentWorkspaceId(filtered[0].id);
     }
 
-    // Remove também quadros e tarefas associados a este workspace no estado local
+    // Remove também quadros e tarefas associados a este workspace no estado local e registra tombstones
     const currentProjects = this.getProjects();
+    const deletedProjectIds = currentProjects.filter((p) => p.workspaceId === workspaceId).map((p) => p.id);
+    deletedProjectIds.forEach((pid) => markProjectDeleted(pid));
     const filteredProjects = currentProjects.filter((p) => p.workspaceId !== workspaceId);
-    this.saveProjects(filteredProjects, true);
 
     const currentTasks = this.getTasks();
+    const deletedTaskIds = currentTasks.filter((t) => t.workspaceId === workspaceId).map((t) => t.id);
+    deletedTaskIds.forEach((tid) => markTaskDeleted(tid));
     const filteredTasks = currentTasks.filter((t) => t.workspaceId !== workspaceId);
-    this.saveTasks(filteredTasks, true);
 
-    RealtimeService.broadcast('workspaces', filtered, {
+    this.saveWorkspaces(filtered, true, {
       action: 'delete_workspace',
       targetId: workspaceId,
+      replaceAll: true,
+      deletedWorkspaceIds: [workspaceId],
+      skipCloudPush: true,
     });
-    RealtimeService.broadcast('projects', filteredProjects, {
+    this.saveProjects(filteredProjects, true, {
       action: 'delete_workspace_projects',
       targetId: workspaceId,
+      replaceAll: true,
+      deletedProjectIds,
+      skipCloudPush: true,
     });
-    RealtimeService.broadcast('tasks', filteredTasks, {
+    this.saveTasks(filteredTasks, true, {
       action: 'delete_workspace_tasks',
       targetId: workspaceId,
+      replaceAll: true,
+      deletedTaskIds,
+      skipCloudPush: true,
     });
-
-    if (isServerApiAvailable()) {
-      fetch('/api/sync/state', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          replaceAll: true,
-          action: 'delete_workspace',
-          workspaces: filtered,
-          projects: filteredProjects,
-          tasks: filteredTasks,
-        }),
-      }).catch(() => {});
-    }
 
     if (SupabaseService.isConfigured()) {
       try {
@@ -3496,7 +3514,7 @@ export const StorageService = {
     try {
       const data = localStorage.getItem(STORAGE_KEYS.TAGS);
       if (!data) {
-        this.saveTags(DEFAULT_TAGS);
+        this.saveTags(DEFAULT_TAGS, false, { skipBroadcast: true, skipCloudPush: true });
         return DEFAULT_TAGS;
       }
       return JSON.parse(data);
@@ -3505,16 +3523,16 @@ export const StorageService = {
     }
   },
 
-  saveTags(tags: Tag[], immediate = true): void {
+  saveTags(tags: Tag[], immediate = true, options?: SaveMutationOptions): void {
     localStorage.setItem(STORAGE_KEYS.TAGS, JSON.stringify(tags));
-    handleSaveMutation(STORAGE_KEYS.TAGS, tags, immediate);
+    handleSaveMutation(STORAGE_KEYS.TAGS, tags, immediate, options);
   },
 
   getActivities(): WorkspaceActivity[] {
     try {
       const data = localStorage.getItem(STORAGE_KEYS.ACTIVITIES);
       if (!data) {
-        this.saveActivities(DEFAULT_ACTIVITIES);
+        this.saveActivities(DEFAULT_ACTIVITIES, true, { skipBroadcast: true });
         return DEFAULT_ACTIVITIES;
       }
       return JSON.parse(data);
@@ -3523,9 +3541,9 @@ export const StorageService = {
     }
   },
 
-  saveActivities(activities: WorkspaceActivity[], immediate = true): void {
+  saveActivities(activities: WorkspaceActivity[], immediate = true, options?: SaveMutationOptions): void {
     localStorage.setItem(STORAGE_KEYS.ACTIVITIES, JSON.stringify(activities));
-    handleSaveMutation(STORAGE_KEYS.ACTIVITIES, activities, immediate);
+    handleSaveMutation(STORAGE_KEYS.ACTIVITIES, activities, immediate, options);
   },
 
   addActivity(activity: Omit<WorkspaceActivity, 'id' | 'timestamp'>): void {
@@ -3542,7 +3560,7 @@ export const StorageService = {
     try {
       const data = localStorage.getItem(STORAGE_KEYS.NOTIFICATIONS);
       if (!data) {
-        this.saveNotifications(DEFAULT_NOTIFICATIONS);
+        this.saveNotifications(DEFAULT_NOTIFICATIONS, true, { skipBroadcast: true });
         return DEFAULT_NOTIFICATIONS;
       }
       return JSON.parse(data);
@@ -3551,9 +3569,9 @@ export const StorageService = {
     }
   },
 
-  saveNotifications(notifications: Notification[], immediate = true): void {
+  saveNotifications(notifications: Notification[], immediate = true, options?: SaveMutationOptions): void {
     localStorage.setItem(STORAGE_KEYS.NOTIFICATIONS, JSON.stringify(notifications));
-    handleSaveMutation(STORAGE_KEYS.NOTIFICATIONS, notifications, immediate);
+    handleSaveMutation(STORAGE_KEYS.NOTIFICATIONS, notifications, immediate, options);
   },
 
   addNotification(notif: Omit<Notification, 'id' | 'read' | 'createdAt'>): void {
@@ -3662,20 +3680,20 @@ export const StorageService = {
           return parsed;
         }
       }
-      // Se não houver nada salvo ainda, inicializa com receitas padrão e salva
-      this.saveFichasTecnicas(DEFAULT_FICHAS_TECNICAS, true);
+      // Se não houver nada salvo ainda, inicializa com receitas padrão localmente sem sobrescrever outros usuários
+      this.saveFichasTecnicas(DEFAULT_FICHAS_TECNICAS, false, { skipBroadcast: true, skipCloudPush: true });
       return DEFAULT_FICHAS_TECNICAS;
     } catch {
       return DEFAULT_FICHAS_TECNICAS;
     }
   },
 
-  saveFichasTecnicas(fichas: FichaTecnica[], immediate = false): void {
+  saveFichasTecnicas(fichas: FichaTecnica[], immediate = false, options?: SaveMutationOptions): void {
     localStorage.setItem(STORAGE_KEYS.FICHAS_TECNICAS, JSON.stringify(fichas));
-    handleSaveMutation(STORAGE_KEYS.FICHAS_TECNICAS, fichas, immediate);
+    handleSaveMutation(STORAGE_KEYS.FICHAS_TECNICAS, fichas, immediate, options);
   },
 
-  saveFichaTecnica(ficha: FichaTecnica, immediate = false): FichaTecnica {
+  saveFichaTecnica(ficha: FichaTecnica, immediate = true): FichaTecnica {
     const list = this.getFichasTecnicas();
     const cleanName = ficha.nomeItem.trim();
     const existingIndex = list.findIndex(
@@ -3699,7 +3717,7 @@ export const StorageService = {
       updatedList = [updatedFicha, ...list];
     }
 
-    this.saveFichasTecnicas(updatedList, immediate);
+    this.saveFichasTecnicas(updatedList, immediate, { action: 'update_ficha_tecnica', targetId: updatedFicha.id });
     return updatedFicha;
   },
 

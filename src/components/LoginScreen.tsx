@@ -340,13 +340,14 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                   uMap.set(ru.id, { ...uMap.get(ru.id), ...ru });
                 });
               uMap.set(mergedUser.id, { ...uMap.get(mergedUser.id), ...mergedUser });
-              StorageService.saveUsers(Array.from(uMap.values()), true, { skipCloudPush: true });
+              StorageService.saveUsers(Array.from(uMap.values()), true, { skipCloudPush: true, skipBroadcast: true });
             }
             if (Array.isArray(data.workspaces) && data.workspaces.length > 0) {
               const currentWs = StorageService.getWorkspaces().filter((w) => !isZombie(w));
               const validWs = data.workspaces.filter((rw: any) => !isZombie(rw));
               StorageService.saveWorkspaces(mergeWorkspaceLists(currentWs, validWs), true, {
                 skipCloudPush: true,
+                skipBroadcast: true,
               });
             }
             if (Array.isArray(data.projects) && data.projects.length > 0) {
@@ -356,7 +357,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               data.projects
                 .filter((p: any) => !isZombie(p))
                 .forEach((p: any) => p?.id && pMap.set(p.id, { ...pMap.get(p.id), ...p }));
-              StorageService.saveProjects(Array.from(pMap.values()), true, { skipCloudPush: true });
+              StorageService.saveProjects(Array.from(pMap.values()), true, { skipCloudPush: true, skipBroadcast: true });
             }
             if (Array.isArray(data.tasks) && data.tasks.length > 0) {
               const curT = StorageService.getTasks().filter((t) => !isZombie(t));
@@ -365,7 +366,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               data.tasks
                 .filter((t: any) => !isZombie(t))
                 .forEach((t: any) => t?.id && tMap.set(t.id, { ...tMap.get(t.id), ...t }));
-              StorageService.saveTasks(Array.from(tMap.values()), true, { skipCloudPush: true });
+              StorageService.saveTasks(Array.from(tMap.values()), true, { skipCloudPush: true, skipBroadcast: true });
             }
             if (Array.isArray(data.clients) && data.clients.length > 0) {
               const curC = StorageService.getClients().filter((c) => !isZombie(c));
@@ -374,7 +375,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               data.clients
                 .filter((c: any) => !isZombie(c))
                 .forEach((c: any) => c?.id && cMap.set(c.id, { ...cMap.get(c.id), ...c }));
-              StorageService.saveClients(Array.from(cMap.values()), true, { skipCloudPush: true });
+              StorageService.saveClients(Array.from(cMap.values()), true, { skipCloudPush: true, skipBroadcast: true });
             }
 
             // Se o navegador local possuir mais dados que o servidor (ex.: após reinício do servidor), repovoa o servidor automaticamente

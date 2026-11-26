@@ -79,8 +79,11 @@ function readDb(): Record<string, any> {
   return { ...INITIAL_SERVER_DATA };
 }
 
-function writeDb(data: Record<string, any>) {
+function writeDb(data: Record<string, any>, preserveVersion = false) {
   try {
+    if (!preserveVersion) {
+      data.version = Math.max(Date.now(), (Number(data.version) || 0) + 1);
+    }
     fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
   } catch (e) {
     console.error('[OperaTask Server] Erro ao salvar DB:', e);
@@ -117,11 +120,22 @@ function parseJsonBody(req: any): Promise<any> {
 function operataskRealtimePlugin() {
   let wss: WebSocketServer | null = null;
   const sharedCache: Record<string, any> = readDb();
+  if (typeof sharedCache.version !== 'number') {
+    sharedCache.version = Date.now();
+  }
+  if (!Array.isArray(sharedCache.deletedTaskIds)) sharedCache.deletedTaskIds = [];
+  if (!Array.isArray(sharedCache.deletedProjectIds)) sharedCache.deletedProjectIds = [];
+  if (!Array.isArray(sharedCache.deletedWorkspaceIds)) sharedCache.deletedWorkspaceIds = [];
   writeDb(sharedCache);
+
+  const bumpVersion = () => {
+    sharedCache.version = Math.max(Date.now(), (Number(sharedCache.version) || 0) + 1);
+    return sharedCache.version;
+  };
 
   const broadcastWs = (data: any, excludeWs?: any) => {
     if (!wss) return;
-    const raw = JSON.stringify(data);
+    const raw = JSON.stringify({ ...data, version: data.version ?? sharedCache.version });
     wss.clients.forEach((client: any) => {
       if (client !== excludeWs && client.readyState === 1 /* OPEN */) {
         try {
@@ -138,6 +152,27 @@ function operataskRealtimePlugin() {
 
       wss = new WebSocketServer({ noServer: true });
 
+      // Heartbeat no servidor para limpar sockets mobile mortos/suspensos (Android/iOS)
+      const wsCleanupInterval = setInterval(() => {
+        if (!wss) return;
+        wss.clients.forEach((client: any) => {
+          if (client.isAlive === false) {
+            try {
+              client.terminate();
+            } catch {}
+            return;
+          }
+          client.isAlive = false;
+          try {
+            client.ping();
+          } catch {}
+        });
+      }, 30000);
+
+      server.httpServer.on('close', () => {
+        clearInterval(wsCleanupInterval);
+      });
+
       server.httpServer.on('upgrade', (request: any, socket: any, head: any) => {
         try {
           const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
@@ -152,39 +187,68 @@ function operataskRealtimePlugin() {
       });
 
       wss.on('connection', (ws: any) => {
+        ws.isAlive = true;
+        ws.on('pong', () => {
+          ws.isAlive = true;
+        });
+
         try {
+          const latestDb = readDb();
+          Object.assign(sharedCache, latestDb);
           ws.send(
             JSON.stringify({
               type: 'INITIAL_STATE',
               payload: sharedCache,
+              version: sharedCache.version,
               actionMeta: sharedCache.lastResetAt
                 ? { action: 'initial_sync', lastResetAt: sharedCache.lastResetAt }
-                : undefined,
+                : { action: 'initial_sync' },
             })
           );
         } catch {}
 
         ws.on('message', (raw: any) => {
+          ws.isAlive = true;
           try {
             const data = JSON.parse(raw.toString());
             if (data.type === 'SYNC_UPDATE' && data.entity) {
               const action = String(data.actionMeta?.action || '');
+              const targetId = data.actionMeta?.targetId ? String(data.actionMeta.targetId) : '';
               const isResetOrDelete = action.includes('delete') || action.includes('reset');
+              const isAuthoritativeWs =
+                isResetOrDelete ||
+                action === 'update_workspace' ||
+                action === 'remove_member' ||
+                action === 'sync_user_workspaces' ||
+                action === 'reorder_workspaces';
+
               if (action.includes('reset')) {
                 sharedCache.lastResetAt = data.timestamp || new Date().toISOString();
+                sharedCache.deletedTaskIds = [];
+                sharedCache.deletedProjectIds = [];
+                sharedCache.deletedWorkspaceIds = [];
               }
+
               if (data.entity === 'tasks' && Array.isArray(data.payload)) {
+                if (action.includes('delete') && targetId) {
+                  sharedCache.deletedTaskIds = Array.from(
+                    new Set([targetId, ...(sharedCache.deletedTaskIds || [])])
+                  ).slice(0, 2000);
+                }
+                const deletedTaskSet = new Set<string>(sharedCache.deletedTaskIds || []);
                 if (isResetOrDelete) {
-                  sharedCache.tasks = data.payload;
+                  sharedCache.tasks = data.payload.filter((t: any) => t?.id && !deletedTaskSet.has(t.id));
                 } else {
                   const getTs = (t: any) => {
                     const ts = Date.parse(t?.updatedAt || t?.createdAt || '');
                     return Number.isNaN(ts) ? 0 : ts;
                   };
                   const taskMap = new Map<string, any>();
-                  (sharedCache.tasks || []).forEach((t: any) => t?.id && taskMap.set(t.id, t));
+                  (sharedCache.tasks || []).forEach((t: any) => {
+                    if (t?.id && !deletedTaskSet.has(t.id)) taskMap.set(t.id, t);
+                  });
                   data.payload.forEach((t: any) => {
-                    if (!t?.id) return;
+                    if (!t?.id || deletedTaskSet.has(t.id)) return;
                     const prev = taskMap.get(t.id);
                     if (!prev || getTs(t) >= getTs(prev)) {
                       taskMap.set(t.id, prev ? { ...prev, ...t } : t);
@@ -192,13 +256,72 @@ function operataskRealtimePlugin() {
                   });
                   sharedCache.tasks = Array.from(taskMap.values());
                 }
+              } else if (data.entity === 'projects' && Array.isArray(data.payload)) {
+                if (action.includes('delete') && targetId && !action.includes('column')) {
+                  sharedCache.deletedProjectIds = Array.from(
+                    new Set([targetId, ...(sharedCache.deletedProjectIds || [])])
+                  ).slice(0, 2000);
+                }
+                const deletedProjSet = new Set<string>(sharedCache.deletedProjectIds || []);
+                if (isResetOrDelete || action.includes('column') || action === 'update_project') {
+                  sharedCache.projects = data.payload.filter((p: any) => p?.id && !deletedProjSet.has(p.id));
+                } else {
+                  const projMap = new Map<string, any>();
+                  (sharedCache.projects || []).forEach((p: any) => {
+                    if (p?.id && !deletedProjSet.has(p.id)) projMap.set(p.id, p);
+                  });
+                  data.payload.forEach((p: any) => {
+                    if (p?.id && !deletedProjSet.has(p.id)) {
+                      projMap.set(p.id, { ...projMap.get(p.id), ...p });
+                    }
+                  });
+                  sharedCache.projects = Array.from(projMap.values());
+                }
+              } else if (data.entity === 'workspaces' && Array.isArray(data.payload)) {
+                if (action === 'delete_workspace' && targetId) {
+                  sharedCache.deletedWorkspaceIds = Array.from(
+                    new Set([targetId, ...(sharedCache.deletedWorkspaceIds || [])])
+                  ).slice(0, 500);
+                }
+                const deletedWsSet = new Set<string>(sharedCache.deletedWorkspaceIds || []);
+                if (isAuthoritativeWs) {
+                  sharedCache.workspaces = data.payload.filter((w: any) => w?.id && !deletedWsSet.has(w.id));
+                } else {
+                  const wsMap = new Map<string, any>();
+                  (sharedCache.workspaces || []).forEach((w: any) => {
+                    if (w?.id && !deletedWsSet.has(w.id)) wsMap.set(w.id, w);
+                  });
+                  data.payload.forEach((w: any) => {
+                    if (!w?.id || deletedWsSet.has(w.id)) return;
+                    const prev = wsMap.get(w.id);
+                    if (prev) {
+                      const mMap = new Map<string, any>();
+                      (Array.isArray(prev.members) ? prev.members : []).forEach((m: any) => m?.userId && mMap.set(m.userId, m));
+                      (Array.isArray(w.members) ? w.members : []).forEach((m: any) => m?.userId && mMap.set(m.userId, m));
+                      wsMap.set(w.id, { ...prev, ...w, members: Array.from(mMap.values()) });
+                    } else {
+                      wsMap.set(w.id, w);
+                    }
+                  });
+                  sharedCache.workspaces = Array.from(wsMap.values());
+                }
               } else {
                 sharedCache[data.entity] = data.payload;
               }
+
+              const nextVersion = bumpVersion();
               writeDb(sharedCache);
-              broadcastWs(data, ws);
+              // Transmite o estado autoritativo mesclado do servidor para todos os outros dispositivos conectados
+              broadcastWs(
+                {
+                  ...data,
+                  payload: sharedCache[data.entity],
+                  version: nextVersion,
+                },
+                ws
+              );
             } else if (data.type === 'PING') {
-              ws.send(JSON.stringify({ type: 'PONG' }));
+              ws.send(JSON.stringify({ type: 'PONG', version: sharedCache.version }));
             }
           } catch (e) {
             console.error('Realtime WS error:', e);
@@ -210,15 +333,41 @@ function operataskRealtimePlugin() {
       server.middlewares.use(async (req: any, res: any, next: any) => {
         const url = req.url?.split('?')[0];
 
-        // 1. Estado Completo Compartilhado (Sync Cross-Device Web e Mobile)
+        if (url && url.startsWith('/api/')) {
+          res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+          res.setHeader('Pragma', 'no-cache');
+          res.setHeader('Expires', '0');
+        }
+
+        // 1. Estado Completo Compartilhado (Sync Cross-Device Web e Mobile Android/iOS)
         if (url === '/api/sync/state') {
           res.setHeader('Content-Type', 'application/json');
           if (req.method === 'GET') {
             const latestDb = readDb();
             Object.assign(sharedCache, latestDb);
+            if (typeof sharedCache.version !== 'number') {
+              sharedCache.version = Date.now();
+            }
+
+            try {
+              const parsedUrl = new URL(req.url || '', 'http://localhost');
+              const sinceParam = parsedUrl.searchParams.get('since');
+              if (sinceParam && Number(sinceParam) === sharedCache.version) {
+                res.end(
+                  JSON.stringify({
+                    status: 'ok',
+                    unchanged: true,
+                    version: sharedCache.version,
+                  })
+                );
+                return;
+              }
+            } catch {}
+
             res.end(
               JSON.stringify({
                 status: 'ok',
+                version: sharedCache.version,
                 data: sharedCache,
                 users: sharedCache.users || [],
                 workspaces: sharedCache.workspaces || [],
@@ -229,6 +378,9 @@ function operataskRealtimePlugin() {
                 notifications: sharedCache.notifications || [],
                 fichas_tecnicas: sharedCache.fichas_tecnicas || [],
                 clients: sharedCache.clients || [],
+                deletedTaskIds: sharedCache.deletedTaskIds || [],
+                deletedProjectIds: sharedCache.deletedProjectIds || [],
+                deletedWorkspaceIds: sharedCache.deletedWorkspaceIds || [],
                 lastResetAt: sharedCache.lastResetAt || null,
               })
             );
@@ -247,15 +399,20 @@ function operataskRealtimePlugin() {
                 sharedCache.notifications = Array.isArray(body.notifications) ? body.notifications : [];
                 sharedCache.fichas_tecnicas = Array.isArray(body.fichas_tecnicas) ? body.fichas_tecnicas : [];
                 sharedCache.clients = Array.isArray(body.clients) ? body.clients : [];
+                sharedCache.deletedTaskIds = [];
+                sharedCache.deletedProjectIds = [];
+                sharedCache.deletedWorkspaceIds = [];
                 if (Array.isArray(body.tags)) {
                   sharedCache.tags = body.tags;
                 }
                 sharedCache.lastResetAt = resetTimestamp;
+                const version = bumpVersion();
 
                 writeDb(sharedCache);
                 broadcastWs({
                   type: 'INITIAL_STATE',
                   payload: sharedCache,
+                  version,
                   clientId: body.clientId || undefined,
                   actionMeta: { action: 'reset_test_data', lastResetAt: resetTimestamp },
                 });
@@ -263,6 +420,7 @@ function operataskRealtimePlugin() {
                   JSON.stringify({
                     status: 'ok',
                     reset: true,
+                    version,
                     lastResetAt: resetTimestamp,
                     timestamp: new Date().toISOString(),
                   })
@@ -270,31 +428,67 @@ function operataskRealtimePlugin() {
                 return;
               }
 
+              const reqAction = String(body.action || '');
+              const isAuthoritativeWsUpdate =
+                Boolean(body.replaceAll) ||
+                reqAction === 'update_workspace' ||
+                reqAction === 'remove_member' ||
+                reqAction === 'sync_user_workspaces' ||
+                reqAction === 'reorder_workspaces' ||
+                reqAction === 'delete_workspace';
+
+              const incomingDeletedWsIds: string[] = Array.isArray(body.deletedWorkspaceIds)
+                ? body.deletedWorkspaceIds.map((id: any) => String(id)).filter(Boolean)
+                : [];
+              if (incomingDeletedWsIds.length > 0) {
+                const prevDelWs: string[] = Array.isArray(sharedCache.deletedWorkspaceIds)
+                  ? sharedCache.deletedWorkspaceIds
+                  : [];
+                sharedCache.deletedWorkspaceIds = Array.from(
+                  new Set([...incomingDeletedWsIds, ...prevDelWs])
+                ).slice(0, 500);
+              }
+              const deletedWsSet = new Set<string>(
+                Array.isArray(sharedCache.deletedWorkspaceIds) ? sharedCache.deletedWorkspaceIds : []
+              );
+
               if (Array.isArray(body.users)) {
                 if (body.replaceAll) {
                   sharedCache.users = body.users;
                 } else {
                   const userMap = new Map();
-                  (sharedCache.users || []).forEach((u: any) => userMap.set(u.id, u));
+                  (sharedCache.users || []).forEach((u: any) => u?.id && userMap.set(u.id, u));
                   body.users.forEach((u: any) => {
-                    userMap.set(u.id, { ...userMap.get(u.id), ...u, status: 'active', isActive: true });
+                    if (u?.id) {
+                      userMap.set(u.id, { ...userMap.get(u.id), ...u, status: 'active', isActive: true });
+                    }
                   });
                   sharedCache.users = Array.from(userMap.values());
                 }
               }
+
               if (Array.isArray(body.workspaces)) {
                 if (body.replaceAll) {
-                  sharedCache.workspaces = body.workspaces;
+                  sharedCache.workspaces = body.workspaces.filter(
+                    (w: any) => w?.id && !deletedWsSet.has(w.id)
+                  );
                 } else {
                   const wsMap = new Map();
-                  (sharedCache.workspaces || []).forEach((w: any) => wsMap.set(w.id, w));
+                  (sharedCache.workspaces || []).forEach((w: any) => {
+                    if (w?.id && !deletedWsSet.has(w.id)) wsMap.set(w.id, w);
+                  });
                   body.workspaces.forEach((w: any) => {
+                    if (!w?.id || deletedWsSet.has(w.id)) return;
                     const prev = wsMap.get(w.id);
                     if (prev) {
-                      const mMap = new Map();
-                      (Array.isArray(prev.members) ? prev.members : []).forEach((m: any) => m?.userId && mMap.set(m.userId, m));
-                      (Array.isArray(w.members) ? w.members : []).forEach((m: any) => m?.userId && mMap.set(m.userId, m));
-                      wsMap.set(w.id, { ...prev, ...w, members: Array.from(mMap.values()) });
+                      if (isAuthoritativeWsUpdate && Array.isArray(w.members)) {
+                        wsMap.set(w.id, { ...prev, ...w, members: w.members });
+                      } else {
+                        const mMap = new Map();
+                        (Array.isArray(prev.members) ? prev.members : []).forEach((m: any) => m?.userId && mMap.set(m.userId, m));
+                        (Array.isArray(w.members) ? w.members : []).forEach((m: any) => m?.userId && mMap.set(m.userId, m));
+                        wsMap.set(w.id, { ...prev, ...w, members: Array.from(mMap.values()) });
+                      }
                     } else {
                       wsMap.set(w.id, w);
                     }
@@ -312,7 +506,12 @@ function operataskRealtimePlugin() {
                         .map((e: any) => e.w)
                     : mergedWs;
                 }
+              } else if (incomingDeletedWsIds.length > 0) {
+                sharedCache.workspaces = (sharedCache.workspaces || []).filter(
+                  (w: any) => w?.id && !deletedWsSet.has(w.id)
+                );
               }
+
               const incomingDeletedProjIds: string[] = Array.isArray(body.deletedProjectIds)
                 ? body.deletedProjectIds.map((id: any) => String(id)).filter(Boolean)
                 : [];
@@ -331,23 +530,23 @@ function operataskRealtimePlugin() {
               if (Array.isArray(body.projects)) {
                 if (body.replaceAll) {
                   sharedCache.projects = body.projects.filter(
-                    (p: any) => p?.id && !deletedProjSet.has(p.id)
+                    (p: any) => p?.id && !deletedProjSet.has(p.id) && !deletedWsSet.has(p.workspaceId)
                   );
                 } else {
                   const projMap = new Map();
                   (sharedCache.projects || []).forEach((p: any) => {
-                    if (p?.id && !deletedProjSet.has(p.id)) projMap.set(p.id, p);
+                    if (p?.id && !deletedProjSet.has(p.id) && !deletedWsSet.has(p.workspaceId)) projMap.set(p.id, p);
                   });
                   body.projects.forEach((p: any) => {
-                    if (p?.id && !deletedProjSet.has(p.id)) {
+                    if (p?.id && !deletedProjSet.has(p.id) && !deletedWsSet.has(p.workspaceId)) {
                       projMap.set(p.id, { ...projMap.get(p.id), ...p });
                     }
                   });
                   sharedCache.projects = Array.from(projMap.values());
                 }
-              } else if (incomingDeletedProjIds.length > 0) {
+              } else if (incomingDeletedProjIds.length > 0 || incomingDeletedWsIds.length > 0) {
                 sharedCache.projects = (sharedCache.projects || []).filter(
-                  (p: any) => p?.id && !deletedProjSet.has(p.id)
+                  (p: any) => p?.id && !deletedProjSet.has(p.id) && !deletedWsSet.has(p.workspaceId)
                 );
               }
 
@@ -369,7 +568,11 @@ function operataskRealtimePlugin() {
               if (Array.isArray(body.tasks)) {
                 if (body.replaceAll) {
                   sharedCache.tasks = body.tasks.filter(
-                    (t: any) => t?.id && !deletedSet.has(t.id) && !deletedProjSet.has(t.projectId)
+                    (t: any) =>
+                      t?.id &&
+                      !deletedSet.has(t.id) &&
+                      !deletedProjSet.has(t.projectId) &&
+                      !deletedWsSet.has(t.workspaceId)
                   );
                 } else {
                   const getTs = (t: any) => {
@@ -378,12 +581,24 @@ function operataskRealtimePlugin() {
                   };
                   const taskMap = new Map();
                   (sharedCache.tasks || []).forEach((t: any) => {
-                    if (t?.id && !deletedSet.has(t.id) && !deletedProjSet.has(t.projectId)) {
+                    if (
+                      t?.id &&
+                      !deletedSet.has(t.id) &&
+                      !deletedProjSet.has(t.projectId) &&
+                      !deletedWsSet.has(t.workspaceId)
+                    ) {
                       taskMap.set(t.id, t);
                     }
                   });
                   body.tasks.forEach((t: any) => {
-                    if (!t?.id || deletedSet.has(t.id) || deletedProjSet.has(t.projectId)) return;
+                    if (
+                      !t?.id ||
+                      deletedSet.has(t.id) ||
+                      deletedProjSet.has(t.projectId) ||
+                      deletedWsSet.has(t.workspaceId)
+                    ) {
+                      return;
+                    }
                     const prev = taskMap.get(t.id);
                     if (!prev || getTs(t) >= getTs(prev)) {
                       taskMap.set(t.id, prev ? { ...prev, ...t } : t);
@@ -391,31 +606,56 @@ function operataskRealtimePlugin() {
                   });
                   sharedCache.tasks = Array.from(taskMap.values());
                 }
-              } else if (incomingDeletedTaskIds.length > 0 || incomingDeletedProjIds.length > 0) {
+              } else if (
+                incomingDeletedTaskIds.length > 0 ||
+                incomingDeletedProjIds.length > 0 ||
+                incomingDeletedWsIds.length > 0
+              ) {
                 sharedCache.tasks = (sharedCache.tasks || []).filter(
-                  (t: any) => t?.id && !deletedSet.has(t.id) && !deletedProjSet.has(t.projectId)
+                  (t: any) =>
+                    t?.id &&
+                    !deletedSet.has(t.id) &&
+                    !deletedProjSet.has(t.projectId) &&
+                    !deletedWsSet.has(t.workspaceId)
                 );
               }
+
               if (Array.isArray(body.tags)) sharedCache.tags = body.tags;
               if (Array.isArray(body.activities)) sharedCache.activities = body.activities;
               if (Array.isArray(body.fichas_tecnicas)) sharedCache.fichas_tecnicas = body.fichas_tecnicas;
               if (Array.isArray(body.notifications)) sharedCache.notifications = body.notifications;
               if (Array.isArray(body.clients)) sharedCache.clients = body.clients;
 
+              const version = bumpVersion();
               writeDb(sharedCache);
+
+              const resolvedAction =
+                reqAction ||
+                (incomingDeletedWsIds.length > 0
+                  ? 'delete_workspace'
+                  : incomingDeletedProjIds.length > 0
+                  ? 'delete_project'
+                  : incomingDeletedTaskIds.length > 0
+                  ? 'delete_task'
+                  : body.replaceAll
+                  ? 'replace_state'
+                  : 'sync_state');
+
               broadcastWs({
                 type: 'INITIAL_STATE',
                 payload: sharedCache,
+                version,
                 clientId: body.clientId || undefined,
-                actionMeta:
-                  deletedSet.size > 0
-                    ? { action: 'delete_task' }
-                    : body.replaceAll
-                    ? { action: body.action || 'replace_state' }
-                    : undefined,
+                actionMeta: { action: resolvedAction },
               });
             }
-            res.end(JSON.stringify({ status: 'ok', timestamp: new Date().toISOString() }));
+            res.end(
+              JSON.stringify({
+                status: 'ok',
+                version: sharedCache.version,
+                timestamp: new Date().toISOString(),
+              })
+            );
             return;
           }
         }

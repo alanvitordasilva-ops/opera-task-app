@@ -939,6 +939,37 @@ export function clearProjectDeleted(projectId: string): void {
   } catch {}
 }
 
+const DELETED_WORKSPACES_STORAGE_KEY = 'operatask_deleted_workspace_ids_v1';
+
+export function getDeletedWorkspaceIds(): string[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(DELETED_WORKSPACES_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((id) => typeof id === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+export function markWorkspaceDeleted(workspaceId: string): void {
+  if (typeof window === 'undefined' || !workspaceId) return;
+  try {
+    const existing = getDeletedWorkspaceIds().filter((id) => id !== workspaceId);
+    const next = [workspaceId, ...existing].slice(0, 500);
+    localStorage.setItem(DELETED_WORKSPACES_STORAGE_KEY, JSON.stringify(next));
+  } catch {}
+}
+
+export function clearWorkspaceDeleted(workspaceId: string): void {
+  if (typeof window === 'undefined' || !workspaceId) return;
+  try {
+    const next = getDeletedWorkspaceIds().filter((id) => id !== workspaceId);
+    localStorage.setItem(DELETED_WORKSPACES_STORAGE_KEY, JSON.stringify(next));
+  } catch {}
+}
+
 /**
  * Filtra estritamente tarefas ativas:
  * - exclui tarefas arquivadas ou marcadas como excluídas (tombstones)
