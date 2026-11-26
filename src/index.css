@@ -67,3 +67,26 @@
 .dark .custom-scrollbar {
   scrollbar-color: rgba(71, 85, 105, 0.5) transparent;
 }
+
+/* Altura dinâmica real do viewport (Android, iOS Safari, Chrome mobile e PWA standalone) */
+.h-app-dvh {
+  height: 100vh;
+  height: 100dvh;
+}
+
+/* Ocultar barra de rolagem em seletores horizontais e carrosséis mobile */
+.scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+/* Rolagem vertical independente suave em touchscreens (iOS/Android) */
+.touch-scroll-y {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+

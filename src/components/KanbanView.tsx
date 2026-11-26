@@ -24,6 +24,11 @@ import {
   Factory,
   Lock,
   X,
+  Maximize2,
+  Minimize2,
+  ChevronLeft,
+  ChevronRight,
+  AlignLeft,
 } from 'lucide-react';
 import {
   PRIORITY_CONFIG,
@@ -56,6 +61,7 @@ export interface MovedTaskMeta {
 interface KanbanViewProps {
   tasks: Task[];
   project: Project;
+  workspaceName?: string;
   workspaceMembers: User[];
   currentUserRole?: WorkspaceRole;
   isMaster?: boolean;
@@ -77,6 +83,7 @@ interface KanbanViewProps {
 export const KanbanView: React.FC<KanbanViewProps> = ({
   tasks,
   project,
+  workspaceName,
   workspaceMembers,
   currentUserRole = 'member',
   isMaster = false,
@@ -128,9 +135,32 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
     } catch {}
   }, [selectedMobileColumn, project.id]);
 
+  const [activeBoardColIndex, setActiveBoardColIndex] = useState(0);
+  const [focusedColumnId, setFocusedColumnId] = useState<string | null>(null);
+  const [focusZoomMode, setFocusZoomMode] = useState<'amplified' | 'overview'>('amplified');
+
   const boardScrollRef = React.useRef<HTMLDivElement | null>(null);
+  const focusScrollRef = React.useRef<HTMLDivElement | null>(null);
+  const focusColumnRefs = React.useRef<Map<string, HTMLDivElement>>(new Map());
+  const isProgrammaticFocusScrollRef = React.useRef(false);
+
+  const columns = [...(project.columns || [])]
+    .filter((c) => !c.isArchived)
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const activeColumnIds = new Set(columns.map((c) => c.id));
+  const visibleTasks = tasks.filter((t) => !t.isArchived && activeColumnIds.has(t.columnId));
+  const canReorderCols = Boolean(onReorderColumns && columns.length > 1);
+  const effectiveMobileColumn =
+    selectedMobileColumn === 'all' || columns.some((c) => c.id === selectedMobileColumn)
+      ? selectedMobileColumn
+      : 'all';
+  const displayedColumns = columns.filter(
+    (col) => effectiveMobileColumn === 'all' || col.id === effectiveMobileColumn
+  );
 
   useEffect(() => {
+    setFocusedColumnId(null);
+    setActiveBoardColIndex(0);
     try {
       const savedX = sessionStorage.getItem(`operatask_board_scroll_${project.id}`);
       if (savedX && boardScrollRef.current) {
@@ -139,11 +169,150 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
     } catch {}
   }, [project.id]);
 
+  useEffect(() => {
+    if (activeBoardColIndex >= displayedColumns.length) {
+      setActiveBoardColIndex(Math.max(0, displayedColumns.length - 1));
+    }
+  }, [displayedColumns.length, activeBoardColIndex]);
+
+  useEffect(() => {
+    if (!focusedColumnId) return;
+    if (!columns.some((c) => c.id === focusedColumnId)) {
+      setFocusedColumnId(columns[0]?.id || null);
+    }
+  }, [columns, focusedColumnId]);
+
   const handleBoardScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const container = e.currentTarget;
     try {
-      sessionStorage.setItem(`operatask_board_scroll_${project.id}`, String(e.currentTarget.scrollLeft));
+      sessionStorage.setItem(`operatask_board_scroll_${project.id}`, String(container.scrollLeft));
     } catch {}
+
+    // Atualiza o indicador de posição horizontal no mobile conforme o quadro mais próximo do centro
+    if (displayedColumns.length > 1) {
+      const containerRect = container.getBoundingClientRect();
+      const centerX = containerRect.left + containerRect.width / 2;
+      let closestIdx = 0;
+      let minDist = Number.POSITIVE_INFINITY;
+
+      displayedColumns.forEach((col, idx) => {
+        const el = columnRefs.current.get(col.id);
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        const colCenter = rect.left + rect.width / 2;
+        const dist = Math.abs(colCenter - centerX);
+        if (dist < minDist) {
+          minDist = dist;
+          closestIdx = idx;
+        }
+      });
+
+      setActiveBoardColIndex((prev) => (prev === closestIdx ? prev : closestIdx));
+    }
   };
+
+  const scrollToBoardColumn = (index: number) => {
+    const targetCol = displayedColumns[index];
+    if (!targetCol) return;
+    setActiveBoardColIndex(index);
+    const el = columnRefs.current.get(targetCol.id);
+    if (el && boardScrollRef.current) {
+      el.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+    }
+  };
+
+  const scrollToFocusColumn = (columnId: string, instant = false) => {
+    setFocusedColumnId(columnId);
+    const runScroll = () => {
+      const el = focusColumnRefs.current.get(columnId);
+      const container = focusScrollRef.current;
+      if (!el || !container) return;
+      isProgrammaticFocusScrollRef.current = true;
+      const targetLeft =
+        focusZoomMode === 'amplified'
+          ? el.offsetLeft - (container.clientWidth - el.offsetWidth) / 2
+          : el.offsetLeft - 12;
+      container.scrollTo({
+        left: Math.max(0, targetLeft),
+        behavior: instant ? 'auto' : 'smooth',
+      });
+      window.setTimeout(() => {
+        isProgrammaticFocusScrollRef.current = false;
+      }, instant ? 60 : 380);
+    };
+    requestAnimationFrame(runScroll);
+  };
+
+  const openFocusMode = (columnId: string) => {
+    setOpenMenuColumnId(null);
+    setOpenMenuTaskId(null);
+    setFocusZoomMode('amplified');
+    setFocusedColumnId(columnId);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const el = focusColumnRefs.current.get(columnId);
+        const container = focusScrollRef.current;
+        if (el && container) {
+          isProgrammaticFocusScrollRef.current = true;
+          const targetLeft = el.offsetLeft - (container.clientWidth - el.offsetWidth) / 2;
+          container.scrollTo({ left: Math.max(0, targetLeft), behavior: 'auto' });
+          window.setTimeout(() => {
+            isProgrammaticFocusScrollRef.current = false;
+          }, 80);
+        }
+      });
+    });
+  };
+
+  const handleFocusScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    if (isProgrammaticFocusScrollRef.current || columns.length <= 1) return;
+    const container = e.currentTarget;
+    const containerRect = container.getBoundingClientRect();
+    const anchorX =
+      focusZoomMode === 'amplified'
+        ? containerRect.left + containerRect.width / 2
+        : containerRect.left + containerRect.width * 0.35;
+
+    let closestColId: string | null = null;
+    let minDist = Number.POSITIVE_INFINITY;
+
+    columns.forEach((col) => {
+      const el = focusColumnRefs.current.get(col.id);
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const colCenter = rect.left + rect.width / 2;
+      const dist = Math.abs(colCenter - anchorX);
+      if (dist < minDist) {
+        minDist = dist;
+        closestColId = col.id;
+      }
+    });
+
+    if (closestColId && closestColId !== focusedColumnId) {
+      setFocusedColumnId(closestColId);
+    }
+  };
+
+  // Mantém o quadro ativo alinhado ao alternar entre Ampliado e Visão Geral no Modo Foco
+  useEffect(() => {
+    if (!focusedColumnId) return;
+    const timer = window.setTimeout(() => {
+      const el = focusColumnRefs.current.get(focusedColumnId);
+      const container = focusScrollRef.current;
+      if (!el || !container) return;
+      isProgrammaticFocusScrollRef.current = true;
+      const targetLeft =
+        focusZoomMode === 'amplified'
+          ? el.offsetLeft - (container.clientWidth - el.offsetWidth) / 2
+          : el.offsetLeft - 12;
+      container.scrollTo({ left: Math.max(0, targetLeft), behavior: 'smooth' });
+      window.setTimeout(() => {
+        isProgrammaticFocusScrollRef.current = false;
+      }, 320);
+    }, 60);
+    return () => window.clearTimeout(timer);
+  }, [focusZoomMode]);
+
   const [deleteConfirmState, setDeleteConfirmState] = useState<{
     isOpen: boolean;
     type: 'task' | 'column';
@@ -158,6 +327,18 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
     position: 'before' | 'after' | 'end';
   } | null>(null);
 
+  // Fechar Modo Foco com tecla ESC quando não houver modal superior aberto
+  useEffect(() => {
+    if (!focusedColumnId) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !editingColumn && !deleteConfirmState?.isOpen) {
+        setFocusedColumnId(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [focusedColumnId, editingColumn, deleteConfirmState]);
+
   // Fechar dropdowns de ações (card ou coluna) ao clicar fora
   useEffect(() => {
     const handleClickOutside = () => {
@@ -171,17 +352,6 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
       document.removeEventListener('click', handleClickOutside);
     };
   }, [openMenuTaskId, openMenuColumnId]);
-
-  const columns = [...(project.columns || [])]
-    .filter((c) => !c.isArchived)
-    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-  const activeColumnIds = new Set(columns.map((c) => c.id));
-  const visibleTasks = tasks.filter((t) => !t.isArchived && activeColumnIds.has(t.columnId));
-  const canReorderCols = Boolean(onReorderColumns && columns.length > 1);
-  const effectiveMobileColumn =
-    selectedMobileColumn === 'all' || columns.some((c) => c.id === selectedMobileColumn)
-      ? selectedMobileColumn
-      : 'all';
 
   // Refs para suporte fluido a "apertar e segurar" no topo da coluna em celulares/touch
   const columnRefs = React.useRef<Map<string, HTMLDivElement>>(new Map());
@@ -710,58 +880,89 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
   const getMemberUser = (id: string) => workspaceMembers.find((m) => m.id === id);
   const projectBorderColor = project.color || '#2563eb';
 
-  return (
-    <div className="flex flex-col min-h-[calc(100vh-220px)]">
-      {/* Seletor Rápido de Colunas para Dispositivos Móveis */}
-      <div className="flex sm:hidden items-center gap-1.5 overflow-x-auto pb-2.5 mb-2 -mx-2 px-2 scrollbar-none select-none">
-        <button
-          type="button"
-          onClick={() => setSelectedMobileColumn('all')}
-          className={`flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all active:scale-95 ${
-            effectiveMobileColumn === 'all'
-              ? 'bg-blue-600 text-white shadow-sm'
-              : 'bg-slate-200/80 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
-          }`}
-        >
-          <span>Todas ({visibleTasks.length})</span>
-        </button>
+  const focusedColIndex = focusedColumnId
+    ? Math.max(0, columns.findIndex((c) => c.id === focusedColumnId))
+    : 0;
+  const activeFocusedCol = focusedColumnId
+    ? columns.find((c) => c.id === focusedColumnId) || columns[0] || null
+    : null;
 
-        {columns.map((col) => {
-          const count = visibleTasks.filter((t) => t.columnId === col.id).length;
-          const isSelected = effectiveMobileColumn === col.id;
-          return (
-            <button
-              key={col.id}
-              type="button"
-              onClick={() => setSelectedMobileColumn(col.id)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-all active:scale-95 ${
-                isSelected
-                  ? 'bg-blue-600 text-white shadow-sm'
-                  : 'bg-slate-200/80 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
-              }`}
-            >
-              <span
-                className="w-2 h-2 rounded-full shrink-0"
-                style={{ backgroundColor: col.color }}
-              />
-              <span className="truncate max-w-[110px]">{col.title}</span>
-              <span className="opacity-75 text-[10px]">({count})</span>
-            </button>
-          );
-        })}
+  return (
+    <div className="flex flex-col h-full md:h-auto md:min-h-[calc(100vh-220px)] min-h-0">
+      {/* Barra Compacta Mobile: Seletor Rápido de Quadros + Botão de Ampliar/Foco */}
+      <div className="flex md:hidden items-center gap-1.5 mb-2 shrink-0 select-none">
+        <div className="flex-1 min-w-0 flex items-center gap-1.5 overflow-x-auto scrollbar-none py-0.5">
+          <button
+            type="button"
+            onClick={() => {
+              setSelectedMobileColumn('all');
+              setActiveBoardColIndex(0);
+            }}
+            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all active:scale-95 shrink-0 ${
+              effectiveMobileColumn === 'all'
+                ? 'bg-blue-600 text-white shadow-xs'
+                : 'bg-slate-200/80 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
+            }`}
+          >
+            <span>Todas</span>
+            <span className="opacity-80 text-[10px] tabular-nums">({visibleTasks.length})</span>
+          </button>
+
+          {columns.map((col) => {
+            const count = visibleTasks.filter((t) => t.columnId === col.id).length;
+            const isSelected = effectiveMobileColumn === col.id;
+            return (
+              <button
+                key={col.id}
+                type="button"
+                onClick={() => {
+                  setSelectedMobileColumn(col.id);
+                  setActiveBoardColIndex(0);
+                }}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-all active:scale-95 shrink-0 ${
+                  isSelected
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'bg-slate-200/80 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
+                }`}
+              >
+                <span
+                  className="w-2 h-2 rounded-full shrink-0"
+                  style={{ backgroundColor: col.color }}
+                />
+                <span className="truncate max-w-[110px]">{col.title}</span>
+                <span className="opacity-75 text-[10px] tabular-nums">({count})</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {columns.length > 0 && (
+          <button
+            type="button"
+            onClick={() => {
+              const targetCol =
+                displayedColumns[activeBoardColIndex] || displayedColumns[0] || columns[0];
+              if (targetCol) openFocusMode(targetCol.id);
+            }}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 min-h-[34px] rounded-xl bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-xs font-bold shadow-xs active:scale-95 transition-all shrink-0 whitespace-nowrap cursor-pointer"
+            title="Ampliar quadro em tela cheia (Modo Foco)"
+            aria-label="Ampliar quadro em Modo Foco"
+          >
+            <Maximize2 className="w-3.5 h-3.5 shrink-0" />
+            <span>Ampliar</span>
+          </button>
+        )}
       </div>
 
-      {/* Linha das Colunas Kanban - Com suporte a touch swipe snap no celular e reordenação arrastando o topo */}
+      {/* Linha das Colunas Kanban - Altura máxima otimizada no mobile e layout preservado no desktop */}
       <div
         ref={boardScrollRef}
         onScroll={handleBoardScroll}
-        className={`flex gap-4 sm:gap-5 pb-8 overflow-x-auto min-h-[calc(100vh-220px)] items-start select-none scroll-smooth ${
+        className={`flex-1 min-h-0 flex gap-3 sm:gap-5 pb-1 md:pb-8 overflow-x-auto md:min-h-[calc(100vh-220px)] items-stretch md:items-start select-none scroll-smooth scrollbar-none md:scrollbar-auto ${
           draggedColumnId ? 'snap-none' : 'snap-x snap-mandatory'
         }`}
       >
-      {columns
-        .filter((col) => effectiveMobileColumn === 'all' || col.id === effectiveMobileColumn)
-        .map((col) => {
+      {displayedColumns.map((col) => {
         const colIndex = columns.findIndex((c) => c.id === col.id);
         // Tarefas ordenadas estritamente pela propriedade 'order'
         const columnTasks = tasks
@@ -799,7 +1000,7 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
             onDragOver={(e) => handleColumnDragOver(e, col.id)}
             onDragLeave={(e) => handleColumnDragLeave(e, col.id)}
             onDrop={(e) => handleColumnDrop(e, col.id)}
-            className={`relative w-[86vw] sm:w-76 shrink-0 snap-center sm:snap-align-none flex flex-col max-h-[calc(100vh-210px)] sm:max-h-[calc(100vh-220px)] bg-slate-100/70 dark:bg-slate-900/40 rounded-2xl p-2.5 border transition-all ${
+            className={`relative w-[90vw] sm:w-76 shrink-0 snap-center sm:snap-align-none flex flex-col h-full md:h-auto md:max-h-[calc(100vh-220px)] bg-slate-100/80 dark:bg-slate-900/55 rounded-2xl p-2.5 border transition-all ${
               isBeingDraggedColumn
                 ? 'opacity-50 scale-[0.98] border-blue-500 ring-2 ring-blue-400/50 shadow-lg'
                 : isDropTarget
@@ -847,7 +1048,7 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                 <h3 className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate">
                   {col.title}
                 </h3>
-                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-200/60 dark:border-slate-700/60 shrink-0">
+                <span className="text-[10px] font-semibold tabular-nums px-1.5 py-0.5 rounded-md bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-200/60 dark:border-slate-700/60 shrink-0">
                   {columnTasks.length}
                 </span>
               </div>
@@ -860,9 +1061,19 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
               >
                 <button
                   type="button"
+                  onClick={() => openFocusMode(col.id)}
+                  className="p-1.5 sm:p-1 text-slate-500 hover:text-blue-600 dark:text-slate-400 dark:hover:text-blue-400 rounded-lg hover:bg-white dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                  title={`Ampliar quadro "${col.title}" (Modo Foco)`}
+                  aria-label={`Ampliar quadro ${col.title}`}
+                >
+                  <Maximize2 className="w-3.5 h-3.5" />
+                </button>
+
+                <button
+                  type="button"
                   onClick={() => onQuickAddTask(col.id)}
-                  className="p-1 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100 rounded-lg hover:bg-white dark:hover:bg-slate-800 transition-colors cursor-pointer"
-                  title={`Adicionar tarefa em ${col.title}`}
+                  className="p-1.5 sm:p-1 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100 rounded-lg hover:bg-white dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                  title={`Adicionar cartão em ${col.title}`}
                 >
                   <Plus className="w-3.5 h-3.5" />
                 </button>
@@ -879,7 +1090,7 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                         setOpenMenuTaskId(null);
                         setOpenMenuColumnId(isColMenuOpen ? null : col.id);
                       }}
-                      className={`p-1 rounded-lg transition-colors cursor-pointer ${
+                      className={`p-1.5 sm:p-1 rounded-lg transition-colors cursor-pointer ${
                         isColMenuOpen
                           ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 shadow-2xs'
                           : 'text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-white dark:hover:bg-slate-800'
@@ -894,6 +1105,16 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                         className="absolute right-0 top-7 w-56 bg-white dark:bg-slate-800 rounded-xl shadow-xl border border-slate-200 dark:border-slate-700 py-1.5 z-40 animate-in fade-in zoom-in-95 duration-100"
                         onClick={(e) => e.stopPropagation()}
                       >
+                        <button
+                          type="button"
+                          onClick={() => openFocusMode(col.id)}
+                          className="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 flex items-center gap-2 transition-colors font-medium cursor-pointer"
+                        >
+                          <Maximize2 className="w-3.5 h-3.5 text-teal-500 shrink-0" />
+                          <span>Ampliar quadro (Modo Foco)</span>
+                        </button>
+                        <div className="my-1 border-t border-slate-100 dark:border-slate-700/60" />
+
                         {onUpdateColumn &&
                           (isMaster || (currentUserRole !== 'viewer' && currentUserRole !== 'visualizador')) && (
                             <>
@@ -1060,7 +1281,7 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                   } catch {}
                 }
               }}
-              className="space-y-2.5 min-h-[120px] flex-1 overflow-y-auto overflow-x-hidden px-1 py-1 scroll-smooth overscroll-contain touch-pan-y custom-scrollbar"
+              className="space-y-2.5 min-h-[120px] flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-1 py-1 scroll-smooth touch-scroll-y touch-pan-y custom-scrollbar"
             >
               {columnTasks.map((task, taskIndex) => {
                 const priorityInfo = getPriorityInfo(task.priority);
@@ -1096,7 +1317,7 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                       onDragOver={(e) => handleCardDragOver(e, task, col.id)}
                       onDrop={(e) => handleCardDrop(e, task.id, col.id)}
                       onClick={() => onEditTask(task)}
-                      className={`group bg-white dark:bg-slate-900 rounded-xl p-2.5 transition-all duration-200 cursor-pointer relative border-[2.5px] shadow-xs hover:shadow-md hover:-translate-y-0.5 ${
+                      className={`group bg-white dark:bg-slate-900 rounded-xl p-3 sm:p-2.5 transition-all duration-200 cursor-pointer relative border-[2.5px] shadow-xs hover:shadow-md hover:-translate-y-0.5 ${
                         isDragging ? 'opacity-30 scale-95 border-dashed border-blue-400 shadow-none' : ''
                       } ${openMenuTaskId === task.id ? 'z-20 ring-1 ring-blue-400/40' : ''}`}
                       style={{
@@ -1495,9 +1716,9 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                           <div className="flex items-center justify-between text-[10px] text-zinc-700 dark:text-zinc-200 font-semibold mb-1.5">
                             <span className="flex items-center gap-1.5">
                               <CheckSquare className="w-3.5 h-3.5 text-zinc-500 dark:text-zinc-400" />
-                              <span>Checklist {checklistInfo.completed}/{checklistInfo.total}</span>
+                              <span className="tabular-nums">Checklist {checklistInfo.completed}/{checklistInfo.total}</span>
                             </span>
-                            <span className="text-[10px] font-extrabold text-zinc-900 dark:text-zinc-100">
+                            <span className="text-[10px] font-extrabold tabular-nums text-zinc-900 dark:text-zinc-100">
                               {checklistInfo.percentage}%
                             </span>
                           </div>
@@ -1636,15 +1857,435 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
             <button
               type="button"
               onClick={() => onQuickAddTask(col.id)}
-              className="shrink-0 mt-2 py-2 px-3 text-xs font-semibold text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-white dark:hover:bg-slate-800 rounded-xl border border-transparent hover:border-slate-200 dark:hover:border-slate-700 flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+              className="shrink-0 mt-2 py-2.5 sm:py-2 px-3 min-h-[42px] sm:min-h-0 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 bg-white/70 sm:bg-transparent dark:bg-slate-800/60 sm:dark:bg-transparent hover:bg-white dark:hover:bg-slate-800 rounded-xl border border-slate-200/70 sm:border-transparent dark:border-slate-700/60 sm:dark:border-transparent hover:border-slate-200 dark:hover:border-slate-700 flex items-center justify-center gap-1.5 transition-all cursor-pointer active:scale-[0.99]"
             >
-              <Plus className="w-3.5 h-3.5" />
-              Adicionar Card
+              <Plus className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
+              <span>Adicionar cartão</span>
             </button>
           </div>
         );
       })}
       </div>
+
+      {/* Indicadores de Posição Horizontal entre Quadros (Mobile) */}
+      {displayedColumns.length > 1 && (
+        <div
+          className="flex sm:hidden items-center justify-center gap-1 pt-1.5 pb-0.5 shrink-0"
+          role="tablist"
+          aria-label="Navegação entre quadros"
+        >
+          {displayedColumns.map((col, idx) => {
+            const isActive = idx === activeBoardColIndex;
+            return (
+              <button
+                key={col.id}
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                aria-label={`Ir para quadro ${col.title}`}
+                onClick={() => scrollToBoardColumn(idx)}
+                className="p-1.5 flex items-center justify-center cursor-pointer"
+              >
+                <span
+                  className={`block rounded-full transition-all duration-200 ${
+                    isActive
+                      ? 'w-5 h-2 bg-blue-600 dark:bg-blue-400'
+                      : 'w-2 h-2 bg-slate-300 dark:bg-slate-700'
+                  }`}
+                />
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* MODO DE VISÃO AMPLIFICADA / FOCO DO QUADRO (Tela Cheia Mobile, Tablet e Desktop) */}
+      {focusedColumnId && activeFocusedCol && (
+        <div
+          className="fixed inset-0 z-[45] flex flex-col h-app-dvh w-full bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 animate-fadeIn"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Visão ampliada do quadro ${activeFocusedCol.title}`}
+        >
+          {/* Barra Superior do Modo Foco */}
+          <header className="shrink-0 flex items-center justify-between gap-2.5 px-3 sm:px-5 pt-[max(0.7rem,env(safe-area-inset-top))] pb-2.5 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200/80 dark:border-slate-800">
+            <button
+              type="button"
+              onClick={() => setFocusedColumnId(null)}
+              className="w-10 h-10 rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center justify-center shrink-0 transition-colors active:scale-95 cursor-pointer"
+              title="Fechar visão ampliada"
+              aria-label="Fechar visão ampliada"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="min-w-0 flex-1">
+              <h2 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white truncate leading-tight">
+                {project.name}
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 truncate mt-0.5">
+                {workspaceName ? `${workspaceName} · ` : ''}
+                {activeFocusedCol.title}
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setFocusedColumnId(null)}
+              className="flex items-center gap-1.5 px-3 min-h-[40px] rounded-xl bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 hover:opacity-90 text-xs font-bold shadow-xs shrink-0 whitespace-nowrap active:scale-95 transition-all cursor-pointer"
+              title="Voltar para visão padrão"
+            >
+              <Minimize2 className="w-3.5 h-3.5 shrink-0" />
+              <span>Recolher</span>
+            </button>
+          </header>
+
+          {/* Carrossel Horizontal em Altura Máxima */}
+          <div
+            ref={focusScrollRef}
+            onScroll={handleFocusScroll}
+            className="flex-1 min-h-0 flex gap-3 overflow-x-auto overflow-y-hidden px-3 py-2.5 sm:py-4 snap-x snap-mandatory scroll-smooth scrollbar-none items-stretch"
+          >
+            {columns.map((col) => {
+              const colTasks = tasks
+                .filter((t) => t.columnId === col.id)
+                .sort((a, b) => {
+                  const orderA = typeof a.order === 'number' ? a.order : 0;
+                  const orderB = typeof b.order === 'number' ? b.order : 0;
+                  if (orderA !== orderB) return orderA - orderB;
+                  return a.createdAt.localeCompare(b.createdAt);
+                });
+              const isOverview = focusZoomMode === 'overview';
+              const canEditCol = Boolean(
+                onUpdateColumn &&
+                  (isMaster || (currentUserRole !== 'viewer' && currentUserRole !== 'visualizador'))
+              );
+
+              return (
+                <section
+                  key={col.id}
+                  ref={(el) => {
+                    if (el) {
+                      focusColumnRefs.current.set(col.id, el as HTMLDivElement);
+                    } else {
+                      focusColumnRefs.current.delete(col.id);
+                    }
+                  }}
+                  className={`${
+                    isOverview
+                      ? 'w-[68vw] sm:w-[330px] snap-start'
+                      : 'w-[calc(100vw-1.5rem)] sm:w-[min(560px,calc(100vw-3rem))] snap-center'
+                  } shrink-0 h-full flex flex-col bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/90 dark:border-slate-800 shadow-lg overflow-hidden transition-[width] duration-200`}
+                >
+                  {/* Faixa de cor do quadro */}
+                  <div
+                    className="h-1.5 w-full shrink-0"
+                    style={{ backgroundColor: col.color }}
+                  />
+
+                  {/* Cabeçalho do Quadro Focado */}
+                  <div className="shrink-0 flex items-center justify-between gap-2 px-3.5 py-2.5 border-b border-slate-100 dark:border-slate-800/80">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span
+                        className="w-2.5 h-2.5 rounded-full shrink-0"
+                        style={{ backgroundColor: col.color }}
+                      />
+                      <h3
+                        className={`${
+                          isOverview ? 'text-xs' : 'text-sm sm:text-base'
+                        } font-bold text-slate-900 dark:text-white truncate`}
+                      >
+                        {col.title}
+                      </h3>
+                    </div>
+
+                    <div className="flex items-center gap-1 shrink-0">
+                      <span className="text-xs font-bold tabular-nums px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+                        {colTasks.length}
+                      </span>
+
+                      {canEditCol && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingColumn(col);
+                            setEditColumnTitle(col.title);
+                            setEditColumnColor(col.color || '#2563eb');
+                          }}
+                          className="w-9 h-9 rounded-xl text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center transition-colors cursor-pointer"
+                          title={`Editar quadro ${col.title}`}
+                          aria-label={`Editar quadro ${col.title}`}
+                        >
+                          <Edit3 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Lista Vertical Independente de Cartões com Foco em Legibilidade e Checklists */}
+                  <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-2.5 py-2.5 space-y-2 touch-scroll-y touch-pan-y custom-scrollbar">
+                    {colTasks.length === 0 ? (
+                      <div className="h-36 rounded-xl border border-dashed border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center text-xs text-slate-400 dark:text-slate-500 gap-1.5">
+                        <Clock className="w-5 h-5 opacity-40" />
+                        <span>Nenhum cartão neste quadro</span>
+                      </div>
+                    ) : (
+                      colTasks.map((task) => {
+                        const checklistInfo = calculateChecklistProgress(task.checklist);
+                        const dueInfo = formatDueDatePTBR(task.dueDate);
+                        const isCardInDone = isTaskInDoneColumn(task, columns);
+                        const isActionBlocked =
+                          isCardInDone && !canModifyCompletedTask(currentUserRole, isMaster);
+                        const hasChecklist = Boolean(task.checklist && task.checklist.length > 0);
+                        const hasMetaRow =
+                          Boolean(task.description) ||
+                          hasChecklist ||
+                          dueInfo.hasDate ||
+                          dueInfo.hasTime ||
+                          Boolean(task.comments && task.comments.length > 0) ||
+                          Boolean(task.attachments && task.attachments.length > 0) ||
+                          Boolean(task.fichaTecnica && canAccessFichaTecnicaAndProduction(currentUserRole));
+
+                        return (
+                          <div
+                            key={task.id}
+                            onClick={() => onEditTask(task)}
+                            className={`rounded-xl bg-slate-50 dark:bg-slate-800/85 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-200/80 dark:border-slate-700/75 transition-all active:scale-[0.99] cursor-pointer ${
+                              isOverview ? 'px-2.5 py-2' : 'px-3 py-2.5 min-h-[56px]'
+                            }`}
+                          >
+                            <div className="flex items-start gap-2">
+                              <button
+                                type="button"
+                                disabled={isActionBlocked}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (isActionBlocked) return;
+                                  onToggleTaskComplete(task.id);
+                                }}
+                                className={`-ml-1 -mt-0.5 w-8 h-8 rounded-full flex items-center justify-center shrink-0 transition-colors ${
+                                  isActionBlocked
+                                    ? 'cursor-not-allowed opacity-80'
+                                    : 'text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 cursor-pointer'
+                                }`}
+                                title={
+                                  isActionBlocked
+                                    ? 'Card concluído protegido'
+                                    : task.isCompleted
+                                    ? 'Desmarcar como concluída'
+                                    : 'Marcar como concluída'
+                                }
+                              >
+                                {task.isCompleted || isCardInDone ? (
+                                  <CheckCircle2 className="w-5 h-5 text-emerald-500 fill-emerald-500/20" />
+                                ) : (
+                                  <Circle className="w-5 h-5" />
+                                )}
+                              </button>
+
+                              <div className="min-w-0 flex-1 pt-0.5">
+                                <h4
+                                  className={`${
+                                    isOverview ? 'text-xs' : 'text-[14px] sm:text-[15px]'
+                                  } font-semibold leading-snug break-words ${
+                                    task.isCompleted
+                                      ? 'line-through text-slate-400 dark:text-slate-500'
+                                      : 'text-slate-900 dark:text-slate-100'
+                                  }`}
+                                >
+                                  {task.title}
+                                </h4>
+
+                                {hasMetaRow && (
+                                  <div className="mt-1.5 flex items-center flex-wrap gap-x-3 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
+                                    {task.description && (
+                                      <span
+                                        className="inline-flex items-center"
+                                        title="Este cartão possui descrição"
+                                      >
+                                        <AlignLeft className="w-3.5 h-3.5 opacity-80" />
+                                      </span>
+                                    )}
+
+                                    {hasChecklist && (
+                                      <span
+                                        className={`inline-flex items-center gap-1 font-semibold tabular-nums ${
+                                          checklistInfo.percentage === 100
+                                            ? 'text-emerald-600 dark:text-emerald-400'
+                                            : 'text-slate-600 dark:text-slate-300'
+                                        }`}
+                                        title={`Checklist: ${checklistInfo.completed} de ${checklistInfo.total} concluídos`}
+                                      >
+                                        <CheckSquare className="w-3.5 h-3.5 shrink-0" />
+                                        <span>
+                                          {checklistInfo.completed}/{checklistInfo.total}
+                                        </span>
+                                      </span>
+                                    )}
+
+                                    {(dueInfo.hasDate || dueInfo.hasTime) && (
+                                      <span
+                                        className={`inline-flex items-center gap-1 font-medium ${
+                                          dueInfo.isOverdue
+                                            ? 'text-red-600 dark:text-red-400 font-semibold'
+                                            : dueInfo.isToday
+                                            ? 'text-amber-600 dark:text-amber-400 font-semibold'
+                                            : ''
+                                        }`}
+                                      >
+                                        <Calendar className="w-3.5 h-3.5 shrink-0" />
+                                        <span>{dueInfo.text}</span>
+                                      </span>
+                                    )}
+
+                                    {task.fichaTecnica &&
+                                      canAccessFichaTecnicaAndProduction(currentUserRole) && (
+                                        <span className="inline-flex items-center gap-1 text-teal-700 dark:text-teal-300 font-medium truncate max-w-[140px]">
+                                          <FileSpreadsheet className="w-3.5 h-3.5 shrink-0" />
+                                          <span className="truncate">{task.fichaTecnica.nomeItem}</span>
+                                        </span>
+                                      )}
+
+                                    {task.comments && task.comments.length > 0 && (
+                                      <span className="inline-flex items-center gap-1 tabular-nums">
+                                        <MessageSquare className="w-3.5 h-3.5 shrink-0" />
+                                        <span>{task.comments.length}</span>
+                                      </span>
+                                    )}
+
+                                    {task.attachments && task.attachments.length > 0 && (
+                                      <span className="inline-flex items-center gap-1 tabular-nums">
+                                        <Paperclip className="w-3.5 h-3.5 shrink-0" />
+                                        <span>{task.attachments.length}</span>
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  {/* Botão + Adicionar cartão fixo no rodapé do quadro focado */}
+                  <div className="shrink-0 px-2.5 py-2 border-t border-slate-100 dark:border-slate-800/80 bg-white dark:bg-slate-900">
+                    <button
+                      type="button"
+                      onClick={() => onQuickAddTask(col.id)}
+                      className="w-full min-h-[44px] px-3 py-2 rounded-xl text-xs sm:text-sm font-semibold text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-between transition-colors active:scale-[0.99] cursor-pointer"
+                    >
+                      <span className="flex items-center gap-2">
+                        <Plus className="w-4 h-4 shrink-0" />
+                        <span>Adicionar cartão</span>
+                      </span>
+                      <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tabular-nums">
+                        {colTasks.length} {colTasks.length === 1 ? 'card' : 'cards'}
+                      </span>
+                    </button>
+                  </div>
+                </section>
+              );
+            })}
+          </div>
+
+          {/* Barra Inferior do Modo Foco: Indicadores de Posição + Navegação + Alternar Zoom */}
+          <footer className="shrink-0 px-3 pt-1.5 pb-[max(0.75rem,env(safe-area-inset-bottom))] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200/80 dark:border-slate-800">
+            {columns.length > 1 && (
+              <div
+                className="flex items-center justify-center gap-1 mb-2"
+                role="tablist"
+                aria-label="Posição dos quadros no modo foco"
+              >
+                {columns.map((col) => {
+                  const isActive = col.id === activeFocusedCol.id;
+                  return (
+                    <button
+                      key={col.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={isActive}
+                      aria-label={`Ir para quadro ${col.title}`}
+                      onClick={() => scrollToFocusColumn(col.id)}
+                      className="p-1.5 flex items-center justify-center cursor-pointer"
+                    >
+                      <span
+                        className={`block rounded-full transition-all duration-200 ${
+                          isActive
+                            ? 'w-5 h-2 bg-blue-600 dark:bg-blue-400'
+                            : 'w-2 h-2 bg-slate-300 dark:bg-slate-700'
+                        }`}
+                      />
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="max-w-lg mx-auto flex items-center justify-between gap-2">
+              {/* Navegação Anterior / Próximo Quadro */}
+              <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl">
+                <button
+                  type="button"
+                  disabled={focusedColIndex <= 0}
+                  onClick={() => {
+                    const prevCol = columns[focusedColIndex - 1];
+                    if (prevCol) scrollToFocusColumn(prevCol.id);
+                  }}
+                  className="w-10 h-9 rounded-lg flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-white dark:hover:bg-slate-700 disabled:opacity-35 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                  title="Quadro anterior"
+                  aria-label="Quadro anterior"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+                <span className="px-2 text-xs font-bold tabular-nums text-slate-700 dark:text-slate-200 whitespace-nowrap">
+                  {focusedColIndex + 1} / {columns.length}
+                </span>
+                <button
+                  type="button"
+                  disabled={focusedColIndex >= columns.length - 1}
+                  onClick={() => {
+                    const nextCol = columns[focusedColIndex + 1];
+                    if (nextCol) scrollToFocusColumn(nextCol.id);
+                  }}
+                  className="w-10 h-9 rounded-lg flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-white dark:hover:bg-slate-700 disabled:opacity-35 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                  title="Próximo quadro"
+                  aria-label="Próximo quadro"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Alternar entre Visão Ampliada (1 quadro grande) e Visão Compacta (quadros lado a lado) */}
+              <button
+                type="button"
+                onClick={() =>
+                  setFocusZoomMode((prev) => (prev === 'amplified' ? 'overview' : 'amplified'))
+                }
+                className="flex items-center gap-1.5 px-3.5 min-h-[42px] rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs font-bold whitespace-nowrap transition-colors active:scale-95 cursor-pointer"
+                title={
+                  focusZoomMode === 'amplified'
+                    ? 'Alternar para visão compacta lado a lado'
+                    : 'Ampliar quadro atual'
+                }
+              >
+                {focusZoomMode === 'amplified' ? (
+                  <>
+                    <Minimize2 className="w-4 h-4 shrink-0" />
+                    <span>Visão Geral</span>
+                  </>
+                ) : (
+                  <>
+                    <Maximize2 className="w-4 h-4 shrink-0" />
+                    <span>Ampliar</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </footer>
+        </div>
+      )}
 
       {/* Modal de Confirmação Padronizado */}
       {deleteConfirmState?.isOpen && (

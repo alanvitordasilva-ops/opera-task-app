@@ -3205,7 +3205,7 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen w-full bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-hidden font-sans relative">
+    <div className="flex h-app-dvh w-full bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-hidden font-sans relative">
       {/* Indicador de Status Offline / PWA */}
       <OfflineIndicator />
 
@@ -3279,7 +3279,7 @@ export default function App() {
       />
 
       {/* Conteúdo Principal */}
-      <div className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
+      <div className="flex-1 flex flex-col min-w-0 h-app-dvh overflow-hidden">
         {/* Banner Persistente de Modo Suporte */}
         {supportMode && supportMode.isActive && (
           <div className="bg-linear-to-r from-amber-600 via-amber-500 to-teal-700 text-white px-4 py-2.5 shadow-md flex items-center justify-between z-30 text-xs shrink-0 animate-in slide-in-from-top duration-150">
@@ -3429,8 +3429,14 @@ export default function App() {
         )}
 
         {/* Área Central Conforme ViewMode Selecionado com Espaço Seguro para Mobile Bottom Nav */}
-        <main className="flex-1 overflow-y-auto px-3 sm:px-6 py-4 sm:py-6 pb-24 md:pb-8">
-          <div className="max-w-7xl mx-auto h-full">
+        <main
+          className={`flex-1 min-h-0 ${
+            viewMode === 'kanban'
+              ? 'overflow-hidden px-2 pt-2 pb-[calc(4.6rem+env(safe-area-inset-bottom))] md:overflow-y-auto md:px-6 md:py-5 md:pb-8'
+              : 'overflow-y-auto px-3 sm:px-6 py-4 sm:py-6 pb-24 md:pb-8'
+          }`}
+        >
+          <div className={`max-w-7xl mx-auto h-full ${viewMode === 'kanban' ? 'flex flex-col min-h-0' : ''}`}>
             {workspaceProjects.length === 0 && viewMode !== 'archived' ? (
               <WelcomeEmptyState
                 onCreateFirstBoard={handleOpenCreateBoard}
@@ -3443,6 +3449,7 @@ export default function App() {
                   <KanbanView
                     tasks={filteredTasks}
                     project={activeProject}
+                    workspaceName={currentWorkspace.name}
                     workspaceMembers={workspaceMembers}
                     currentUserRole={currentUserRole}
                     isMaster={isMaster}
