@@ -136,10 +136,14 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
   }, [selectedMobileColumn, project.id]);
 
   const [activeBoardColIndex, setActiveBoardColIndex] = useState(0);
+  // Padrão mobile: visão ampla em duas colunas (60% / 40%). Ao recolher/focar: coluna única (100%).
+  const [mobileLayoutMode, setMobileLayoutMode] = useState<'split' | 'single'>('split');
   const [focusedColumnId, setFocusedColumnId] = useState<string | null>(null);
   const [focusZoomMode, setFocusZoomMode] = useState<'amplified' | 'overview'>('amplified');
 
   const boardScrollRef = React.useRef<HTMLDivElement | null>(null);
+  const boardScrollSettleTimerRef = React.useRef<number | null>(null);
+  const isProgrammaticBoardScrollRef = React.useRef(false);
   const focusScrollRef = React.useRef<HTMLDivElement | null>(null);
   const focusColumnRefs = React.useRef<Map<string, HTMLDivElement>>(new Map());
   const isProgrammaticFocusScrollRef = React.useRef(false);
@@ -157,10 +161,12 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
   const displayedColumns = columns.filter(
     (col) => effectiveMobileColumn === 'all' || col.id === effectiveMobileColumn
   );
+  const isMobileSplitView = mobileLayoutMode === 'split' && displayedColumns.length > 1;
 
   useEffect(() => {
     setFocusedColumnId(null);
     setActiveBoardColIndex(0);
+    setMobileLayoutMode('split');
     try {
       const savedX = sessionStorage.getItem(`operatask_board_scroll_${project.id}`);
       if (savedX && boardScrollRef.current) {
@@ -168,6 +174,14 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
       }
     } catch {}
   }, [project.id]);
+
+  useEffect(() => {
+    return () => {
+      if (boardScrollSettleTimerRef.current !== null) {
+        window.clearTimeout(boardScrollSettleTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (activeBoardColIndex >= displayedColumns.length) {
@@ -182,42 +196,131 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
     }
   }, [columns, focusedColumnId]);
 
+  const alignBoardToColumn = (
+    colId: string,
+    colIdx: number,
+    totalCols: number,
+    mode: 'split' | 'single',
+    instant = false
+  ) => {
+    isProgrammaticBoardScrollRef.current = true;
+    const runAlign = () => {
+      const el = columnRefs.current.get(colId);
+      const container = boardScrollRef.current;
+      if (el && container) {
+        const maxScroll = Math.max(0, container.scrollWidth - container.clientWidth);
+        const isLastColInSplit = mode === 'split' && totalCols > 1 && colIdx === totalCols - 1;
+        const targetLeft = isLastColInSplit
+          ? maxScroll
+          : Math.min(maxScroll, Math.max(0, el.offsetLeft));
+        container.scrollTo({
+          left: targetLeft,
+          behavior: instant ? 'auto' : 'smooth',
+        });
+      }
+      window.setTimeout(() => {
+        isProgrammaticBoardScrollRef.current = false;
+      }, instant ? 90 : 380);
+    };
+    requestAnimationFrame(() => requestAnimationFrame(runAlign));
+  };
+
   const handleBoardScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const container = e.currentTarget;
     try {
       sessionStorage.setItem(`operatask_board_scroll_${project.id}`, String(container.scrollLeft));
     } catch {}
 
-    // Atualiza o indicador de posição horizontal no mobile conforme o quadro mais próximo do centro
-    if (displayedColumns.length > 1) {
-      const containerRect = container.getBoundingClientRect();
-      const centerX = containerRect.left + containerRect.width / 2;
-      let closestIdx = 0;
-      let minDist = Number.POSITIVE_INFINITY;
+    if (isProgrammaticBoardScrollRef.current || displayedColumns.length <= 1) return;
 
-      displayedColumns.forEach((col, idx) => {
-        const el = columnRefs.current.get(col.id);
-        if (!el) return;
-        const rect = el.getBoundingClientRect();
-        const colCenter = rect.left + rect.width / 2;
-        const dist = Math.abs(colCenter - centerX);
-        if (dist < minDist) {
-          minDist = dist;
-          closestIdx = idx;
-        }
-      });
-
-      setActiveBoardColIndex((prev) => (prev === closestIdx ? prev : closestIdx));
+    if (boardScrollSettleTimerRef.current !== null) {
+      window.clearTimeout(boardScrollSettleTimerRef.current);
     }
+
+    // Aguarda o fim do gesto de rolagem antes de alternar a coluna ativa (evita saltos durante o swipe 60/40)
+    boardScrollSettleTimerRef.current = window.setTimeout(() => {
+      const elContainer = boardScrollRef.current;
+      if (!elContainer || isProgrammaticBoardScrollRef.current) return;
+
+      const atEnd =
+        elContainer.scrollWidth - elContainer.clientWidth > 8 &&
+        elContainer.scrollLeft + elContainer.clientWidth >= elContainer.scrollWidth - 10;
+
+      let nextIdx = 0;
+
+      if (atEnd) {
+        nextIdx = displayedColumns.length - 1;
+      } else {
+        const containerRect = elContainer.getBoundingClientRect();
+        // Em 60%/40%, a coluna principal ocupa os 60% iniciais (centro em ~30%); em coluna única, centro em 50%
+        const anchorX =
+          mobileLayoutMode === 'split'
+            ? containerRect.left + containerRect.width * 0.3
+            : containerRect.left + containerRect.width * 0.5;
+
+        let minDist = Number.POSITIVE_INFINITY;
+
+        displayedColumns.forEach((col, idx) => {
+          const el = columnRefs.current.get(col.id);
+          if (!el) return;
+          const rect = el.getBoundingClientRect();
+          const colCenter = rect.left + rect.width / 2;
+          const dist = Math.abs(colCenter - anchorX);
+          if (dist < minDist) {
+            minDist = dist;
+            nextIdx = idx;
+          }
+        });
+      }
+
+      if (nextIdx !== activeBoardColIndex) {
+        setActiveBoardColIndex(nextIdx);
+        // Em 60%/40%, realinha suavemente após a troca de largura para evitar deslocamento visual
+        if (mobileLayoutMode === 'split') {
+          const nextCol = displayedColumns[nextIdx];
+          if (nextCol) {
+            alignBoardToColumn(nextCol.id, nextIdx, displayedColumns.length, 'split', false);
+          }
+        }
+      }
+    }, 150);
   };
 
-  const scrollToBoardColumn = (index: number) => {
+  const scrollToBoardColumn = (index: number, instant = false) => {
     const targetCol = displayedColumns[index];
     if (!targetCol) return;
     setActiveBoardColIndex(index);
-    const el = columnRefs.current.get(targetCol.id);
-    if (el && boardScrollRef.current) {
-      el.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+    alignBoardToColumn(targetCol.id, index, displayedColumns.length, mobileLayoutMode, instant);
+  };
+
+  // Alternância invertida no mobile:
+  // Padrão = visão ampla 2 colunas (60% / 40%). Recolher/Focar = coluna única (100%).
+  const toggleMobileColumnMode = (targetColId?: string) => {
+    const currentCol =
+      (targetColId ? columns.find((c) => c.id === targetColId) : null) ||
+      displayedColumns[activeBoardColIndex] ||
+      displayedColumns[0] ||
+      columns[0];
+
+    if (!currentCol) return;
+
+    const currentlyInSplit = mobileLayoutMode === 'split' && effectiveMobileColumn === 'all' && columns.length > 1;
+
+    if (currentlyInSplit) {
+      // Recolher/Focar -> coluna selecionada passa a 100% da largura útil
+      const idx = displayedColumns.findIndex((c) => c.id === currentCol.id);
+      const safeIdx = idx >= 0 ? idx : 0;
+      setMobileLayoutMode('single');
+      setActiveBoardColIndex(safeIdx);
+      alignBoardToColumn(currentCol.id, safeIdx, displayedColumns.length, 'single', true);
+    } else {
+      // Restaurar visão ampla -> retorna imediatamente à proporção 60% / 40% em duas colunas
+      const allIdx = columns.findIndex((c) => c.id === currentCol.id);
+      const safeIdx = allIdx >= 0 ? allIdx : 0;
+      setSelectedMobileColumn('all');
+      setMobileLayoutMode('split');
+      setActiveBoardColIndex(safeIdx);
+      alignBoardToColumn(currentCol.id, safeIdx, columns.length, 'split', true);
     }
   };
 
@@ -889,14 +992,18 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
 
   return (
     <div className="flex flex-col h-full md:h-auto md:min-h-[calc(100vh-220px)] min-h-0">
-      {/* Barra Compacta Mobile: Seletor Rápido de Quadros + Botão de Ampliar/Foco */}
+      {/* Barra Compacta Mobile: Seletor Rápido de Quadros + Botão Invertido Recolher (100%) / Ampliar (60/40) */}
       <div className="flex md:hidden items-center gap-1.5 mb-2 shrink-0 select-none">
         <div className="flex-1 min-w-0 flex items-center gap-1.5 overflow-x-auto scrollbar-none py-0.5">
           <button
             type="button"
             onClick={() => {
               setSelectedMobileColumn('all');
+              setMobileLayoutMode('split');
               setActiveBoardColIndex(0);
+              if (boardScrollRef.current) {
+                boardScrollRef.current.scrollTo({ left: 0, behavior: 'smooth' });
+              }
             }}
             className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all active:scale-95 shrink-0 ${
               effectiveMobileColumn === 'all'
@@ -936,34 +1043,53 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
           })}
         </div>
 
-        {columns.length > 0 && (
+        {columns.length > 1 && (
           <button
             type="button"
-            onClick={() => {
-              const targetCol =
-                displayedColumns[activeBoardColIndex] || displayedColumns[0] || columns[0];
-              if (targetCol) openFocusMode(targetCol.id);
-            }}
+            onClick={() => toggleMobileColumnMode()}
             className="flex items-center gap-1.5 px-2.5 py-1.5 min-h-[34px] rounded-xl bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-xs font-bold shadow-xs active:scale-95 transition-all shrink-0 whitespace-nowrap cursor-pointer"
-            title="Ampliar quadro em tela cheia (Modo Foco)"
-            aria-label="Ampliar quadro em Modo Foco"
+            title={
+              isMobileSplitView
+                ? 'Recolher para coluna única (100% da tela)'
+                : 'Restaurar visão ampla em duas colunas (60% / 40%)'
+            }
+            aria-label={
+              isMobileSplitView
+                ? 'Recolher para coluna única em 100% de largura'
+                : 'Restaurar visão ampla em duas colunas 60% e 40%'
+            }
           >
-            <Maximize2 className="w-3.5 h-3.5 shrink-0" />
-            <span>Ampliar</span>
+            {isMobileSplitView ? (
+              <>
+                <Minimize2 className="w-3.5 h-3.5 shrink-0" />
+                <span>Recolher</span>
+              </>
+            ) : (
+              <>
+                <Maximize2 className="w-3.5 h-3.5 shrink-0" />
+                <span>Ampliar</span>
+              </>
+            )}
           </button>
         )}
       </div>
 
-      {/* Linha das Colunas Kanban - Altura máxima otimizada no mobile e layout preservado no desktop */}
+      {/* Linha das Colunas Kanban - Padrão mobile 60%/40% em 2 colunas, 100% ao recolher, e desktop preservado */}
       <div
         ref={boardScrollRef}
         onScroll={handleBoardScroll}
-        className={`flex-1 min-h-0 flex gap-3 sm:gap-5 pb-1 md:pb-8 overflow-x-auto md:min-h-[calc(100vh-220px)] items-stretch md:items-start select-none scroll-smooth scrollbar-none md:scrollbar-auto ${
-          draggedColumnId ? 'snap-none' : 'snap-x snap-mandatory'
+        className={`flex-1 min-h-0 flex gap-2.5 md:gap-5 pb-1 md:pb-8 overflow-x-auto md:min-h-[calc(100vh-220px)] items-stretch md:items-start select-none scroll-smooth scrollbar-none md:scrollbar-auto ${
+          draggedColumnId
+            ? 'snap-none'
+            : isMobileSplitView
+            ? 'snap-x snap-proximity'
+            : 'snap-x snap-mandatory'
         }`}
       >
-      {displayedColumns.map((col) => {
+      {displayedColumns.map((col, displayedIdx) => {
         const colIndex = columns.findIndex((c) => c.id === col.id);
+        const isPrimarySplitCol = isMobileSplitView && displayedIdx === activeBoardColIndex;
+        const isSecondarySplitCol = isMobileSplitView && displayedIdx !== activeBoardColIndex;
         // Tarefas ordenadas estritamente pela propriedade 'order'
         const columnTasks = tasks
           .filter((t) => t.columnId === col.id)
@@ -986,6 +1112,12 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
         const canManageCol = canDeleteColumn(currentUserRole, isMaster);
         const isColMenuOpen = openMenuColumnId === col.id;
 
+        const mobileColumnWidthClass = isMobileSplitView
+          ? isPrimarySplitCol
+            ? 'w-[calc(60%-5px)]'
+            : 'w-[calc(40%-5px)]'
+          : 'w-full';
+
         return (
           <div
             key={col.id}
@@ -1000,7 +1132,13 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
             onDragOver={(e) => handleColumnDragOver(e, col.id)}
             onDragLeave={(e) => handleColumnDragLeave(e, col.id)}
             onDrop={(e) => handleColumnDrop(e, col.id)}
-            className={`relative w-[90vw] sm:w-76 shrink-0 snap-center sm:snap-align-none flex flex-col h-full md:h-auto md:max-h-[calc(100vh-220px)] bg-slate-100/80 dark:bg-slate-900/55 rounded-2xl p-2.5 border transition-all ${
+            className={`relative ${mobileColumnWidthClass} md:w-76 shrink-0 snap-start md:snap-align-none flex flex-col h-full md:h-auto md:max-h-[calc(100vh-220px)] bg-slate-100/80 dark:bg-slate-900/55 rounded-2xl ${
+              isSecondarySplitCol
+                ? 'p-1.5 md:p-2.5'
+                : isPrimarySplitCol
+                ? 'p-2 md:p-2.5'
+                : 'p-2.5'
+            } border transition-[width,border-color,background-color,box-shadow] duration-200 ${
               isBeingDraggedColumn
                 ? 'opacity-50 scale-[0.98] border-blue-500 ring-2 ring-blue-400/50 shadow-lg'
                 : isDropTarget
@@ -1024,45 +1162,107 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
               style={{ backgroundColor: col.color }}
             />
 
-            {/* Cabeçalho da Coluna: Arrastável no topo para reordenar quadros (mouse e toque segurando) */}
+            {/* Cabeçalho da Coluna: Arrastável no topo para reordenar quadros e adaptado para 60% / 40% no mobile */}
             <div
               draggable={canReorderCols}
               onDragStart={(e) => handleColumnHeaderDragStart(e, col.id)}
               onDragEnd={handleColumnHeaderDragEnd}
               onTouchStart={(e) => handleColumnHeaderTouchStart(e, col, columnTasks.length)}
+              onClick={() => {
+                if (isSecondarySplitCol && !draggedColumnId) {
+                  scrollToBoardColumn(displayedIdx);
+                }
+              }}
               title={canReorderCols ? 'Pressione e arraste o topo para mover este quadro' : undefined}
-              className={`flex items-center justify-between px-2 py-1.5 mb-1.5 shrink-0 rounded-xl transition-colors ${
+              className={`flex ${
+                isSecondarySplitCol
+                  ? 'flex-col items-stretch gap-1 px-1 py-1 mb-1 md:flex-row md:items-center md:justify-between md:px-2 md:py-1.5 md:mb-1.5'
+                  : isPrimarySplitCol
+                  ? 'items-center justify-between gap-1 px-1 py-1 mb-1 md:px-2 md:py-1.5 md:mb-1.5'
+                  : 'items-center justify-between gap-1.5 px-2 py-1.5 mb-1.5'
+              } shrink-0 rounded-xl transition-colors ${
                 canReorderCols
                   ? 'cursor-grab active:cursor-grabbing hover:bg-white/70 dark:hover:bg-slate-800/60 select-none'
                   : ''
               } ${isBeingDraggedColumn ? 'bg-blue-50 dark:bg-blue-950/40' : ''}`}
             >
-              <div className="flex items-center gap-1.5 min-w-0">
+              <div className="flex items-start md:items-center gap-1.5 min-w-0 flex-1">
                 {canReorderCols && (
-                  <GripVertical className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 shrink-0" />
+                  <GripVertical
+                    className={`w-3.5 h-3.5 text-slate-400 dark:text-slate-500 shrink-0 ${
+                      isMobileSplitView ? 'hidden md:block' : 'mt-0.5 md:mt-0'
+                    }`}
+                  />
                 )}
                 <span
-                  className="w-2.5 h-2.5 rounded-full shrink-0"
+                  className={`${
+                    isMobileSplitView ? 'w-2 h-2 mt-1 md:mt-0 md:w-2.5 md:h-2.5' : 'w-2.5 h-2.5 mt-0.5 md:mt-0'
+                  } rounded-full shrink-0`}
                   style={{ backgroundColor: col.color }}
                 />
-                <h3 className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate">
+                <h3
+                  className={`${
+                    isSecondarySplitCol
+                      ? 'text-[11px] md:text-xs leading-tight break-words md:truncate'
+                      : isPrimarySplitCol
+                      ? 'text-[11.5px] md:text-xs leading-tight break-words md:truncate'
+                      : 'text-xs leading-snug break-words md:truncate'
+                  } font-bold text-slate-800 dark:text-slate-200 min-w-0`}
+                >
                   {col.title}
                 </h3>
-                <span className="text-[10px] font-semibold tabular-nums px-1.5 py-0.5 rounded-md bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-200/60 dark:border-slate-700/60 shrink-0">
+                <span
+                  className={`${
+                    isMobileSplitView
+                      ? 'text-[9.5px] md:text-[10px] px-1 md:px-1.5 py-0.5'
+                      : 'text-[10px] px-1.5 py-0.5'
+                  } font-semibold tabular-nums rounded-md bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-200/60 dark:border-slate-700/60 shrink-0`}
+                >
                   {columnTasks.length}
                 </span>
               </div>
 
               <div
-                className="flex items-center gap-0.5 shrink-0"
+                className={`flex items-center gap-0.5 shrink-0 ${
+                  isSecondarySplitCol ? 'justify-end md:justify-normal' : ''
+                }`}
                 draggable={false}
+                onClick={(e) => e.stopPropagation()}
                 onMouseDown={(e) => e.stopPropagation()}
                 onTouchStart={(e) => e.stopPropagation()}
               >
+                {/* Mobile: botão invertido Recolher (100%) / Ampliar (60% / 40%) */}
+                {columns.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => toggleMobileColumnMode(col.id)}
+                    className={`md:hidden ${
+                      isMobileSplitView ? 'p-1' : 'p-1.5'
+                    } text-slate-500 hover:text-blue-600 dark:text-slate-400 dark:hover:text-blue-400 rounded-lg hover:bg-white dark:hover:bg-slate-800 transition-colors cursor-pointer`}
+                    title={
+                      isMobileSplitView
+                        ? `Recolher e focar "${col.title}" em 100%`
+                        : 'Restaurar visão ampla em duas colunas (60% / 40%)'
+                    }
+                    aria-label={
+                      isMobileSplitView
+                        ? `Recolher e focar quadro ${col.title} em 100%`
+                        : 'Restaurar visão ampla em duas colunas'
+                    }
+                  >
+                    {isMobileSplitView ? (
+                      <Minimize2 className="w-3.5 h-3.5" />
+                    ) : (
+                      <Maximize2 className="w-3.5 h-3.5" />
+                    )}
+                  </button>
+                )}
+
+                {/* Desktop: mantém botão original de Modo Foco em tela cheia */}
                 <button
                   type="button"
                   onClick={() => openFocusMode(col.id)}
-                  className="p-1.5 sm:p-1 text-slate-500 hover:text-blue-600 dark:text-slate-400 dark:hover:text-blue-400 rounded-lg hover:bg-white dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                  className="hidden md:inline-flex p-1 text-slate-500 hover:text-blue-600 dark:text-slate-400 dark:hover:text-blue-400 rounded-lg hover:bg-white dark:hover:bg-slate-800 transition-colors cursor-pointer"
                   title={`Ampliar quadro "${col.title}" (Modo Foco)`}
                   aria-label={`Ampliar quadro ${col.title}`}
                 >
@@ -1072,7 +1272,9 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                 <button
                   type="button"
                   onClick={() => onQuickAddTask(col.id)}
-                  className="p-1.5 sm:p-1 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100 rounded-lg hover:bg-white dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                  className={`${
+                    isMobileSplitView ? 'p-1' : 'p-1.5'
+                  } md:p-1 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100 rounded-lg hover:bg-white dark:hover:bg-slate-800 transition-colors cursor-pointer`}
                   title={`Adicionar cartão em ${col.title}`}
                 >
                   <Plus className="w-3.5 h-3.5" />
@@ -1090,7 +1292,9 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                         setOpenMenuTaskId(null);
                         setOpenMenuColumnId(isColMenuOpen ? null : col.id);
                       }}
-                      className={`p-1.5 sm:p-1 rounded-lg transition-colors cursor-pointer ${
+                      className={`${
+                        isMobileSplitView ? 'p-1' : 'p-1.5'
+                      } md:p-1 rounded-lg transition-colors cursor-pointer ${
                         isColMenuOpen
                           ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 shadow-2xs'
                           : 'text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-white dark:hover:bg-slate-800'
@@ -1105,13 +1309,35 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                         className="absolute right-0 top-7 w-56 bg-white dark:bg-slate-800 rounded-xl shadow-xl border border-slate-200 dark:border-slate-700 py-1.5 z-40 animate-in fade-in zoom-in-95 duration-100"
                         onClick={(e) => e.stopPropagation()}
                       >
+                        {columns.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setOpenMenuColumnId(null);
+                              toggleMobileColumnMode(col.id);
+                            }}
+                            className="md:hidden w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 flex items-center gap-2 transition-colors font-medium cursor-pointer"
+                          >
+                            {isMobileSplitView ? (
+                              <>
+                                <Minimize2 className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                                <span>Recolher / Focar (100%)</span>
+                              </>
+                            ) : (
+                              <>
+                                <Maximize2 className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                                <span>Visão ampla (60% / 40%)</span>
+                              </>
+                            )}
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => openFocusMode(col.id)}
                           className="w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 flex items-center gap-2 transition-colors font-medium cursor-pointer"
                         >
                           <Maximize2 className="w-3.5 h-3.5 text-teal-500 shrink-0" />
-                          <span>Ampliar quadro (Modo Foco)</span>
+                          <span>Tela cheia (Modo Foco)</span>
                         </button>
                         <div className="my-1 border-t border-slate-100 dark:border-slate-700/60" />
 
@@ -1281,7 +1507,9 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                   } catch {}
                 }
               }}
-              className="space-y-2.5 min-h-[120px] flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-1 py-1 scroll-smooth touch-scroll-y touch-pan-y custom-scrollbar"
+              className={`${
+                isMobileSplitView ? 'space-y-2 px-0.5 md:space-y-2.5 md:px-1' : 'space-y-2.5 px-1'
+              } min-h-[120px] flex-1 min-h-0 overflow-y-auto overflow-x-hidden py-1 scroll-smooth touch-scroll-y touch-pan-y custom-scrollbar`}
             >
               {columnTasks.map((task, taskIndex) => {
                 const priorityInfo = getPriorityInfo(task.priority);
@@ -1317,7 +1545,13 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                       onDragOver={(e) => handleCardDragOver(e, task, col.id)}
                       onDrop={(e) => handleCardDrop(e, task.id, col.id)}
                       onClick={() => onEditTask(task)}
-                      className={`group bg-white dark:bg-slate-900 rounded-xl p-3 sm:p-2.5 transition-all duration-200 cursor-pointer relative border-[2.5px] shadow-xs hover:shadow-md hover:-translate-y-0.5 ${
+                      className={`group bg-white dark:bg-slate-900 rounded-xl ${
+                        isSecondarySplitCol
+                          ? 'p-1.5 md:p-2.5 border-[1.5px] md:border-[2.5px]'
+                          : isPrimarySplitCol
+                          ? 'p-2 md:p-2.5 border-2 md:border-[2.5px]'
+                          : 'p-3 md:p-2.5 border-[2.5px]'
+                      } transition-all duration-200 cursor-pointer relative shadow-xs hover:shadow-md hover:-translate-y-0.5 ${
                         isDragging ? 'opacity-30 scale-95 border-dashed border-blue-400 shadow-none' : ''
                       } ${openMenuTaskId === task.id ? 'z-20 ring-1 ring-blue-400/40' : ''}`}
                       style={{
@@ -1334,11 +1568,15 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                       }}
                     >
                     {/* Linha 1: Prioridade com ponto colorido + Tags padronizadas + Menu de Ações (3 pontos) + Drag handle */}
-                    <div className="flex items-center justify-between gap-1 mb-1.5">
-                      <div className="flex items-center gap-1.5 flex-wrap">
+                    <div className={`flex items-center justify-between gap-1 ${isMobileSplitView ? 'mb-1 md:mb-1.5' : 'mb-1.5'}`}>
+                      <div className="flex items-center gap-1 flex-wrap min-w-0">
                         {/* Prioridade: formato padronizado com fundo neutro idêntico em todos os cards */}
                         <span
-                          className={`inline-flex items-center gap-1.5 text-[9px] font-bold px-2 py-0.5 rounded-md ${
+                          className={`inline-flex items-center gap-1 ${
+                            isMobileSplitView
+                              ? 'text-[8.5px] md:text-[9px] px-1.5 md:px-2 py-0.5'
+                              : 'text-[9px] px-2 py-0.5'
+                          } font-bold rounded-md whitespace-nowrap ${
                             task.priority && task.priority !== 'none'
                               ? `${priorityInfo.bgLight} ${priorityInfo.textLight} ${priorityInfo.darkBg} ${priorityInfo.darkText} border border-zinc-200/90 dark:border-zinc-700/80`
                               : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-400 dark:text-zinc-500 border border-zinc-200/90 dark:border-zinc-700/80'
@@ -1355,14 +1593,18 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                         {/* Indicador de Card Concluído / Protegido */}
                         {isCardInDone && (
                           <span
-                            className="inline-flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200/90 dark:border-emerald-800/80 shadow-2xs"
+                            className={`inline-flex items-center gap-1 ${
+                              isMobileSplitView
+                                ? 'text-[8.5px] md:text-[9px] px-1.5 md:px-2 py-0.5'
+                                : 'text-[9px] px-2 py-0.5'
+                            } font-bold rounded-md whitespace-nowrap bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200/90 dark:border-emerald-800/80 shadow-2xs`}
                             title={
                               isActionBlocked
                                 ? 'Card concluído protegido: apenas Dono e Administrador podem mover, arquivar ou excluir'
                                 : 'Card concluído'
                             }
                           >
-                            <Lock className="w-2.5 h-2.5" />
+                            <Lock className="w-2.5 h-2.5 shrink-0" />
                             <span>Concluído</span>
                           </span>
                         )}
@@ -1372,7 +1614,11 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                           task.tags.slice(0, 2).map((tag) => (
                             <span
                               key={tag.id}
-                              className="inline-flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 rounded-md bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 border border-zinc-200/90 dark:border-zinc-700/80 shadow-2xs"
+                              className={`inline-flex items-center gap-1 ${
+                                isMobileSplitView
+                                  ? 'text-[8.5px] md:text-[9px] px-1.5 md:px-2 py-0.5'
+                                  : 'text-[9px] px-2 py-0.5'
+                              } font-bold rounded-md bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 border border-zinc-200/90 dark:border-zinc-700/80 shadow-2xs max-w-full`}
                               title={`Tag: ${tag.name}`}
                             >
                               <span
@@ -1598,7 +1844,9 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                           </div>
                         ) : (
                           <div
-                            className="text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 opacity-70 sm:opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing p-1"
+                            className={`${
+                              isMobileSplitView ? 'hidden md:block' : ''
+                            } text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 opacity-70 md:opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing p-1`}
                             title="Arrastar e reordenar card"
                             onClick={(e) => e.stopPropagation()}
                           >
@@ -1610,7 +1858,7 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
 
                     {/* Capa de Mídia padronizada (se houver foto anexada) */}
                     {coverImage && (
-                      <div className="w-full h-16 sm:h-18 rounded-lg overflow-hidden mb-1.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 relative group/thumb">
+                      <div className="w-full h-16 md:h-18 rounded-lg overflow-hidden mb-1.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 relative group/thumb">
                         <img
                           src={coverImage.url}
                           alt={coverImage.name}
@@ -1623,8 +1871,8 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                       </div>
                     )}
 
-                    {/* Título da Tarefa: Preto profundo ou branco puro com alto contraste */}
-                    <div className="flex items-start gap-2 mb-1.5">
+                    {/* Título da Tarefa: sempre íntegro e legível (sem truncamento) */}
+                    <div className={`flex items-start ${isMobileSplitView ? 'gap-1.5 md:gap-2 mb-1 md:mb-1.5' : 'gap-2 mb-1.5'}`}>
                       <button
                         type="button"
                         disabled={isActionBlocked}
@@ -1647,14 +1895,28 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                         }
                       >
                         {task.isCompleted || isCardInDone ? (
-                          <CheckCircle2 className="w-4 h-4 text-emerald-500 fill-emerald-500/20" />
+                          <CheckCircle2
+                            className={`${
+                              isMobileSplitView ? 'w-3.5 h-3.5 md:w-4 md:h-4' : 'w-4 h-4'
+                            } text-emerald-500 fill-emerald-500/20`}
+                          />
                         ) : (
-                          <Circle className="w-4 h-4 hover:fill-zinc-100 dark:hover:fill-zinc-800" />
+                          <Circle
+                            className={`${
+                              isMobileSplitView ? 'w-3.5 h-3.5 md:w-4 md:h-4' : 'w-4 h-4'
+                            } hover:fill-zinc-100 dark:hover:fill-zinc-800`}
+                          />
                         )}
                       </button>
 
                       <h4
-                        className={`text-[13px] sm:text-sm font-bold tracking-tight leading-snug break-words group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors ${
+                        className={`${
+                          isSecondarySplitCol
+                            ? 'text-[11px] md:text-sm leading-tight md:leading-snug'
+                            : isPrimarySplitCol
+                            ? 'text-[11.5px] md:text-sm leading-snug'
+                            : 'text-[13px] md:text-sm leading-snug'
+                        } font-bold tracking-tight break-words min-w-0 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors ${
                           task.isCompleted
                             ? 'line-through text-zinc-400 dark:text-zinc-500 font-normal'
                             : 'text-zinc-950 dark:text-white'
@@ -1664,23 +1926,31 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                       </h4>
                     </div>
 
-                    {/* Descrição resumida em 1 linha com tom neutro legível */}
+                    {/* Descrição secundária: único elemento com truncamento limpo em 1 linha */}
                     {task.description && (
-                      <p className="text-[11px] text-zinc-600 dark:text-zinc-300 leading-normal line-clamp-1 mb-1.5 pl-6 font-normal">
+                      <p
+                        className={`${
+                          isSecondarySplitCol
+                            ? 'text-[9.5px] md:text-[11px] pl-0 md:pl-6 mb-1 md:mb-1.5'
+                            : isPrimarySplitCol
+                            ? 'text-[10px] md:text-[11px] pl-0 md:pl-6 mb-1.5'
+                            : 'text-[11px] pl-6 mb-1.5'
+                        } text-zinc-600 dark:text-zinc-300 leading-normal line-clamp-1 overflow-hidden text-ellipsis font-normal`}
+                      >
                         {task.description}
                       </p>
                     )}
 
                     {/* Ficha Técnica: quadro interno de destaque com ação de Produzir */}
                     {task.fichaTecnica && canAccessFichaTecnicaAndProduction(currentUserRole) && (
-                      <div className="mb-2 pl-6">
-                        <div className="p-2 rounded-lg bg-teal-50/70 dark:bg-teal-950/40 border border-teal-200 dark:border-teal-850">
-                          <div className="flex items-center justify-between text-[10px] text-teal-800 dark:text-teal-200 font-semibold mb-1">
-                            <span className="flex items-center gap-1.5 truncate">
-                              <FileSpreadsheet className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400 shrink-0" />
+                      <div className={`${isMobileSplitView ? 'mb-1.5 md:mb-2 pl-0 md:pl-6' : 'mb-2 pl-6'}`}>
+                        <div className={`${isMobileSplitView ? 'p-1.5 md:p-2' : 'p-2'} rounded-lg bg-teal-50/70 dark:bg-teal-950/40 border border-teal-200 dark:border-teal-850`}>
+                          <div className={`flex items-center justify-between gap-1 ${isMobileSplitView ? 'text-[9px] md:text-[10px]' : 'text-[10px]'} text-teal-800 dark:text-teal-200 font-semibold mb-1`}>
+                            <span className="flex items-center gap-1 min-w-0">
+                              <FileSpreadsheet className="w-3 h-3 md:w-3.5 md:h-3.5 text-teal-600 dark:text-teal-400 shrink-0" />
                               <span className="truncate font-bold">{task.fichaTecnica.nomeItem}</span>
                             </span>
-                            <span className="text-[10px] font-extrabold px-1.5 py-0.2 rounded bg-teal-600 text-white shrink-0 ml-1">
+                            <span className="text-[9px] md:text-[10px] font-extrabold px-1.5 py-0.2 rounded bg-teal-600 text-white shrink-0 whitespace-nowrap">
                               {task.fichaTecnica.ingredientes?.length || 0} ing.
                             </span>
                           </div>
@@ -1690,7 +1960,7 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                               {task.fichaTecnica.ingredientes.length > 2 && ' ...'}
                             </div>
                           )}
-                          <div className="flex items-center justify-between pt-1 border-t border-teal-200/50 dark:border-teal-900/40 text-[9px] gap-1.5">
+                          <div className="flex flex-wrap items-center justify-between pt-1 border-t border-teal-200/50 dark:border-teal-900/40 text-[9px] gap-1">
                             <span className="text-teal-800 dark:text-teal-200 font-semibold truncate">
                               {task.productionRecords && task.productionRecords.length > 0
                                 ? `Produzido: ${String(task.productionRecords[0].quantidadeDesejada).replace('.', ',')} ${task.productionRecords[0].unidadeProducao}${
@@ -1700,7 +1970,7 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                                   }`
                                 : 'Ficha pronta'}
                             </span>
-                            <span className="inline-flex items-center gap-1 font-bold text-teal-800 dark:text-teal-200 hover:text-teal-600 shrink-0">
+                            <span className="inline-flex items-center gap-1 font-bold text-teal-800 dark:text-teal-200 hover:text-teal-600 shrink-0 whitespace-nowrap">
                               <Factory className="w-3 h-3 text-teal-600 dark:text-teal-400" />
                               <span>Produzir</span>
                             </span>
@@ -1709,16 +1979,44 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                       </div>
                     )}
 
-                    {/* Checklist: quadro interno padronizado para todas as tarefas */}
+                    {/* Checklist: barra e contador sempre legíveis sem corte em 360px-430px */}
                     {task.checklist && task.checklist.length > 0 && (
-                      <div className="mb-2 pl-6">
-                        <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
-                          <div className="flex items-center justify-between text-[10px] text-zinc-700 dark:text-zinc-200 font-semibold mb-1.5">
-                            <span className="flex items-center gap-1.5">
-                              <CheckSquare className="w-3.5 h-3.5 text-zinc-500 dark:text-zinc-400" />
+                      <div className={`${isMobileSplitView ? 'mb-1.5 md:mb-2 pl-0 md:pl-6' : 'mb-2 pl-6'}`}>
+                        <div
+                          className={`${
+                            isMobileSplitView ? 'p-1.5 md:p-2' : 'p-2'
+                          } rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700`}
+                        >
+                          <div
+                            className={`flex flex-wrap items-center justify-between gap-x-1 gap-y-0.5 ${
+                              isSecondarySplitCol
+                                ? 'text-[8.5px] md:text-[10px] mb-1 md:mb-1.5'
+                                : isPrimarySplitCol
+                                ? 'text-[9.5px] md:text-[10px] mb-1 md:mb-1.5'
+                                : 'text-[10px] mb-1.5'
+                            } text-zinc-700 dark:text-zinc-200 font-semibold`}
+                          >
+                            <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                              <CheckSquare
+                                className={`${
+                                  isSecondarySplitCol
+                                    ? 'w-2.5 h-2.5 md:w-3.5 md:h-3.5'
+                                    : isPrimarySplitCol
+                                    ? 'w-3 h-3 md:w-3.5 md:h-3.5'
+                                    : 'w-3.5 h-3.5'
+                                } text-zinc-500 dark:text-zinc-400 shrink-0`}
+                              />
                               <span className="tabular-nums">Checklist {checklistInfo.completed}/{checklistInfo.total}</span>
                             </span>
-                            <span className="text-[10px] font-extrabold tabular-nums text-zinc-900 dark:text-zinc-100">
+                            <span
+                              className={`${
+                                isSecondarySplitCol
+                                  ? 'text-[8.5px] md:text-[10px]'
+                                  : isPrimarySplitCol
+                                  ? 'text-[9.5px] md:text-[10px]'
+                                  : 'text-[10px]'
+                              } font-extrabold tabular-nums text-zinc-900 dark:text-zinc-100 whitespace-nowrap`}
+                            >
                               {checklistInfo.percentage}%
                             </span>
                           </div>
@@ -1736,13 +2034,25 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                       </div>
                     )}
 
-                    {/* Rodapé do Card: Data, horário, contadores e avatares padronizados com mesmo formato de cores */}
-                    <div className="flex items-center justify-between gap-1.5 pt-2 border-t border-zinc-200/80 dark:border-zinc-800 text-[10px]">
+                    {/* Rodapé do Card: Data, contadores e responsável com quebra segura sem sobreposição */}
+                    <div
+                      className={`flex flex-wrap items-center justify-between ${
+                        isMobileSplitView
+                          ? 'gap-x-1 gap-y-1 pt-1.5 md:gap-1.5 md:pt-2'
+                          : 'gap-1.5 pt-2'
+                      } border-t border-zinc-200/80 dark:border-zinc-800 text-[10px]`}
+                    >
                       {/* Metadados: Data + Comentários + Anexos em badges com mesmo formato */}
-                      <div className="flex items-center gap-1.5 flex-wrap text-[10px]">
+                      <div className="flex items-center gap-1 md:gap-1.5 flex-wrap min-w-0">
                         {/* Data e Horário em badge padronizado */}
                         <div
-                          className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border text-[10px] font-semibold transition-colors ${
+                          className={`inline-flex items-center gap-1 ${
+                            isSecondarySplitCol
+                              ? 'px-1 py-0.5 text-[8.5px] md:px-1.5 md:text-[10px]'
+                              : isPrimarySplitCol
+                              ? 'px-1.5 py-0.5 text-[9px] md:text-[10px]'
+                              : 'px-1.5 py-0.5 text-[10px]'
+                          } rounded-md border font-semibold whitespace-nowrap transition-colors ${
                             !dueInfo.hasDate && !dueInfo.hasTime
                               ? 'bg-zinc-50 dark:bg-zinc-800/50 text-zinc-400 dark:text-zinc-500 border-zinc-200/80 dark:border-zinc-700/60'
                               : dueInfo.isOverdue
@@ -1754,7 +2064,9 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                           title={dueInfo.fullText}
                         >
                           <Calendar
-                            className={`w-3 h-3 shrink-0 ${
+                            className={`${
+                              isMobileSplitView ? 'w-2.5 h-2.5 md:w-3 md:h-3' : 'w-3 h-3'
+                            } shrink-0 ${
                               !dueInfo.hasDate && !dueInfo.hasTime
                                 ? 'text-zinc-400 dark:text-zinc-500'
                                 : dueInfo.isOverdue
@@ -1770,10 +2082,12 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                         {/* Contador de Comentários em badge padronizado */}
                         {task.comments && task.comments.length > 0 && (
                           <div
-                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 border border-zinc-200/80 dark:border-zinc-700/80 font-semibold"
+                            className={`inline-flex items-center gap-1 ${
+                              isMobileSplitView ? 'px-1 py-0.5 text-[8.5px] md:px-1.5 md:text-[10px]' : 'px-1.5 py-0.5 text-[10px]'
+                            } rounded-md bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 border border-zinc-200/80 dark:border-zinc-700/80 font-semibold whitespace-nowrap`}
                             title="Comentários"
                           >
-                            <MessageSquare className="w-3 h-3 text-zinc-500 dark:text-zinc-400" />
+                            <MessageSquare className={`${isMobileSplitView ? 'w-2.5 h-2.5 md:w-3 md:h-3' : 'w-3 h-3'} text-zinc-500 dark:text-zinc-400`} />
                             <span>{task.comments.length}</span>
                           </div>
                         )}
@@ -1781,10 +2095,12 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                         {/* Contador de Anexos em badge padronizado */}
                         {task.attachments && task.attachments.length > 0 && (
                           <div
-                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 border border-zinc-200/80 dark:border-zinc-700/80 font-semibold"
+                            className={`inline-flex items-center gap-1 ${
+                              isMobileSplitView ? 'px-1 py-0.5 text-[8.5px] md:px-1.5 md:text-[10px]' : 'px-1.5 py-0.5 text-[10px]'
+                            } rounded-md bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 border border-zinc-200/80 dark:border-zinc-700/80 font-semibold whitespace-nowrap`}
                             title="Anexos de mídia"
                           >
-                            <Paperclip className="w-3 h-3 text-zinc-500 dark:text-zinc-400" />
+                            <Paperclip className={`${isMobileSplitView ? 'w-2.5 h-2.5 md:w-3 md:h-3' : 'w-3 h-3'} text-zinc-500 dark:text-zinc-400`} />
                             <span>{task.attachments.length}</span>
                           </div>
                         )}
@@ -1792,17 +2108,19 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                         {/* Ficha Técnica em badge padronizado (visível apenas para Produção, Admin e Dono) */}
                         {task.fichaTecnica && canAccessFichaTecnicaAndProduction(currentUserRole) && (
                           <div
-                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-teal-50 dark:bg-teal-950/50 text-teal-700 dark:text-teal-300 border border-teal-200 dark:border-teal-800/70 font-semibold"
+                            className={`inline-flex items-center gap-1 ${
+                              isMobileSplitView ? 'px-1 py-0.5 text-[8.5px] md:px-1.5 md:text-[10px]' : 'px-1.5 py-0.5 text-[10px]'
+                            } rounded-md bg-teal-50 dark:bg-teal-950/50 text-teal-700 dark:text-teal-300 border border-teal-200 dark:border-teal-800/70 font-semibold max-w-full`}
                             title={`Ficha Técnica: ${task.fichaTecnica.nomeItem} (${task.fichaTecnica.ingredientes?.length || 0} ingredientes)`}
                           >
-                            <FileSpreadsheet className="w-3 h-3 text-teal-600 dark:text-teal-400 shrink-0" />
-                            <span className="truncate max-w-[70px] sm:max-w-[85px]">{task.fichaTecnica.nomeItem}</span>
+                            <FileSpreadsheet className={`${isMobileSplitView ? 'w-2.5 h-2.5 md:w-3 md:h-3' : 'w-3 h-3'} text-teal-600 dark:text-teal-400 shrink-0`} />
+                            <span className="truncate max-w-[56px] md:max-w-[85px]">{task.fichaTecnica.nomeItem}</span>
                           </div>
                         )}
                       </div>
 
                       {/* Stack de Avatares dos Responsáveis com Foto de Perfil */}
-                      <div className="flex items-center -space-x-1.5 shrink-0">
+                      <div className="flex items-center -space-x-1.5 shrink-0 ml-auto">
                         {task.assigneeIds && task.assigneeIds.length > 0 ? (
                           task.assigneeIds.slice(0, 3).map((uid) => {
                             const u = getMemberUser(uid);
@@ -1817,7 +2135,17 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                             );
                           })
                         ) : (
-                          <span className="text-[10px] text-zinc-500 dark:text-zinc-400 font-medium">Sem resp.</span>
+                          <span
+                            className={`${
+                              isSecondarySplitCol
+                                ? 'text-[8.5px] md:text-[10px]'
+                                : isPrimarySplitCol
+                                ? 'text-[9px] md:text-[10px]'
+                                : 'text-[10px]'
+                            } text-zinc-500 dark:text-zinc-400 font-medium whitespace-nowrap`}
+                          >
+                            Sem resp.
+                          </span>
                         )}
                         {task.assigneeIds && task.assigneeIds.length > 3 && (
                           <span className="w-5 h-5 rounded-full bg-zinc-200 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-200 text-[9px] font-bold flex items-center justify-center ring-2 ring-white dark:ring-slate-900">
@@ -1846,20 +2174,34 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                 )}
 
               {columnTasks.length === 0 && (!dropIndicator || dropIndicator.columnId !== col.id) && (
-                <div className="h-24 rounded-xl border border-dashed border-slate-300 dark:border-slate-800 flex flex-col items-center justify-center text-xs text-slate-400 dark:text-slate-500 gap-1.5">
+                <div className="h-24 rounded-xl border border-dashed border-slate-300 dark:border-slate-800 flex flex-col items-center justify-center text-center px-2 text-[11px] md:text-xs text-slate-400 dark:text-slate-500 gap-1.5">
                   <Clock className="w-4 h-4 opacity-40" />
                   <span>Nenhum card aqui</span>
                 </div>
               )}
             </div>
 
-            {/* Adição Rápida: Fixa no rodapé da coluna */}
+            {/* Adição Rápida: Fixa no rodapé da coluna e sempre legível em 60% / 40% */}
             <button
               type="button"
               onClick={() => onQuickAddTask(col.id)}
-              className="shrink-0 mt-2 py-2.5 sm:py-2 px-3 min-h-[42px] sm:min-h-0 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 bg-white/70 sm:bg-transparent dark:bg-slate-800/60 sm:dark:bg-transparent hover:bg-white dark:hover:bg-slate-800 rounded-xl border border-slate-200/70 sm:border-transparent dark:border-slate-700/60 sm:dark:border-transparent hover:border-slate-200 dark:hover:border-slate-700 flex items-center justify-center gap-1.5 transition-all cursor-pointer active:scale-[0.99]"
+              className={`shrink-0 mt-1.5 md:mt-2 ${
+                isSecondarySplitCol
+                  ? 'py-2 px-1.5 min-h-[38px] text-[10px] gap-1 md:py-2 md:px-3 md:min-h-0 md:text-xs md:gap-1.5'
+                  : isPrimarySplitCol
+                  ? 'py-2 px-2 min-h-[38px] text-[11px] gap-1 md:py-2 md:px-3 md:min-h-0 md:text-xs md:gap-1.5'
+                  : 'py-2.5 md:py-2 px-3 min-h-[42px] md:min-h-0 text-xs gap-1.5'
+              } font-semibold whitespace-nowrap text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 bg-white/75 md:bg-transparent dark:bg-slate-800/60 md:dark:bg-transparent hover:bg-white dark:hover:bg-slate-800 rounded-xl border border-slate-200/70 md:border-transparent dark:border-slate-700/60 md:dark:border-transparent hover:border-slate-200 dark:hover:border-slate-700 flex items-center justify-center transition-all cursor-pointer active:scale-[0.99]`}
             >
-              <Plus className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
+              <Plus
+                className={`${
+                  isSecondarySplitCol
+                    ? 'w-3 h-3 md:w-3.5 md:h-3.5'
+                    : isPrimarySplitCol
+                    ? 'w-3.5 h-3.5'
+                    : 'w-4 h-4 md:w-3.5 md:h-3.5'
+                } shrink-0`}
+              />
               <span>Adicionar cartão</span>
             </button>
           </div>
@@ -1870,7 +2212,7 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
       {/* Indicadores de Posição Horizontal entre Quadros (Mobile) */}
       {displayedColumns.length > 1 && (
         <div
-          className="flex sm:hidden items-center justify-center gap-1 pt-1.5 pb-0.5 shrink-0"
+          className="flex md:hidden items-center justify-center gap-1 pt-1.5 pb-0.5 shrink-0"
           role="tablist"
           aria-label="Navegação entre quadros"
         >
