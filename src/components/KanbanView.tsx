@@ -1047,28 +1047,22 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
           <button
             type="button"
             onClick={() => toggleMobileColumnMode()}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 min-h-[34px] rounded-xl bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-xs font-bold shadow-xs active:scale-95 transition-all shrink-0 whitespace-nowrap cursor-pointer"
+            className="flex items-center justify-center w-9 h-9 rounded-xl bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 shadow-xs active:scale-95 transition-all shrink-0 cursor-pointer"
             title={
               isMobileSplitView
-                ? 'Recolher para coluna única (100% da tela)'
-                : 'Restaurar visão ampla em duas colunas (60% / 40%)'
+                ? 'Coluna única (100%)'
+                : 'Duas colunas (60% / 40%)'
             }
             aria-label={
               isMobileSplitView
-                ? 'Recolher para coluna única em 100% de largura'
-                : 'Restaurar visão ampla em duas colunas 60% e 40%'
+                ? 'Alternar para coluna única em 100% de largura'
+                : 'Alternar para duas colunas 60% e 40%'
             }
           >
             {isMobileSplitView ? (
-              <>
-                <Minimize2 className="w-3.5 h-3.5 shrink-0" />
-                <span>Recolher</span>
-              </>
+              <Minimize2 className="w-4 h-4 shrink-0" />
             ) : (
-              <>
-                <Maximize2 className="w-3.5 h-3.5 shrink-0" />
-                <span>Ampliar</span>
-              </>
+              <Maximize2 className="w-4 h-4 shrink-0" />
             )}
           </button>
         )}
@@ -2274,11 +2268,11 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
             <button
               type="button"
               onClick={() => setFocusedColumnId(null)}
-              className="flex items-center gap-1.5 px-3 min-h-[40px] rounded-xl bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 hover:opacity-90 text-xs font-bold shadow-xs shrink-0 whitespace-nowrap active:scale-95 transition-all cursor-pointer"
+              className="flex items-center justify-center w-10 h-10 rounded-xl bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 hover:opacity-90 shadow-xs shrink-0 active:scale-95 transition-all cursor-pointer"
               title="Voltar para visão padrão"
+              aria-label="Voltar para visão padrão"
             >
-              <Minimize2 className="w-3.5 h-3.5 shrink-0" />
-              <span>Recolher</span>
+              <Minimize2 className="w-4 h-4 shrink-0" />
             </button>
           </header>
 
@@ -2605,23 +2599,22 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                 onClick={() =>
                   setFocusZoomMode((prev) => (prev === 'amplified' ? 'overview' : 'amplified'))
                 }
-                className="flex items-center gap-1.5 px-3.5 min-h-[42px] rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs font-bold whitespace-nowrap transition-colors active:scale-95 cursor-pointer"
+                className="flex items-center justify-center w-11 h-11 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 transition-colors active:scale-95 cursor-pointer"
                 title={
                   focusZoomMode === 'amplified'
                     ? 'Alternar para visão compacta lado a lado'
-                    : 'Ampliar quadro atual'
+                    : 'Alternar para quadro em foco'
+                }
+                aria-label={
+                  focusZoomMode === 'amplified'
+                    ? 'Alternar para visão compacta lado a lado'
+                    : 'Alternar para quadro em foco'
                 }
               >
                 {focusZoomMode === 'amplified' ? (
-                  <>
-                    <Minimize2 className="w-4 h-4 shrink-0" />
-                    <span>Visão Geral</span>
-                  </>
+                  <Minimize2 className="w-4 h-4 shrink-0" />
                 ) : (
-                  <>
-                    <Maximize2 className="w-4 h-4 shrink-0" />
-                    <span>Ampliar</span>
-                  </>
+                  <Maximize2 className="w-4 h-4 shrink-0" />
                 )}
               </button>
             </div>
